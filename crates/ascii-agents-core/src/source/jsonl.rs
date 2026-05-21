@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
@@ -92,33 +93,60 @@ async fn walk_jsonl(
         return;
     }
 
-    let bytes = match tokio::fs::read(path).await {
-        Ok(b) => b,
+    // Streaming read: stat the file, take the cursor lock to learn how far
+    // we've already consumed, then seek and read ONLY the new bytes. Avoids
+    // re-reading megabytes for every notify event on a large transcript.
+    let file_len = match tokio::fs::metadata(path).await {
+        Ok(m) => m.len(),
         Err(e) => {
-            warn!("read {} failed: {e}", path.display());
+            warn!("stat {} failed: {e}", path.display());
             return;
         }
     };
 
-    // Only consume up to the last complete (newline-terminated) line; a partial
-    // tail stays buffered until the next notify event completes it.
-    let safe_end = match bytes.iter().rposition(|&b| b == b'\n') {
+    let cursor_now: u64 = {
+        let cursors_g = cursors.lock().await;
+        *cursors_g.get(path).unwrap_or(&0)
+    };
+    if cursor_now >= file_len {
+        // Nothing new (possibly a truncation that we'll detect next call).
+        return;
+    }
+
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("open {} failed: {e}", path.display());
+            return;
+        }
+    };
+    if let Err(e) = file.seek(SeekFrom::Start(cursor_now)).await {
+        warn!("seek {} failed: {e}", path.display());
+        return;
+    }
+    let mut new_chunk = Vec::with_capacity((file_len - cursor_now) as usize);
+    if let Err(e) = file.read_to_end(&mut new_chunk).await {
+        warn!("read tail of {} failed: {e}", path.display());
+        return;
+    }
+
+    // Consume only up to the last complete (newline-terminated) line; any
+    // partial trailing line stays buffered until the next notify event
+    // completes it. `safe_end_relative` is within `new_chunk`.
+    let safe_end_relative = match new_chunk.iter().rposition(|&b| b == b'\n') {
         Some(i) => i + 1,
         None => 0,
     };
-
-    let cursor_now;
+    if safe_end_relative == 0 {
+        return; // only a partial line — wait for more
+    }
+    let new_cursor = cursor_now + safe_end_relative as u64;
     {
         let mut cursors_g = cursors.lock().await;
-        let cursor = cursors_g.entry(path.to_path_buf()).or_insert(0);
-        cursor_now = *cursor as usize;
-        if cursor_now >= safe_end {
-            return;
-        }
-        *cursor = safe_end as u64;
+        cursors_g.insert(path.to_path_buf(), new_cursor);
     }
 
-    let new_bytes = &bytes[cursor_now..safe_end];
+    let new_bytes = &new_chunk[..safe_end_relative];
     let transcript_path_str = path.to_string_lossy().into_owned();
 
     // Emit SessionStart on first sight of this transcript.
@@ -131,7 +159,9 @@ async fn walk_jsonl(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             // Try to extract cwd from the first parseable line; harmless if it fails.
-            let cwd = extract_cwd(&bytes[..safe_end]).unwrap_or_default();
+            // First-sight only: cursor_now==0 here, so new_bytes is the
+            // entire transcript prefix — fine to scan for cwd.
+            let cwd = extract_cwd(new_bytes).unwrap_or_default();
             let _ = tx
                 .send((
                     Transport::Jsonl,
