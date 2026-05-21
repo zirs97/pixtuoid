@@ -1,0 +1,15 @@
+[package]
+name                   = "ascii-agents-hook"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "ascii-agents-hook"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
