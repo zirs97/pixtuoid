@@ -287,21 +287,21 @@ fn seated_anchor(desk: Point) -> Point {
 
 fn standing_at_desk_anchor(desk: Point) -> Point {
     Point {
-        x: desk.x + DESK_W.saturating_sub(6) / 2,
+        x: desk.x + DESK_W.saturating_sub(8) / 2,
         y: desk.y.saturating_sub(12),
     }
 }
 
 fn walking_anchor(p: Point) -> Point {
     Point {
-        x: p.x.saturating_sub(3),
+        x: p.x.saturating_sub(4),
         y: p.y.saturating_sub(12),
     }
 }
 
 fn waypoint_anchor(wp: Point) -> Point {
     Point {
-        x: wp.x.saturating_sub(3),
+        x: wp.x.saturating_sub(4),
         y: wp.y.saturating_sub(12),
     }
 }
