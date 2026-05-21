@@ -1,27 +1,27 @@
-# 10x12 px — top-down 3/4 view, breathing animation
+# 10x12 Pixel People chibi — big head, tiny dots for eyes, headset, simple smile
 @frame 0
+. . . H H H H . . .
 . . H H H H H H . .
 . H H H H H H H H .
-H H S S S S S S H H
-H H e S S S e S H H
-H H S S S S S S H H
-H H S S m m S S H H
+. H H H H H H H H .
+c H S S S S S S H c
+. H S e S S e S H .
 . H S S S S S S H .
+. H S S S m S S H .
 . . S S S S S S . .
 . B B B B B B B B .
 . B B B B B B B B .
-. S B B B B B B S .
-. S B B . . B B S .
+. . B B . . B B . .
 @frame 1
+. . . H H H H . . .
 . . H H H H H H . .
 . H H H H H H H H .
-H H S S S S S S H H
-H H e S S S e S H H
-H H S S S S S S H H
-H H S S m m S S H H
+. H H H H H H H H .
+c H S S S S S S H c
+. H S e S S e S H .
 . H S S S S S S H .
-. . . S S S S S . .
+. H S S S m S S H .
+. . S S S S S S . .
 . . B B B B B B B .
-. B B B B B B B B .
-. S B B B B B B B .
-. S B B . . B B S .
+. . B B B B B B B .
+. . B B . . B B . .
