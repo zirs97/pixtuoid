@@ -1,5 +1,6 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use filetime::{set_file_mtime, FileTime};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -167,5 +168,173 @@ async fn watcher_does_not_consume_partial_trailing_line() {
     }
     assert!(got_tu_2, "tu_2 should appear after partial line is completed");
 
+    handle.abort();
+}
+
+/// On startup, the watcher must NOT emit SessionStart for every historical
+/// .jsonl on disk. With small `max_desks` this would saturate desks with
+/// long-dead sessions and starve the user's currently-active session.
+/// Files older than the initial-window are seeded with cursor=file_len and
+/// left out of the SessionStart stream until they next get written to.
+#[tokio::test]
+async fn watcher_skips_session_start_for_stale_files_on_startup() {
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().to_path_buf();
+    let project_dir = projects_root.join("proj-stale");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+
+    // Pre-existing stale transcript (mtime backdated 1 hour).
+    let stale = project_dir.join("old.jsonl");
+    let line = serde_json::json!({
+        "type": "assistant",
+        "sessionId": "old",
+        "cwd": "/repo",
+        "message": {
+            "role": "assistant",
+            "content": [
+                { "type": "tool_use", "id": "tu_old", "name": "Bash",
+                  "input": { "command": "ls" } }
+            ]
+        }
+    });
+    tokio::fs::write(&stale, format!("{line}\n")).await.unwrap();
+    let backdated = FileTime::from_system_time(
+        SystemTime::now() - Duration::from_secs(3600),
+    );
+    set_file_mtime(&stale, backdated).unwrap();
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let watcher = JsonlWatcher::with_initial_window(
+        projects_root.clone(),
+        Duration::from_secs(60),
+    );
+    let handle = tokio::spawn(async move { watcher.run(tx).await });
+
+    // Give the initial scan a moment to run.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut events = Vec::new();
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+        events.push(ev);
+    }
+    assert!(
+        events.is_empty(),
+        "stale file must not produce events on startup, got {events:?}"
+    );
+    handle.abort();
+}
+
+/// Conversely, a transcript whose mtime is *within* the initial-window is
+/// treated as live: its SessionStart and any historical content replays so
+/// in-flight Task / tool state survives an ascii-agents restart.
+#[tokio::test]
+async fn watcher_emits_session_start_for_recent_files_on_startup() {
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().to_path_buf();
+    let project_dir = projects_root.join("proj-fresh");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+
+    let fresh = project_dir.join("fresh.jsonl");
+    let line = serde_json::json!({
+        "type": "assistant",
+        "sessionId": "fresh",
+        "cwd": "/repo",
+        "message": {
+            "role": "assistant",
+            "content": [
+                { "type": "tool_use", "id": "tu_fresh", "name": "Bash",
+                  "input": { "command": "ls" } }
+            ]
+        }
+    });
+    tokio::fs::write(&fresh, format!("{line}\n")).await.unwrap();
+    // mtime is "now" (just written) — well inside the 1 hour window.
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let watcher = JsonlWatcher::with_initial_window(
+        projects_root.clone(),
+        Duration::from_secs(3600),
+    );
+    let handle = tokio::spawn(async move { watcher.run(tx).await });
+
+    let mut got_start = false;
+    let mut got_activity = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Some((_, AgentEvent::SessionStart { .. }))) => got_start = true,
+            Ok(Some((_, AgentEvent::ActivityStart { .. }))) => got_activity = true,
+            _ => {}
+        }
+        if got_start && got_activity {
+            break;
+        }
+    }
+    assert!(got_start, "fresh file should produce SessionStart");
+    assert!(got_activity, "fresh file content should be replayed");
+    handle.abort();
+}
+
+/// Stale files become live as soon as CC writes to them — the next notify
+/// event must produce a SessionStart, since the file is now active.
+#[tokio::test]
+async fn stale_file_emits_session_start_when_written_to() {
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().to_path_buf();
+    let project_dir = projects_root.join("proj-revive");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+
+    let revived = project_dir.join("revive.jsonl");
+    tokio::fs::write(&revived, "{}\n").await.unwrap();
+    set_file_mtime(
+        &revived,
+        FileTime::from_system_time(SystemTime::now() - Duration::from_secs(3600)),
+    )
+    .unwrap();
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let watcher = JsonlWatcher::with_initial_window(
+        projects_root.clone(),
+        Duration::from_secs(60),
+    );
+    let handle = tokio::spawn(async move { watcher.run(tx).await });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // No SessionStart yet (stale + skipped).
+    while tokio::time::timeout(Duration::from_millis(20), rx.recv()).await.is_ok() {}
+
+    // Append a real assistant tool_use line — file is now live.
+    let line = serde_json::json!({
+        "type": "assistant",
+        "sessionId": "revive",
+        "cwd": "/repo",
+        "message": {
+            "role": "assistant",
+            "content": [
+                { "type": "tool_use", "id": "tu_new", "name": "Bash",
+                  "input": { "command": "ls" } }
+            ]
+        }
+    });
+    let mut f = tokio::fs::OpenOptions::new()
+        .append(true)
+        .open(&revived)
+        .await
+        .unwrap();
+    f.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut got_start = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((_, AgentEvent::SessionStart { .. }))) =
+            tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
+        {
+            got_start = true;
+            break;
+        }
+    }
+    assert!(got_start, "appending to a stale file should bring it live");
     handle.abort();
 }

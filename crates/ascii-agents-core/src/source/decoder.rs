@@ -46,17 +46,27 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
                 .and_then(|s| s.as_str())
                 .unwrap_or("?");
             let target = describe_tool_target(tool_name, obj.get("tool_input"));
+            let tool_use_id = obj
+                .get("tool_use_id")
+                .and_then(|s| s.as_str())
+                .map(String::from);
             Ok(AgentEvent::ActivityStart {
                 agent_id,
                 activity: Activity::Typing,
-                tool_use_id: None,
+                tool_use_id,
                 detail: Some(format!("{tool_name}{target}")),
             })
         }
-        "PostToolUse" => Ok(AgentEvent::ActivityEnd {
-            agent_id,
-            tool_use_id: None,
-        }),
+        "PostToolUse" => {
+            let tool_use_id = obj
+                .get("tool_use_id")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            Ok(AgentEvent::ActivityEnd {
+                agent_id,
+                tool_use_id,
+            })
+        }
         "Notification" => {
             let msg = obj
                 .get("message")
@@ -108,12 +118,20 @@ pub fn decode_jsonl_line(transcript_path: &str, v: Value) -> Result<Vec<AgentEve
     };
     let ty = obj.get("type").and_then(|s| s.as_str()).unwrap_or("");
 
+    let mut out = Vec::new();
+
+    // Subagent identity: CC tags subagent assistant lines with the dispatching
+    // agent name (e.g. "feature-dev:code-explorer"). Strip the plugin prefix
+    // — slot widths are 18 cells and the prefix is mostly noise.
+    if let Some(name) = obj.get("attributionAgent").and_then(|v| v.as_str()) {
+        let label = name.rsplit(':').next().unwrap_or(name).to_string();
+        out.push(AgentEvent::Rename { agent_id, label });
+    }
+
     let Some(message) = obj.get("message").and_then(|m| m.as_object()) else {
-        return Ok(vec![]);
+        return Ok(out);
     };
     let content = message.get("content");
-
-    let mut out = Vec::new();
     match (ty, content) {
         ("assistant", Some(Value::Array(blocks))) => {
             for block in blocks {

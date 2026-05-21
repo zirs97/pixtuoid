@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
 
 use crate::source::AgentEvent;
@@ -19,6 +19,13 @@ pub const HOOK_WINS_WINDOW: Duration = Duration::from_millis(500);
 pub struct Reducer {
     /// Track recent hook-derived events so JSONL duplicates can be dropped.
     recent_hook_tool_uses: HashMap<(AgentId, String), SystemTime>,
+    /// Per-agent set of Task tool_use_ids currently in flight. CC's hook
+    /// payload sets `transcript_path` to the PARENT'S transcript even when a
+    /// subagent is the actor, so subagent hook events hash to the parent's
+    /// AgentId. While the parent has any Task in flight, hook
+    /// ActivityStart/End events for that AgentId are dropped — JSONL has
+    /// correct attribution to the subagent's own AgentId.
+    active_tasks: HashMap<AgentId, HashSet<String>>,
     /// Monotonic counter for human-readable labels (cc#1, cc#2, ...).
     next_label_n: u32,
 }
@@ -38,10 +45,35 @@ impl Reducer {
         self.gc(now);
         let id = event.agent_id();
 
+        // Subagent-leak suppression: if this AgentId currently has any Task
+        // tool in flight, hook ActivityStart/End events for it are almost
+        // certainly subagent work misattributed to the parent. Drop them and
+        // defer to JSONL, which targets the subagent's own AgentId. The
+        // Task's own PostToolUse is exempt — its tool_use_id matches one we
+        // are tracking, so it passes through and clears the slot.
+        if from == Transport::Hook {
+            let in_task = self
+                .active_tasks
+                .get(&id)
+                .is_some_and(|s| !s.is_empty());
+            let suppress = match &event {
+                AgentEvent::ActivityStart { .. } => in_task,
+                AgentEvent::ActivityEnd { tool_use_id, .. } => {
+                    let is_task_self_end = tool_use_id.as_ref().is_some_and(|t| {
+                        self.active_tasks
+                            .get(&id)
+                            .is_some_and(|s| s.contains(t))
+                    });
+                    in_task && !is_task_self_end
+                }
+                _ => false,
+            };
+            if suppress {
+                return;
+            }
+        }
+
         // Dedup: drop JSONL events that match a recent Hook event by tool_use_id.
-        // NOTE: CC's hook payloads do NOT carry tool_use_id today (only JSONL does),
-        // so the hook side rarely populates the dedup map. We still try, in case a
-        // future CC version adds it, and to keep the logic correct on both sides.
         if from == Transport::Jsonl {
             if let Some(tuid) = event_tool_use_id(&event) {
                 if self
@@ -60,6 +92,31 @@ impl Reducer {
             }
         }
 
+        // Track active Task tool_use_ids from either transport. HashSet is
+        // idempotent so duplicate inserts from both hook+jsonl are harmless.
+        match &event {
+            AgentEvent::ActivityStart {
+                agent_id,
+                tool_use_id: Some(tuid),
+                detail: Some(d),
+                ..
+            } if is_task_detail(d) => {
+                self.active_tasks
+                    .entry(*agent_id)
+                    .or_default()
+                    .insert(tuid.clone());
+            }
+            AgentEvent::ActivityEnd {
+                agent_id,
+                tool_use_id: Some(tuid),
+            } => {
+                if let Some(set) = self.active_tasks.get_mut(agent_id) {
+                    set.remove(tuid);
+                }
+            }
+            _ => {}
+        }
+
         match event {
             AgentEvent::SessionStart {
                 agent_id,
@@ -74,7 +131,12 @@ impl Reducer {
                     return;
                 };
                 self.next_label_n += 1;
-                let label = format!("cc#{}", self.next_label_n);
+                let label = cwd
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("cc#{}", self.next_label_n));
                 scene.agents.insert(
                     agent_id,
                     AgentSlot {
@@ -116,8 +178,16 @@ impl Reducer {
                     slot.state_started_at = now;
                 }
             }
+            AgentEvent::Rename { agent_id, label } => {
+                if let Some(slot) = scene.agents.get_mut(&agent_id) {
+                    if slot.label != label {
+                        slot.label = label;
+                    }
+                }
+            }
             AgentEvent::SessionEnd { agent_id } => {
                 scene.agents.remove(&agent_id);
+                self.active_tasks.remove(&agent_id);
             }
         }
     }
@@ -138,4 +208,11 @@ fn event_tool_use_id(ev: &AgentEvent) -> Option<&str> {
         | AgentEvent::ActivityEnd { tool_use_id, .. } => tool_use_id.as_deref(),
         _ => None,
     }
+}
+
+fn is_task_detail(detail: &str) -> bool {
+    // The decoder formats ActivityStart detail as "{tool_name}{target}", so
+    // Task tool calls produce "Task" or "Task: ..." (Task currently has no
+    // target template, so usually just "Task").
+    detail == "Task" || detail.starts_with("Task:") || detail.starts_with("Task ")
 }

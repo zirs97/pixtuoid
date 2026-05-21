@@ -133,6 +133,78 @@ fn decode_hook_payload_with_multibyte_tool_input_does_not_panic() {
 }
 
 #[test]
+fn decode_pre_tool_use_carries_tool_use_id_from_payload() {
+    // Current CC PreToolUse payloads include a `tool_use_id` field. The
+    // decoder must surface it so the reducer can pair hook events with the
+    // matching JSONL line and track in-flight Task tool_use_ids.
+    let payload = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "ses-abc",
+        "transcript_path": "/Users/me/.claude/projects/x/ses-abc.jsonl",
+        "cwd": "/repo",
+        "tool_name": "Task",
+        "tool_use_id": "toolu_01ABC",
+        "tool_input": { "description": "go" }
+    });
+    let ev = decode_hook_payload(payload).unwrap();
+    match ev {
+        AgentEvent::ActivityStart { tool_use_id, detail, .. } => {
+            assert_eq!(tool_use_id.as_deref(), Some("toolu_01ABC"));
+            assert!(detail.unwrap().starts_with("Task"));
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn decode_post_tool_use_carries_tool_use_id_from_payload() {
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "ses-abc",
+        "transcript_path": "/Users/me/.claude/projects/x/ses-abc.jsonl",
+        "cwd": "/repo",
+        "tool_name": "Task",
+        "tool_use_id": "toolu_01ABC"
+    });
+    let ev = decode_hook_payload(payload).unwrap();
+    match ev {
+        AgentEvent::ActivityEnd { tool_use_id, .. } => {
+            assert_eq!(tool_use_id.as_deref(), Some("toolu_01ABC"));
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn jsonl_subagent_line_with_attribution_emits_rename() {
+    // CC tags subagent assistant lines with `attributionAgent` like
+    // "feature-dev:code-explorer". The decoder must surface this as a
+    // Rename event so the sprite label reads as the real subagent name
+    // instead of "cc#N".
+    let transcript = "/Users/me/.claude/projects/x/sess/subagents/agent-abc.jsonl";
+    let v = serde_json::json!({
+        "type": "assistant",
+        "sessionId": "sess",
+        "cwd": "/repo",
+        "attributionAgent": "feature-dev:code-explorer",
+        "message": {
+            "role": "assistant",
+            "content": [
+                { "type": "tool_use", "id": "tu_1", "name": "Read",
+                  "input": { "file_path": "/repo/src/a.rs" } }
+            ]
+        }
+    });
+    let events = decode_jsonl_line(transcript, v).unwrap();
+    // Plugin prefix is stripped so the 18-cell slot can fit the name.
+    let has_rename = events.iter().any(|e| matches!(
+        e,
+        AgentEvent::Rename { label, .. } if label == "code-explorer"
+    ));
+    assert!(has_rename, "expected Rename event, got {events:?}");
+}
+
+#[test]
 fn jsonl_plain_user_message_yields_no_events() {
     let transcript = "/Users/me/.claude/projects/x/ses-abc.jsonl";
     let events = decode_jsonl_line(transcript, load_jsonl("user_message")).unwrap();

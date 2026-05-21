@@ -16,11 +16,28 @@ use crate::AgentId;
 
 pub struct JsonlWatcher {
     root: PathBuf,
+    /// On startup, only emit SessionStart for transcripts whose mtime is
+    /// within this window. Older files have their cursor seeded at end-of-file
+    /// so any future writes still bring them live (next SessionStart fires
+    /// then). Without this, every historical .jsonl floods the desk allocator.
+    initial_window: Duration,
 }
+
+const DEFAULT_INITIAL_WINDOW: Duration = Duration::from_secs(600);
 
 impl JsonlWatcher {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            initial_window: DEFAULT_INITIAL_WINDOW,
+        }
+    }
+
+    pub fn with_initial_window(root: PathBuf, window: Duration) -> Self {
+        Self {
+            root,
+            initial_window: window,
+        }
     }
 
     pub async fn run(self, tx: TaggedSender) -> Result<()> {
@@ -37,13 +54,20 @@ impl JsonlWatcher {
                         if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                             let _ = notify_tx.send(path);
                         }
-                    }
+            }
                 }
             })?;
         let _ = tokio::fs::create_dir_all(&self.root).await;
         watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
-        scan_root(&self.root, &cursors, &seen_sessions, &tx).await;
+        initial_seed_root(
+            &self.root,
+            self.initial_window,
+            &cursors,
+            &seen_sessions,
+            &tx,
+        )
+        .await;
 
         loop {
             tokio::select! {
@@ -55,6 +79,66 @@ impl JsonlWatcher {
                 }
             }
         }
+    }
+}
+
+async fn initial_seed_root(
+    root: &Path,
+    window: Duration,
+    cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
+    seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
+    tx: &TaggedSender,
+) {
+    if let Ok(mut read) = tokio::fs::read_dir(root).await {
+        while let Ok(Some(entry)) = read.next_entry().await {
+            initial_seed_walk(&entry.path(), window, cursors, seen, tx).await;
+        }
+    }
+}
+
+async fn initial_seed_walk(
+    path: &Path,
+    window: Duration,
+    cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
+    seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
+    tx: &TaggedSender,
+) {
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if meta.is_dir() {
+        if let Ok(mut read) = tokio::fs::read_dir(path).await {
+            while let Ok(Some(entry)) = read.next_entry().await {
+                Box::pin(initial_seed_walk(&entry.path(), window, cursors, seen, tx)).await;
+            }
+        }
+        return;
+    }
+    if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+        return;
+    }
+
+    let recent = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|elapsed| elapsed <= window)
+        .unwrap_or(false);
+
+    if recent {
+        // Live session: let the normal walk_jsonl flow read from offset 0,
+        // emit SessionStart, and replay content so in-flight Task / tool
+        // state survives an ascii-agents restart.
+        walk_jsonl(path, cursors, seen, tx).await;
+    } else {
+        // Stale: seed cursor at end so historical events don't replay, and
+        // leave `seen` untouched so the first future write triggers a fresh
+        // SessionStart-on-first-sight via walk_jsonl.
+        cursors
+            .lock()
+            .await
+            .insert(path.to_path_buf(), meta.len());
     }
 }
 

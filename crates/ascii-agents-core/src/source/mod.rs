@@ -36,6 +36,12 @@ pub enum AgentEvent {
         agent_id: AgentId,
         reason: String,
     },
+    /// Late-discovered display name (e.g. CC subagent `attributionAgent`).
+    /// Reducer overrides the slot label; noop if the slot doesn't exist.
+    Rename {
+        agent_id: AgentId,
+        label: String,
+    },
     SessionEnd {
         agent_id: AgentId,
     },
@@ -48,6 +54,7 @@ impl AgentEvent {
             AgentEvent::ActivityStart { agent_id, .. } => *agent_id,
             AgentEvent::ActivityEnd { agent_id, .. } => *agent_id,
             AgentEvent::Waiting { agent_id, .. } => *agent_id,
+            AgentEvent::Rename { agent_id, .. } => *agent_id,
             AgentEvent::SessionEnd { agent_id, .. } => *agent_id,
         }
     }
