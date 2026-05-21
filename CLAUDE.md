@@ -26,7 +26,7 @@ crates/
 │   ├── install/            settings.json merge, atomic write, advisory lock, stow-symlink safe
 │   └── tui/                ratatui App + draw_scene (generic over Backend)
 └── ascii-agents-hook/      tiny shim CC invokes — stdin JSON → Unix socket, 200ms write timeout
-assets/sprites/default/     bundled character pack (idle, typing x3, waiting) at 12×16 px
+assets/sprites/default/     bundled top-down pack (idle, typing x3, waiting, desk, plant) at 12×14 px
 ```
 
 ## Build & test
@@ -34,7 +34,7 @@ assets/sprites/default/     bundled character pack (idle, typing x3, waiting) at
 ```
 cargo build --workspace                                              # debug build
 cargo build --release --workspace                                    # release build
-cargo test --workspace --features ascii-agents-core/test-renderer    # all tests (46)
+cargo test --workspace --features ascii-agents-core/test-renderer    # all tests (64+)
 cargo run --release --example snapshot -- /tmp/snap.png              # render TUI to PNG
 ./target/release/ascii-agents run --headless --projects-root ~/.claude/projects   # live test against real CC
 ```
@@ -63,10 +63,14 @@ These are load-bearing; don't break them without updating the spec.
 
 ## Known sharp edges (don't be surprised by these)
 
-- **CC hook payloads don't include `tool_use_id`.** Only the JSONL transcript carries the model-assigned id. The reducer's hook-wins dedup window therefore rarely fires for the common case. This is accepted — hooks fire ~ms before JSONL, so duplicate state writes re-set the same value rather than causing wrong state. A coarser per-session silencer is a candidate refinement.
+- **CC hook payloads DO include `tool_use_id`** in `PreToolUse` and `PostToolUse` (verified by sniffing live payloads). The decoder reads it; the reducer's hook-wins dedup actually fires.
+- **CC hook `transcript_path` always points to the PARENT'S transcript**, even when a subagent is the actor — so subagent hook events hash to the parent's `AgentId`. The reducer's `active_tasks: HashMap<AgentId, HashSet<String>>` suppresses hook `ActivityStart`/`End` for any agent currently inside a `Task` tool; JSONL has correct subagent attribution via the per-subagent transcript file at `<parent_uuid>/subagents/agent-<id>.jsonl`. See `is_task_detail` in `state/reducer.rs` — it's a string match against `detail`, fragile if the decoder's format changes.
+- **JSONL watcher skips historical transcripts on startup.** `initial_seed_root` in `source/jsonl.rs` only emits `SessionStart` for `.jsonl` files with mtime within the last 10 min (configurable via `JsonlWatcher::with_initial_window`); older files have their cursor seeded at end-of-file. Without this, ~hundreds of stale sessions saturate the desk allocator (`max_desks=8`). Long-idle live sessions only re-appear after they next write.
+- **Subagent display names come from `attributionAgent` in JSONL.** The decoder strips the plugin prefix (`feature-dev:code-explorer` → `code-explorer`) and emits `AgentEvent::Rename` so labels read meaningfully. Parents get their `cwd` basename instead.
 - **`AgentSlot.state_started_at` is `std::time::Instant`** — process-local, not serializable. Will need to swap to `SystemTime` (or epoch-ms `u64`) before the v2 daemon split.
-- **`draw_scene` is a free function on the binary side**, not a `Renderer` impl. The trait exists in `core`, and `draw_scene` is generic over `Backend`, but the production runtime calls it directly. Wire through the trait when the daemon split lands.
-- **The `recolor_frame` shortcut substitutes by RGB equality.** Works because each palette key in the default pack maps to a unique RGB. If you add a sprite pack where two keys share a color, swap to a palette-key-indexed approach instead.
+- **`draw_scene` is a free function on the binary side**, not a `Renderer` impl. The trait exists in `core`, but the production runtime calls `draw_scene` directly. Wire through the trait when the daemon split lands.
+- **`recolor_frame` substitutes by RGB equality.** Works because each palette key in the default pack maps to a unique RGB. If you add a sprite pack where two keys share a color, swap to a palette-key-indexed approach instead.
+- **Terminal cell aspect drives sprite design.** The half-block ▀ technique assumes ~1:2 cell aspect. Sprites larger than ~16×16 px break on terminals with taller cells (Ghostty default, large Fira Code). The bundled 12×14 pack is the safe ceiling. A PNG-loader experiment hit this wall and was deleted in favor of hand-drawn `.sprite` art.
 
 ## Things NOT to do
 
@@ -80,11 +84,13 @@ These are load-bearing; don't break them without updating the spec.
 
 ## Where to look
 
-- "How does a CC tool call become a moving sprite?" → trace `runtime::run_async` → `ClaudeCodeSource::run` → `HookSocketListener::run` → `decoder::decode_hook_payload` → `reducer::Reducer::apply` → `tui::renderer::draw_scene`.
-- "How is the office laid out?" → `tui::renderer::draw_scene`. Desks are a fixed-width slot grid; sprite anchors to `desk_y - 16`.
+- "How does a CC tool call become a moving sprite?" → trace `runtime::run_async` → `ClaudeCodeSource::run` → `HookSocketListener::run` → `decoder::decode_hook_payload` → `reducer::Reducer::apply` → `tui::renderer::draw_scene` (top-down, cubicle grid).
+- "How is the office laid out?" → `tui::renderer::draw_scene` + `cubicle_grid`. Each slot is `SLOT_W × SLOT_H` buf-pixels; sprite anchors to `slot.y + SLOT_H - DESK_H - SPRITE_H + 4` so character overlaps desk top. Floor/walls/rugs/plants painted via `paint_floor_and_walls`, `paint_rug`, `paint_plants`.
+- "Why is the subagent's sprite the right one and not the parent?" → `reducer::Reducer::apply` does subagent-leak suppression via `active_tasks` before applying. `decoder::decode_jsonl_line` emits `AgentEvent::Rename` from `attributionAgent`.
+- "Why don't old idle sessions show on startup?" → `source::jsonl::initial_seed_root`. mtime > `DEFAULT_INITIAL_WINDOW` (10 min) → cursor seeded at EOF, no `SessionStart`.
 - "How does the default character pack get into the binary?" → `tui::embedded_pack` does the `include_str!` at compile time; `sprite::format::load_pack_from_strings` parses it.
 - "How do hooks get installed?" → `install::merge::merge_install` for the JSON merge logic, `install::io::write_settings_atomic` for the safe filesystem write.
 
 ## When refactoring
 
-If you change anything in the channel type, source trait, or reducer signature, update **all four** test files that exercise them: `tests/reducer.rs`, `tests/e2e.rs`, `tests/hook_socket.rs`, `tests/jsonl_watcher.rs`, plus `runtime.rs` on the binary side.
+If you change anything in the channel type, `Source` trait, `AgentEvent` enum, or reducer signature, update **all four** test files that exercise them: `tests/reducer.rs`, `tests/e2e.rs`, `tests/hook_socket.rs`, `tests/jsonl_watcher.rs`, plus `runtime.rs` on the binary side. The `AgentEvent::agent_id()` method in `source/mod.rs` needs a new arm too if you add a variant.
