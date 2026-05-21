@@ -4,16 +4,19 @@
 //! fixes — see `cargo run --example snapshot --release`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ascii_agents_core::source::Activity;
+use ascii_agents_core::source::jsonl::JsonlWatcher;
+use ascii_agents_core::source::{Activity, AgentEvent};
 use ascii_agents_core::state::ActivityState;
-use ascii_agents_core::{AgentId, AgentSlot, SceneState};
+use ascii_agents_core::{AgentId, AgentSlot, Reducer, SceneState, Transport};
 use image::{Rgb as ImgRgb, RgbImage};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use ratatui::Terminal;
+use tokio::sync::{mpsc, RwLock};
 
 // Pull from the binary crate
 use ascii_agents::tui::embedded_pack::load_default_pack;
@@ -25,19 +28,35 @@ const CELL_W: u32 = 8;
 const CELL_H: u32 = 16;
 
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let live = args.iter().any(|a| a == "--live");
+    let projects_root = arg_value(&args, "--projects-root").unwrap_or_else(|| {
+        format!(
+            "{}/.claude/projects",
+            std::env::var("HOME").unwrap_or_else(|_| ".".into())
+        )
+    });
+    let listen_secs: u64 = arg_value(&args, "--listen-secs")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let out_path = positional_path(&args);
+
     let pack = load_default_pack()?;
     let now = Instant::now();
-    let scene = sample_scene(now);
+
+    let scene = if live {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(capture_live_scene(&projects_root, listen_secs))?
+    } else {
+        sample_scene(now)
+    };
 
     let backend = TestBackend::new(COLS, ROWS);
     let mut term = Terminal::new(backend)?;
     draw_scene(&mut term, &scene, &pack, now)?;
 
-    let out_path = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "snapshot.png".into()),
-    );
     save_backend_as_png(&term, &out_path)?;
     println!("wrote {}", out_path.display());
 
@@ -51,6 +70,75 @@ fn main() -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn positional_path(args: &[String]) -> PathBuf {
+    for a in args.iter().skip(1) {
+        if a.starts_with("--") {
+            continue;
+        }
+        // Skip values that belong to recognized flags.
+        // (Crude — fine for this dev tool.)
+        if let Some(prev) = args.iter().position(|x| x == a).and_then(|i| i.checked_sub(1)).and_then(|i| args.get(i)) {
+            if prev == "--projects-root" || prev == "--listen-secs" {
+                continue;
+            }
+        }
+        return PathBuf::from(a);
+    }
+    PathBuf::from("snapshot.png")
+}
+
+async fn capture_live_scene(projects_root: &str, listen_secs: u64) -> Result<SceneState> {
+    println!(
+        "listening for real CC events under {} for {}s...",
+        projects_root, listen_secs
+    );
+    let scene: Arc<RwLock<SceneState>> = Arc::new(RwLock::new(SceneState::new(12)));
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(1024);
+    let root = PathBuf::from(projects_root);
+    let watcher = JsonlWatcher::new(root);
+    let watcher_handle = tokio::spawn(async move { watcher.run(tx).await });
+
+    let mut reducer = Reducer::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(listen_secs);
+    let mut event_count: u64 = 0;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some((transport, ev))) => {
+                let now = Instant::now();
+                let mut s = scene.write().await;
+                reducer.apply(&mut s, ev, now, transport);
+                event_count += 1;
+            }
+            _ => break,
+        }
+    }
+    let snapshot = scene.read().await.clone();
+    println!(
+        "captured {} events; final scene has {} agents",
+        event_count,
+        snapshot.agents.len()
+    );
+    for (id, slot) in &snapshot.agents {
+        println!(
+            "  {} ({}) at desk {}: {:?}",
+            slot.label,
+            id,
+            slot.desk_index,
+            slot.state
+        );
+    }
+    watcher_handle.abort();
+    Ok(snapshot)
 }
 
 fn sample_scene(now: Instant) -> SceneState {
