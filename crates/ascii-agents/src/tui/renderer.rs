@@ -273,14 +273,13 @@ fn paint_rug(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16, color: Rgb) {
 fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
     use crate::tui::layout::WaypointKind;
 
-    // All waypoint furniture gets painted centered on the waypoint position.
+    // Waypoint furniture (the wander destinations) painted centered on each
+    // waypoint position.
     for wp in &layout.waypoints {
         let anim_name = match wp.kind {
             WaypointKind::Couch => "couch",
             WaypointKind::Coffee => "coffee",
             WaypointKind::WaterCooler => "water_cooler",
-            WaypointKind::StandupSpot => "whiteboard",
-            WaypointKind::Bookshelf => "bookshelf",
         };
         if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
             let cx = wp.pos.x.saturating_sub(f.width / 2);
@@ -289,13 +288,27 @@ fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
         }
     }
 
-    // Plants are pure decor — painted at fixed positions from the layout,
-    // not at waypoints, so agents can stand near them without overlapping.
+    // Plants — pure decor, scattered around the lounge.
     if let Some(plant) = pack.animation("plant").and_then(|a| a.frames.first()) {
         for p in &layout.plants {
             let px = p.x.saturating_sub(plant.width / 2);
             let py = p.y.saturating_sub(plant.height / 2);
             blit_frame(plant, px, py, buf);
+        }
+    }
+}
+
+/// Wall-leaning furniture (bookshelf + whiteboard). Painted *after* the
+/// wall band so it sits in front of the wall trim, leaning against it.
+fn paint_wall_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
+    use crate::tui::layout::WallDecor;
+    for (kind, pos) in &layout.wall_decor {
+        let anim_name = match kind {
+            WallDecor::Bookshelf => "bookshelf",
+            WallDecor::Whiteboard => "whiteboard",
+        };
+        if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
+            blit_frame(f, pos.x, pos.y, buf);
         }
     }
 }
@@ -441,6 +454,7 @@ pub fn draw_scene<B: Backend>(
         };
 
         paint_floor_and_walls(buf, buf_w, buf_h);
+        paint_wall_decor(buf, &layout, pack);
         paint_lounge_decor(buf, &layout, pack);
 
         // Pass 1: rugs + desks.
@@ -488,9 +502,7 @@ pub fn draw_scene<B: Backend>(
                             crate::tui::layout::WaypointKind::Coffee => {
                                 ("holding_coffee", waypoint_anchor(wp_obj.pos))
                             }
-                            crate::tui::layout::WaypointKind::WaterCooler
-                            | crate::tui::layout::WaypointKind::StandupSpot
-                            | crate::tui::layout::WaypointKind::Bookshelf => {
+                            crate::tui::layout::WaypointKind::WaterCooler => {
                                 ("standing", waypoint_anchor(wp_obj.pos))
                             }
                         };

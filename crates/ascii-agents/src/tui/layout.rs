@@ -20,8 +20,15 @@ pub enum WaypointKind {
     Couch,
     Coffee,
     WaterCooler,
-    StandupSpot,
+}
+
+/// Wall-mounted / wall-leaning furniture, painted as decor in the top wall
+/// area. Not a wander destination — agents can't walk through their own
+/// cubicle row to reach the back wall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WallDecor {
     Bookshelf,
+    Whiteboard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,9 +49,12 @@ pub struct Layout {
     /// Fixed plant positions in the lounge band. Pure decor, not wander
     /// destinations. Centers (the renderer offsets by half plant size).
     pub plants: Vec<Point>,
+    /// Furniture leaning against the back wall — painted into the top
+    /// margin under the window band. Decor only.
+    pub wall_decor: Vec<(WallDecor, Point)>,
 }
 
-pub const WAYPOINT_COUNT: usize = 5;
+pub const WAYPOINT_COUNT: usize = 3;
 pub const DESK_W: u16 = 12;
 pub const DESK_H: u16 = 6;
 pub const DESK_GAP_X: u16 = 2;
@@ -109,16 +119,15 @@ impl Layout {
             });
         }
 
-        // Distribute waypoints across the lounge in (x_frac, y_frac) of the
-        // lounge band so the office reads like a real room — couch against
-        // the north wall, water cooler / coffee in the south, etc.
+        // Lounge waypoints: places agents actually walk to. Couch / coffee /
+        // water cooler are the destinations. Bookshelf + whiteboard moved to
+        // wall_decor — agents can't realistically walk through their own
+        // cubicle row to reach the back wall.
         let wp_layout: &[(WaypointKind, u16, u16)] = &[
-            // (kind, x_frac/100, y_frac/100)
-            (WaypointKind::Couch,       20, 25),  // top-left wall
-            (WaypointKind::Bookshelf,   10, 70),  // left wall, lower
-            (WaypointKind::StandupSpot, 48, 22),  // center-top, whiteboard area
+            // (kind, x_frac/100, y_frac/100 inside lounge band)
+            (WaypointKind::Couch,       20, 35),  // center-left
             (WaypointKind::WaterCooler, 55, 75),  // center-bottom
-            (WaypointKind::Coffee,      85, 30),  // right-top corner
+            (WaypointKind::Coffee,      85, 30),  // right
         ];
         let waypoints: Vec<Waypoint> = wp_layout
             .iter()
@@ -131,12 +140,20 @@ impl Layout {
             })
             .collect();
 
-        // Plants in three corners of the lounge — not on a line, scattered
-        // to feel like real foliage placement.
+        // Plants scattered in the lounge (not in a single row).
         let plants = vec![
             Point { x: buf_w * 35 / 100, y: lounge_band.y + lounge_band.height * 55 / 100 },
             Point { x: buf_w * 70 / 100, y: lounge_band.y + lounge_band.height * 60 / 100 },
             Point { x: buf_w * 95 / 100, y: lounge_band.y + lounge_band.height * 80 / 100 },
+        ];
+
+        // Wall decor — bookshelf + whiteboard leaning against the back wall,
+        // painted into the TOP_MARGIN_PX zone right below the windows.
+        // (y is the TOP-left of the sprite; sprites are 12 tall, fits in margin.)
+        let wall_y = 14;  // just below the wall trim line (wall is 0..14 px)
+        let wall_decor = vec![
+            (WallDecor::Bookshelf, Point { x: buf_w * 18 / 100, y: wall_y }),
+            (WallDecor::Whiteboard, Point { x: buf_w * 60 / 100, y: wall_y + 2 }),
         ];
 
         Some(Self {
@@ -148,6 +165,7 @@ impl Layout {
             home_desks,
             waypoints,
             plants,
+            wall_decor,
         })
     }
 }
@@ -189,9 +207,7 @@ mod tests {
         let kinds: std::collections::HashSet<_> =
             l.waypoints.iter().map(|w| w.kind).collect();
         assert!(kinds.contains(&WaypointKind::Couch));
-        assert!(kinds.contains(&WaypointKind::Bookshelf));
         assert!(kinds.contains(&WaypointKind::WaterCooler));
-        assert!(kinds.contains(&WaypointKind::StandupSpot));
         assert!(kinds.contains(&WaypointKind::Coffee));
         for w in &l.waypoints {
             assert!(w.pos.y >= l.lounge_band.y);
@@ -200,7 +216,20 @@ mod tests {
         // Waypoints should be at *different* y positions — not all in one row.
         let ys: std::collections::HashSet<_> =
             l.waypoints.iter().map(|w| w.pos.y).collect();
-        assert!(ys.len() >= 3, "waypoints should be at varied y, got {ys:?}");
+        assert!(ys.len() >= 2, "waypoints should be at varied y, got {ys:?}");
+    }
+
+    #[test]
+    fn compute_places_bookshelf_and_whiteboard_on_wall() {
+        let l = Layout::compute(120, 96, 1).expect("fits");
+        let kinds: std::collections::HashSet<_> =
+            l.wall_decor.iter().map(|(k, _)| *k).collect();
+        assert!(kinds.contains(&WallDecor::Bookshelf));
+        assert!(kinds.contains(&WallDecor::Whiteboard));
+        // Wall decor sits above the cubicle band (against the back wall).
+        for (_, pos) in &l.wall_decor {
+            assert!(pos.y < l.cubicle_band.y, "wall decor below cubicles: {pos:?}");
+        }
     }
 
     #[test]
