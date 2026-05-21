@@ -12,7 +12,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -92,7 +92,12 @@ fn recolor_frame(frame: &Frame, base_palette: &Palette, shirt: Rgb, hair: Rgb) -
     out
 }
 
-pub fn draw_scene(term: &mut Term, scene: &SceneState, pack: &Pack, now: Instant) -> Result<()> {
+pub fn draw_scene<B: Backend>(
+    term: &mut Terminal<B>,
+    scene: &SceneState,
+    pack: &Pack,
+    now: Instant,
+) -> Result<()> {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     term.draw(|f| {
         let size = f.area();
