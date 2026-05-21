@@ -23,7 +23,13 @@ pub struct JsonlWatcher {
     initial_window: Duration,
 }
 
-const DEFAULT_INITIAL_WINDOW: Duration = Duration::from_secs(600);
+/// On startup, transcripts modified within this window are treated as
+/// "live" — `SessionStart` fires for them so their sprites appear without
+/// the user needing to fire a fresh tool call. Older files have cursors
+/// seeded at EOF (no flood). Bumped from 10 min to 1 hour after users hit
+/// the case "I had a CC session open but it had been idle a while; when I
+/// started ascii-agents nothing showed up until I made a new tool call."
+const DEFAULT_INITIAL_WINDOW: Duration = Duration::from_secs(3600);
 
 impl JsonlWatcher {
     pub fn new(root: PathBuf) -> Self {

@@ -57,7 +57,9 @@ pub struct Layout {
 pub const WAYPOINT_COUNT: usize = 3;
 pub const DESK_W: u16 = 12;
 pub const DESK_H: u16 = 6;
-pub const DESK_GAP_X: u16 = 2;
+/// Horizontal gap between cubicles. Wider than the previous 2 px so neighbor
+/// desks read as distinct cubicles rather than a single long brown bar.
+pub const DESK_GAP_X: u16 = 6;
 /// Vertical gap between cubicle rows. Sized to clear the seated sprite's
 /// 8 px head-above-desk so row N+1's desk doesn't paint over row N's character.
 pub const DESK_GAP_Y: u16 = 10;
