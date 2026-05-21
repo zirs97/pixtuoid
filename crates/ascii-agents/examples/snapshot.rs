@@ -74,7 +74,8 @@ fn sample_scene(now: Instant) -> SceneState {
             },
             Duration::from_millis(0),
         ),
-        ("idle3", ActivityState::Idle, Duration::from_millis(0)),
+        // Just finished a task — within the 3s walking window.
+        ("just-done", ActivityState::Idle, Duration::from_millis(400)),
         (
             "typing-py",
             ActivityState::Active {

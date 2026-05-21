@@ -32,6 +32,10 @@ frame_ms = 140
 frames   = ["waiting.sprite"]
 frame_ms = 400
 
+[animations.walking]
+frames   = ["walking_0.sprite", "walking_1.sprite"]
+frame_ms = 220
+
 [animations.desk]
 frames   = ["desk.sprite"]
 frame_ms = 1000

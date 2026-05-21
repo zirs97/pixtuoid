@@ -1,0 +1,14 @@
+# 10x12 top-down character mid-step: right arm forward, left foot forward
+@frame 0
+. . H H H H H H . .
+. H H H H H H H H .
+H H S S S S S S H H
+H H e S S S e S H H
+H H S S S S S S H H
+H H S S m m S S H H
+. H S S S S S S H .
+. . S S S S S S . .
+. B B B B B B B B .
+. B B B B B B B B S
+. S B B B B B B . .
+. . . . . . S S . .

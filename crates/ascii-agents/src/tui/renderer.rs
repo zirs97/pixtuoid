@@ -309,7 +309,15 @@ pub fn draw_scene<B: Backend>(
             blit_static(&mut buf, "chair", slot_x + 4, stack_top);
 
             // 2. Character animation (10 wide, 12 tall).
+            // "Just finished" walk: if Idle was entered in the last
+            // WALK_AFTER_TASK seconds, play the walking animation with a
+            // small horizontal bob, signaling "task done, taking a breath."
+            let walk_window = std::time::Duration::from_secs(3);
+            let in_post_task_walk = matches!(slot.state, ActivityState::Idle)
+                && now.saturating_duration_since(slot.state_started_at) < walk_window;
+
             let anim_name = match &slot.state {
+                _ if in_post_task_walk => "walking",
                 ActivityState::Idle => "idle",
                 ActivityState::Active { .. } => "typing",
                 ActivityState::Waiting { .. } => "waiting",
@@ -326,10 +334,21 @@ pub fn draw_scene<B: Backend>(
                 let char_y = if matches!(slot.state, ActivityState::Waiting { .. }) {
                     // Waiting sprite is 14 tall (raised arm above head) — shift up.
                     stack_top.saturating_add(1)
+                } else if in_post_task_walk {
+                    // Stand up out of chair while walking.
+                    stack_top + 1
                 } else {
                     stack_top + 3
                 };
-                blit_frame(&frame_rc, slot_x + 3, char_y, &mut buf);
+                let char_x = if in_post_task_walk {
+                    // Oscillate ±2 px around the slot center.
+                    let ms = now.saturating_duration_since(slot.state_started_at).as_millis() as i32;
+                    let bob = ((ms / 200) % 4) - 2; // -2, -1, 0, 1 ... loops
+                    (slot_x as i32 + 3 + bob).max(0) as u16
+                } else {
+                    slot_x + 3
+                };
+                blit_frame(&frame_rc, char_x, char_y, &mut buf);
             }
 
             // 3. Desk in front of character (16 wide, 6 tall, slightly oversized
