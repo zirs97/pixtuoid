@@ -139,7 +139,7 @@ digraph state_to_pose {
 
 ### 3. Wander state machine
 
-Per-agent wander cycle is **derived from `state_started_at` Instant** — no
+Per-agent wander cycle is **derived from `state_started_at` SystemTime** — no
 new reducer state. The cycle has 4 phases that loop forever as long as the
 agent stays Idle. Cycle starts the moment the agent enters Idle.
 
