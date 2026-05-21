@@ -26,7 +26,7 @@ crates/
 │   ├── install/            settings.json merge, atomic write, advisory lock, stow-symlink safe
 │   └── tui/                ratatui App + draw_scene (generic over Backend)
 └── ascii-agents-hook/      tiny shim CC invokes — stdin JSON → Unix socket, 200ms write timeout
-assets/sprites/default/     bundled top-down pack (idle, typing x3, waiting, desk, plant) at 12×14 px
+assets/sprites/default/     coworking-lounge pack (seated, typing x2, standing, walking x2, desk, plant, couch, coffee) at 8×10 + 6×12
 ```
 
 ## Build & test
@@ -85,7 +85,7 @@ These are load-bearing; don't break them without updating the spec.
 ## Where to look
 
 - "How does a CC tool call become a moving sprite?" → trace `runtime::run_async` → `ClaudeCodeSource::run` → `HookSocketListener::run` → `decoder::decode_hook_payload` → `reducer::Reducer::apply` → `tui::renderer::draw_scene` (top-down, cubicle grid).
-- "How is the office laid out?" → `tui::renderer::draw_scene` + `cubicle_grid`. Each slot is `SLOT_W × SLOT_H` buf-pixels; sprite anchors to `slot.y + SLOT_H - DESK_H - SPRITE_H + 4` so character overlaps desk top. Floor/walls/rugs/plants painted via `paint_floor_and_walls`, `paint_rug`, `paint_plants`.
+- "How is the office laid out?" → `tui::layout::Layout::compute` for zone math (cubicle band / walkway / lounge band) + home-desk + waypoint placement; `tui::pose::derive` for state→pose mapping including the Idle wander state machine (`WANDER_CYCLE_MS=9000`); `tui::renderer::draw_scene` for pixel painting + half-block flush. Decor helpers: `paint_floor_and_walls`, `paint_rug`, `paint_lounge_decor` (couch + coffee + plants).
 - "Why is the subagent's sprite the right one and not the parent?" → `reducer::Reducer::apply` does subagent-leak suppression via `active_tasks` before applying. `decoder::decode_jsonl_line` emits `AgentEvent::Rename` from `attributionAgent`.
 - "Why don't old idle sessions show on startup?" → `source::jsonl::initial_seed_root`. mtime > `DEFAULT_INITIAL_WINDOW` (10 min) → cursor seeded at EOF, no `SessionStart`.
 - "How does the default character pack get into the binary?" → `tui::embedded_pack` does the `include_str!` at compile time; `sprite::format::load_pack_from_strings` parses it.
