@@ -134,44 +134,26 @@ async fn capture_live_scene(projects_root: &str, listen_secs: u64) -> Result<Sce
 }
 
 fn sample_scene(now: SystemTime) -> SceneState {
+    use std::time::Duration as D;
     let mut s = SceneState::new(12);
-    let agents = [
-        // 'state_started_at' is set to `now - offset` so we can place each
-        // agent at different points in the wander cycle.
-        ("seated", ActivityState::Idle, Duration::from_millis(10_000)),
-        (
-            "typing-rs",
-            ActivityState::Active {
-                activity: Activity::Typing,
-                tool_use_id: Some("tu_a".into()),
-                detail: Some("Write: src/foo.rs".into()),
-            },
-            Duration::from_millis(60),
-        ),
-        // Mid walk-out — should be partly toward wander spot.
-        ("walk-out", ActivityState::Idle, Duration::from_millis(1200)),
-        (
-            "waiting",
-            ActivityState::Waiting {
-                reason: "permission?".into(),
-            },
-            Duration::from_millis(0),
-        ),
-        // Standing at the wander spot.
-        ("at-spot", ActivityState::Idle, Duration::from_millis(3000)),
-        (
-            "typing-py",
-            ActivityState::Active {
-                activity: Activity::Typing,
-                tool_use_id: Some("tu_b".into()),
-                detail: Some("Edit: main.py".into()),
-            },
-            Duration::from_millis(280),
-        ),
-        // Walking back to seat.
-        ("walk-back", ActivityState::Idle, Duration::from_millis(5000)),
+    let agents: [(&str, ActivityState, D); 7] = [
+        ("working",   ActivityState::Active {
+            activity: Activity::Typing,
+            tool_use_id: Some("tu_a".into()),
+            detail: Some("Write: src/foo.rs".into()),
+        }, D::from_millis(0)),
+        ("waiting",   ActivityState::Waiting { reason: "permission?".into() }, D::from_millis(0)),
+        ("idle-sit",  ActivityState::Idle, D::from_millis(1_000)),       // phase 0
+        ("walk-out",  ActivityState::Idle, D::from_millis(4_250)),       // phase 1
+        ("at-wp",     ActivityState::Idle, D::from_millis(6_000)),       // phase 2
+        ("walk-back", ActivityState::Idle, D::from_millis(8_250)),       // phase 3
+        ("working-2", ActivityState::Active {
+            activity: Activity::Typing,
+            tool_use_id: Some("tu_b".into()),
+            detail: Some("Edit: lib.rs".into()),
+        }, D::from_millis(140)),                                          // mid typing cycle
     ];
-    for (i, (key, state, offset)) in agents.iter().enumerate() {
+    for (i, (key, state, age)) in agents.iter().enumerate() {
         let id = AgentId::from_transcript_path(&format!("/demo/{key}.jsonl"));
         s.agents.insert(
             id,
@@ -180,9 +162,9 @@ fn sample_scene(now: SystemTime) -> SceneState {
                 source: "claude-code".into(),
                 session_id: format!("demo-{key}"),
                 cwd: PathBuf::from("/demo"),
-                label: format!("cc#{}", i + 1),
+                label: key.to_string(),
                 state: state.clone(),
-                state_started_at: now - *offset,
+                state_started_at: now - *age,
                 desk_index: i,
             },
         );
