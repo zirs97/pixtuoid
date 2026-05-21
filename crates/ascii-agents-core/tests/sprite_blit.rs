@@ -1,4 +1,6 @@
-use ascii_agents_core::sprite::blit::{blit_frame, half_block_cells, HalfCell};
+use ascii_agents_core::sprite::blit::{
+    blit_frame, draw_dotted_hline, draw_line, half_block_cells, HalfCell,
+};
 use ascii_agents_core::sprite::{Frame, Pixel, Rgb, RgbBuffer};
 
 fn px(r: u8, g: u8, b: u8) -> Pixel {
@@ -84,6 +86,48 @@ fn half_block_cells_pairs_rows() {
             bg: Rgb(8, 0, 0)
         }
     );
+}
+
+#[test]
+fn line_horizontal() {
+    let mut buf = RgbBuffer::filled(10, 5, Rgb(0, 0, 0));
+    draw_line(&mut buf, 2, 2, 8, 2, Rgb(255, 0, 0));
+    for x in 2..=8 {
+        assert_eq!(buf.get(x, 2), Rgb(255, 0, 0));
+    }
+    assert_eq!(buf.get(1, 2), Rgb(0, 0, 0));
+    assert_eq!(buf.get(2, 3), Rgb(0, 0, 0));
+}
+
+#[test]
+fn line_diagonal() {
+    let mut buf = RgbBuffer::filled(5, 5, Rgb(0, 0, 0));
+    draw_line(&mut buf, 0, 0, 4, 4, Rgb(255, 255, 255));
+    for i in 0..5 {
+        assert_eq!(buf.get(i, i), Rgb(255, 255, 255));
+    }
+}
+
+#[test]
+fn line_clips_out_of_bounds_endpoints() {
+    let mut buf = RgbBuffer::filled(5, 5, Rgb(0, 0, 0));
+    draw_line(&mut buf, -3, -3, 7, 7, Rgb(255, 255, 255));
+    for i in 0..5 {
+        assert_eq!(buf.get(i, i), Rgb(255, 255, 255));
+    }
+}
+
+#[test]
+fn dotted_hline_alternates() {
+    let mut buf = RgbBuffer::filled(12, 1, Rgb(0, 0, 0));
+    draw_dotted_hline(&mut buf, 0, 0, 11, Rgb(255, 0, 0), 2, 2);
+    // dash dash gap gap dash dash gap gap ...
+    assert_eq!(buf.get(0, 0), Rgb(255, 0, 0));
+    assert_eq!(buf.get(1, 0), Rgb(255, 0, 0));
+    assert_eq!(buf.get(2, 0), Rgb(0, 0, 0));
+    assert_eq!(buf.get(3, 0), Rgb(0, 0, 0));
+    assert_eq!(buf.get(4, 0), Rgb(255, 0, 0));
+    assert_eq!(buf.get(5, 0), Rgb(255, 0, 0));
 }
 
 #[test]

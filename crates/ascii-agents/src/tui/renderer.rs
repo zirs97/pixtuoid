@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use ascii_agents_core::sprite::animator::frame_index_at;
-use ascii_agents_core::sprite::blit::{blit_frame, half_block_cells, HalfCell};
+use ascii_agents_core::sprite::blit::{blit_frame, draw_line, half_block_cells, HalfCell};
 use ascii_agents_core::sprite::format::Pack;
 use ascii_agents_core::sprite::{Frame, Palette, Pixel, Rgb, RgbBuffer};
 use ascii_agents_core::state::ActivityState;
@@ -46,6 +46,7 @@ const WALL_TRIM: Rgb = Rgb(64, 60, 50);
 const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
 const WINDOW_LIGHT: Rgb = Rgb(120, 160, 200);
 const WINDOW_LIGHT_2: Rgb = Rgb(160, 190, 220);
+const PARTITION: Rgb = Rgb(60, 56, 50);
 const FLOOR_A: Rgb = Rgb(96, 70, 44);
 const FLOOR_B: Rgb = Rgb(78, 56, 34);
 
@@ -277,6 +278,27 @@ pub fn draw_scene<B: Backend>(
         // Center the entire grid vertically in the floor area.
         let grid_h = rows_per_screen * stack_h + (rows_per_screen.saturating_sub(1)) * row_gap;
         let grid_top = floor_start + floor_h.saturating_sub(grid_h) / 2;
+
+        // --- Cubicle partitions between adjacent slot columns ---
+        // Vertical lines that separate workstations, drawn BEFORE the furniture
+        // so desks + characters paint on top of them.
+        if cols_per_row > 1 {
+            for row in 0..rows_per_screen {
+                let y_top = grid_top + row * row_h;
+                let y_bot = (y_top + stack_h).min(buf_h.saturating_sub(1));
+                for col in 1..cols_per_row {
+                    let px = slot_left_padding + col * slot_w - 1;
+                    draw_line(
+                        &mut buf,
+                        px as i32,
+                        y_top.saturating_sub(1) as i32,
+                        px as i32,
+                        y_bot as i32,
+                        PARTITION,
+                    );
+                }
+            }
+        }
 
         // Helper to safely blit a pack animation's first frame.
         let blit_static = |buf: &mut RgbBuffer, name: &str, dx: u16, dy: u16| {

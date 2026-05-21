@@ -1,5 +1,58 @@
 use crate::sprite::{Frame, Rgb, RgbBuffer};
 
+/// Bresenham line drawing into an RgbBuffer. Coordinates are signed so callers
+/// can pass off-buffer endpoints (clipping is implicit — pixels outside the
+/// buffer are silently skipped).
+pub fn draw_line(buf: &mut RgbBuffer, x0: i32, y0: i32, x1: i32, y1: i32, rgb: Rgb) {
+    let (mut x, mut y) = (x0, y0);
+    let dx = (x1 - x0).abs();
+    let sx: i32 = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy: i32 = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        if x >= 0 && y >= 0 && (x as u16) < buf.width && (y as u16) < buf.height {
+            buf.put(x as u16, y as u16, rgb);
+        }
+        if x == x1 && y == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+/// Convenience: dotted horizontal line. `dash` painted px, then `gap` skipped.
+pub fn draw_dotted_hline(
+    buf: &mut RgbBuffer,
+    x0: u16,
+    y: u16,
+    x1: u16,
+    rgb: Rgb,
+    dash: u16,
+    gap: u16,
+) {
+    let mut x = x0;
+    while x <= x1 {
+        for i in 0..dash {
+            if x + i > x1 {
+                break;
+            }
+            if (x + i) < buf.width && y < buf.height {
+                buf.put(x + i, y, rgb);
+            }
+        }
+        x = x.saturating_add(dash + gap);
+    }
+}
+
 /// Blit a sprite frame into `dst` with top-left at `(dst_x, dst_y)`.
 /// Transparent (None) pixels leave `dst` unchanged. Out-of-bounds pixels
 /// are silently clipped.
