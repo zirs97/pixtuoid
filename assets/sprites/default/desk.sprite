@@ -1,8 +1,12 @@
-# 16x6 top-down desk, slightly darker edges
+# 16x8 top-down desk: wood surface with a monitor at the back and a keyboard
+# in front. The character sprite anchors immediately above this so the
+# composition reads as "person sitting at desk".
 @frame 0
-d D D D D D D D D D D D D D D d
 D D D D D D D D D D D D D D D D
+D M M M M M M M M M M M M M M D
+D M c c c c c c c c c c c c M D
+D M c c c c c c c c c c c c M D
+D D d d d d d d d d d d d d D D
+D D d k k k k k k k k k k d D D
+D D d k k k k k k k k k k d D D
 D D D D D D D D D D D D D D D D
-D D D D D D D D D D D D D D D D
-D D D D D D D D D D D D D D D D
-d D D D D D D D D D D D D D D d

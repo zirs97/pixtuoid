@@ -1,15 +1,20 @@
+//! Top-down scene renderer.
+//!
+//! Each CC session shows up as a chibi character sitting at a desk, viewed
+//! from above with a 3/4-perspective tilt so the face stays readable. Hair
+//! and shirt are recolored per agent so distinct sessions are visually
+//! distinguishable.
+
 use std::io::{stdout, Stdout};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use anyhow::Result;
 use ascii_agents_core::sprite::animator::frame_index_at;
-use ascii_agents_core::sprite::blit::{
-    blit_frame, blit_frame_outlined, draw_line,
-};
+use ascii_agents_core::sprite::blit::blit_frame;
 use ascii_agents_core::sprite::format::Pack;
 use ascii_agents_core::sprite::{Frame, Palette, Pixel, Rgb, RgbBuffer};
 use ascii_agents_core::state::ActivityState;
-use ascii_agents_core::SceneState;
+use ascii_agents_core::{AgentSlot, SceneState};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -18,42 +23,10 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
-use crate::tui::frame_cache::FrameCache;
-
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
-
-const SHIRT_PRESETS: &[Rgb] = &[
-    Rgb(0x2e, 0x62, 0xcf),
-    Rgb(0x16, 0xa0, 0x6e),
-    Rgb(0xb0, 0x32, 0xa8),
-    Rgb(0xc6, 0x6a, 0x1e),
-    Rgb(0x6c, 0x4f, 0x9e),
-    Rgb(0x9c, 0x27, 0x27),
-    Rgb(0x32, 0x82, 0x9b),
-    Rgb(0x80, 0x55, 0x32),
-];
-
-const HAIR_PRESETS: &[Rgb] = &[
-    Rgb(0x2a, 0x1a, 0x0e),
-    Rgb(0x52, 0x32, 0x10),
-    Rgb(0xc7, 0xa3, 0x4a),
-    Rgb(0x7a, 0x32, 0x10),
-    Rgb(0x3a, 0x3a, 0x3a),
-];
-
-const BG: Rgb = Rgb(20, 22, 28);
-const WALL: Rgb = Rgb(40, 44, 60);
-const WALL_TRIM: Rgb = Rgb(64, 60, 50);
-const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
-const WINDOW_LIGHT: Rgb = Rgb(120, 160, 200);
-const WINDOW_LIGHT_2: Rgb = Rgb(160, 190, 220);
-const PARTITION: Rgb = Rgb(60, 56, 50);
-const OUTLINE: Rgb = Rgb(14, 16, 22);
-const FLOOR_A: Rgb = Rgb(96, 70, 44);
-const FLOOR_B: Rgb = Rgb(78, 56, 34);
 
 pub fn setup_terminal() -> Result<Term> {
     enable_raw_mode()?;
@@ -70,179 +43,109 @@ pub fn teardown_terminal(term: &mut Term) -> Result<()> {
     Ok(())
 }
 
-fn agent_shirt(seed: u64) -> Rgb {
-    SHIRT_PRESETS[(seed as usize) % SHIRT_PRESETS.len()]
+const BG: Rgb = Rgb(28, 32, 40);
+// Wood-plank floor: two warm browns alternating in horizontal bands.
+const PLANK_A: Rgb = Rgb(120, 84, 50);
+const PLANK_B: Rgb = Rgb(100, 70, 38);
+const PLANK_LINE: Rgb = Rgb(72, 48, 24);
+// Walls and baseboards frame the room.
+const WALL: Rgb = Rgb(56, 56, 70);
+const WALL_TRIM: Rgb = Rgb(80, 80, 100);
+const BASEBOARD: Rgb = Rgb(40, 40, 52);
+// Per-cubicle rug behind the desk.
+const RUG_PALETTE: &[Rgb] = &[
+    Rgb(0x4a, 0x55, 0x80),
+    Rgb(0x6a, 0x3f, 0x55),
+    Rgb(0x40, 0x60, 0x4f),
+    Rgb(0x6e, 0x4d, 0x2e),
+];
+
+// Per-agent recolor presets, reused from the side-view renderer's palette
+// concept so each session gets a stable hair + shirt combo.
+const SHIRT_PRESETS: &[Rgb] = &[
+    Rgb(0x2e, 0x62, 0xcf),
+    Rgb(0x16, 0xa0, 0x6e),
+    Rgb(0xb0, 0x32, 0xa8),
+    Rgb(0xc6, 0x6a, 0x1e),
+    Rgb(0x6c, 0x4f, 0x9e),
+    Rgb(0x9c, 0x27, 0x27),
+    Rgb(0x32, 0x82, 0x9b),
+    Rgb(0x80, 0x55, 0x32),
+];
+const HAIR_PRESETS: &[Rgb] = &[
+    Rgb(0x2a, 0x1a, 0x0e),
+    Rgb(0x52, 0x32, 0x10),
+    Rgb(0xc7, 0xa3, 0x4a),
+    Rgb(0x7a, 0x32, 0x10),
+    Rgb(0x3a, 0x3a, 0x3a),
+];
+
+/// Sprite footprint (matches what the .sprite file declares: 12×14).
+const SPRITE_W: u16 = 12;
+const SPRITE_H: u16 = 14;
+/// Desk footprint (matches desk.sprite: 16×8).
+const DESK_W: u16 = 16;
+const DESK_H: u16 = 8;
+
+/// Each cubicle slot holds: 1 label cell + character + desk, with small gaps.
+const SLOT_W: u16 = 18;
+const SLOT_H: u16 = SPRITE_H + DESK_H - 4; // character overlaps desk top by 4 px
+const SLOT_GAP_X: u16 = 2;
+const SLOT_GAP_Y: u16 = 4;
+
+struct Slot {
+    /// Buf-pixel coords of the top-left of this slot.
+    x: u16,
+    y: u16,
 }
 
-const WANDER_WALK_OUT_MS: u64 = 2000;
-const WANDER_IDLE_MS: u64 = 2000;
-const WANDER_WALK_BACK_MS: u64 = 2000;
-const WANDER_TOTAL_MS: u64 = WANDER_WALK_OUT_MS + WANDER_IDLE_MS + WANDER_WALK_BACK_MS;
-
-/// Per-agent deterministic wander offset: returns (dx, dy, in_wander, is_walking).
-/// Only fires when the slot has been Idle for less than WANDER_TOTAL_MS.
-fn wander_offset(
-    slot: &ascii_agents_core::state::AgentSlot,
-    now: SystemTime,
-) -> (i32, i32, bool, bool) {
-    if !matches!(slot.state, ActivityState::Idle) {
-        return (0, 0, false, false);
-    }
-    let elapsed_ms = now
-        .duration_since(slot.state_started_at)
-        .unwrap_or(Duration::ZERO)
-        .as_millis() as u64;
-    if elapsed_ms >= WANDER_TOTAL_MS {
-        return (0, 0, false, false);
-    }
-
-    let h = slot.agent_id.raw();
-    // Direction: -1 or +1 based on a bit of the hash.
-    let sign: i32 = if (h >> 4) & 1 == 0 { -1 } else { 1 };
-    // Magnitude: 5..10 px sideways.
-    let mag: i32 = 5 + ((h >> 5) % 6) as i32;
-    let target_dx = sign * mag;
-    // Forward (toward camera) 4..8 px.
-    let target_dy = 4 + ((h >> 8) % 5) as i32;
-
-    if elapsed_ms < WANDER_WALK_OUT_MS {
-        // Walking out: interpolate 0 → target.
-        let p = elapsed_ms as f32 / WANDER_WALK_OUT_MS as f32;
-        let dx = (target_dx as f32 * p) as i32;
-        let dy = (target_dy as f32 * p) as i32;
-        (dx, dy, true, true)
-    } else if elapsed_ms < WANDER_WALK_OUT_MS + WANDER_IDLE_MS {
-        // Standing at wander spot.
-        (target_dx, target_dy, true, false)
-    } else {
-        // Walking back: interpolate target → 0.
-        let phase_elapsed = elapsed_ms - WANDER_WALK_OUT_MS - WANDER_IDLE_MS;
-        let p = phase_elapsed as f32 / WANDER_WALK_BACK_MS as f32;
-        let dx = (target_dx as f32 * (1.0 - p)) as i32;
-        let dy = (target_dy as f32 * (1.0 - p)) as i32;
-        (dx, dy, true, true)
-    }
-}
-
-const SCREEN_IDLE: Rgb = Rgb(70, 110, 140);
-const SCREEN_TYPING: Rgb = Rgb(80, 220, 110);
-const SCREEN_WAITING: Rgb = Rgb(240, 200, 60);
-
-/// Blit the monitor sprite with its screen recolored to reflect agent state.
-fn blit_monitor_state(
-    pack: &Pack,
-    state: &ActivityState,
-    dx: u16,
-    dy: u16,
-    buf: &mut RgbBuffer,
-) {
-    let Some(anim) = pack.animation("monitor") else { return; };
-    let Some(frame) = anim.frames.first() else { return; };
-    let base_c = base_rgb_for(&pack.palette, 'c');
-    let target = match state {
-        ActivityState::Idle => SCREEN_IDLE,
-        ActivityState::Active { .. } => SCREEN_TYPING,
-        ActivityState::Waiting { .. } => SCREEN_WAITING,
-    };
-    let mut out = frame.clone();
-    for px in out.pixels.iter_mut() {
-        if let Some(rgb) = *px {
-            if Some(rgb) == base_c {
-                *px = Some(target);
-            }
+fn cubicle_grid(buf_w: u16, buf_h: u16, n: usize) -> Vec<Slot> {
+    let col_w = SLOT_W + SLOT_GAP_X;
+    let row_h = SLOT_H + SLOT_GAP_Y;
+    let cols = (buf_w / col_w).max(1);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let row = (i as u16) / cols;
+        let col = (i as u16) % cols;
+        let x = col * col_w + 2;
+        let y = row * row_h + 2;
+        if y + SLOT_H > buf_h {
+            break;
         }
-    }
-    blit_frame_outlined(&out, dx, dy, buf, OUTLINE);
-}
-
-fn agent_hair(seed: u64) -> Rgb {
-    HAIR_PRESETS[((seed >> 8) as usize) % HAIR_PRESETS.len()]
-}
-
-/// Look up the base RGB for a palette key. Returns None if the key isn't
-/// defined or maps to transparent.
-fn base_rgb_for(palette: &Palette, key: char) -> Option<Rgb> {
-    palette.get(key).flatten()
-}
-
-/// Recolor a frame: substitute any pixel matching base 'B' or 'H' RGB
-/// with the per-agent equivalents. v1's "pixel substitution" approach —
-/// works because each palette key has a unique RGB.
-fn recolor_frame(frame: &Frame, base_palette: &Palette, shirt: Rgb, hair: Rgb) -> Frame {
-    let base_b = base_rgb_for(base_palette, 'B');
-    let base_h = base_rgb_for(base_palette, 'H');
-    let mut out = frame.clone();
-    for px in out.pixels.iter_mut() {
-        if let Some(rgb) = *px {
-            if Some(rgb) == base_b {
-                *px = Some(shirt);
-            } else if Some(rgb) == base_h {
-                *px = Some(hair);
-            }
-        }
+        out.push(Slot { x, y });
     }
     out
 }
 
-/// Derived dimensions / coordinates for one frame. Computed once at the top
-/// of draw_scene and passed to the paint_* helpers so they share consistent
-/// geometry.
-#[derive(Debug, Clone, Copy)]
-struct Layout {
-    buf_w: u16,
-    buf_h: u16,
-    wall_h: u16,
-    floor_start: u16,
-    slot_w: u16,
-    slot_left_padding: u16,
-    stack_h: u16,
-    row_h: u16,
-    grid_top: u16,
-    cols_per_row: u16,
-    rows_per_screen: u16,
-    max_slots: u16,
+fn agent_palette(base: &Palette, agent: &AgentSlot) -> Palette {
+    let seed = agent.agent_id.raw() as usize;
+    let shirt = SHIRT_PRESETS[seed % SHIRT_PRESETS.len()];
+    let hair = HAIR_PRESETS[(seed / 7) % HAIR_PRESETS.len()];
+    base.with_override('B', Some(shirt))
+        .with_override('H', Some(hair))
 }
 
-impl Layout {
-    fn compute(scene_w: u16, scene_h: u16) -> Self {
-        let buf_w = scene_w;
-        let buf_h = scene_h * 2;
-        let wall_h: u16 = 8;
-        let floor_start = wall_h + 1;
-        let slot_w: u16 = 18;
-        let slot_left_padding: u16 = 4;
-        let stack_h: u16 = 4 + 12 + 6; // chair gap + character + desk
-        let row_gap: u16 = 3;
-        let row_h = stack_h + row_gap;
-        let floor_h = buf_h.saturating_sub(floor_start);
-        let cols_per_row = (buf_w.saturating_sub(slot_left_padding)) / slot_w;
-        let rows_per_screen = std::cmp::max(1u16, floor_h / row_h);
-        // grid_h = N row stacks + (N-1) gaps between them.
-        let grid_h = rows_per_screen * row_h - row_gap;
-        let grid_top = floor_start + floor_h.saturating_sub(grid_h) / 2;
-        let max_slots = rows_per_screen * cols_per_row;
-        Layout {
-            buf_w,
-            buf_h,
-            wall_h,
-            floor_start,
-            slot_w,
-            slot_left_padding,
-            stack_h,
-            row_h,
-            grid_top,
-            cols_per_row,
-            rows_per_screen,
-            max_slots,
-        }
-    }
-
-    fn slot_origin(&self, i: u16) -> (u16, u16) {
-        let row = i / self.cols_per_row;
-        let col = i % self.cols_per_row;
-        let sx = self.slot_left_padding + col * self.slot_w;
-        let sy = self.grid_top + row * self.row_h;
-        (sx, sy)
+fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) -> Frame {
+    // Substitute pixels whose color matches the base palette's `B` or `H`
+    // with the per-agent recolored values from `pal`. Cheap because we
+    // compare against just two RGB tuples.
+    let base_shirt = base_pal.get('B').flatten();
+    let base_hair = base_pal.get('H').flatten();
+    let agent_shirt = pal.get('B').flatten();
+    let agent_hair = pal.get('H').flatten();
+    let pixels: Vec<Pixel> = frame
+        .pixels
+        .iter()
+        .map(|p| match p {
+            Some(rgb) if Some(*rgb) == base_shirt => agent_shirt,
+            Some(rgb) if Some(*rgb) == base_hair => agent_hair,
+            other => *other,
+        })
+        .collect();
+    Frame {
+        width: frame.width,
+        height: frame.height,
+        pixels,
     }
 }
 
@@ -252,290 +155,117 @@ pub fn draw_scene<B: Backend>(
     pack: &Pack,
     now: SystemTime,
     buf: &mut RgbBuffer,
-    cache: &mut FrameCache,
 ) -> Result<()> {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     term.draw(|f| {
         let size = f.area();
 
-        // Top status bar.
         let title = Paragraph::new(Line::from(vec![
-            Span::raw(" ascii-agents — "),
+            Span::raw(" ascii-agents (top-down) — "),
             Span::raw(format!(
                 "{} session{} ",
                 agents.len(),
                 if agents.len() == 1 { "" } else { "s" }
             )),
-        ]))
-        .block(Block::default().borders(Borders::BOTTOM));
+        ]));
         f.render_widget(
             title,
             Rect {
                 x: size.x,
                 y: size.y,
                 width: size.width,
-                height: 2,
+                height: 1,
             },
         );
 
-        // Footer.
         let footer = Paragraph::new(Span::raw(" [q] quit "))
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::TOP));
-        let footer_rect = Rect {
-            x: size.x,
-            y: size.y + size.height - 2,
-            width: size.width,
-            height: 2,
-        };
-        f.render_widget(footer, footer_rect);
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(
+            footer,
+            Rect {
+                x: size.x,
+                y: size.y + size.height.saturating_sub(1),
+                width: size.width,
+                height: 1,
+            },
+        );
 
-        // Scene area between title (2 rows) and footer (2 rows).
         let scene_rect = Rect {
             x: size.x,
-            y: size.y + 2,
+            y: size.y + 1,
             width: size.width,
-            height: size.height.saturating_sub(4),
+            height: size.height.saturating_sub(2),
         };
-
         if scene_rect.width < 16 || scene_rect.height < 10 {
-            let warn = Paragraph::new("terminal too small — resize to at least 24x14");
-            f.render_widget(warn, scene_rect);
             return;
         }
 
-        // Compute one Layout for this frame and reuse the pixel buffer.
-        let layout = Layout::compute(scene_rect.width, scene_rect.height);
-        let buf_w = layout.buf_w;
-        let buf_h = layout.buf_h;
+        let buf_w = scene_rect.width;
+        let buf_h = scene_rect.height * 2;
         buf.ensure_size(buf_w, buf_h, BG);
 
-        // --- Background: top wall band + checkered floor below ---
-        let wall_h = layout.wall_h;
-        for y in 0..wall_h.min(buf_h) {
-            for x in 0..buf_w {
-                buf.put(x, y, WALL);
-            }
-        }
-        // Wall/floor trim line.
-        if buf_h > wall_h {
-            for x in 0..buf_w {
-                buf.put(x, wall_h, WALL_TRIM);
-            }
-        }
-        // Floor tiles (checkered) below the trim.
-        let floor_start = layout.floor_start;
-        for y in floor_start..buf_h {
-            for x in 0..buf_w {
-                let cell = ((x / 4) + ((y - floor_start) / 2)) % 2;
-                let c = if cell == 0 { FLOOR_A } else { FLOOR_B };
-                buf.put(x, y, c);
-            }
+        paint_floor_and_walls(buf, buf_w, buf_h);
+
+        let slots = cubicle_grid(buf_w, buf_h, agents.len());
+
+        let base_pal = pack.palette.clone();
+        let desk_anim = pack.animation("desk");
+        let plant_anim = pack.animation("plant");
+
+        // Pass 0: rugs behind each cubicle (under desk and character).
+        for (slot, agent) in slots.iter().zip(agents.iter()) {
+            let rug = RUG_PALETTE[(agent.agent_id.raw() as usize / 11) % RUG_PALETTE.len()];
+            paint_rug(buf, slot.x, slot.y, SLOT_W, SLOT_H, rug);
         }
 
-        // --- Windows + framed posters in the top wall band ---
-        let window_w: u16 = 6;
-        let window_h: u16 = 5;
-        let window_y: u16 = 1;
-        let stride: u16 = 16;
-        let mut wx: u16 = 4;
-        let mut window_idx: u32 = 0;
-        while wx + window_w < buf_w {
-            for y in window_y..window_y + window_h {
-                for x in wx..wx + window_w {
-                    if y < buf_h && x < buf_w {
-                        let inner = x > wx && x < wx + window_w - 1;
-                        buf.put(x, y, if inner { WINDOW_LIGHT } else { WINDOW_FRAME });
-                    }
-                }
-            }
-            // Horizontal mullion at mid-window.
-            let mid = window_y + window_h / 2;
-            for x in wx..wx + window_w {
-                if x < buf_w && mid < buf_h {
-                    buf.put(x, mid, WINDOW_LIGHT_2);
-                }
-            }
-            // Vertical mullion.
-            let vmid = wx + window_w / 2;
-            for y in window_y..window_y + window_h {
-                if vmid < buf_w && y < buf_h {
-                    buf.put(vmid, y, WINDOW_FRAME);
-                }
-            }
-            // Poster in every other gap, centered between this window and the next.
-            if window_idx % 2 == 0 {
-                let poster_x = wx + window_w + (stride - window_w) / 2 - 3;
-                let poster_y: u16 = 2;
-                if poster_x + 6 < buf_w {
-                    if let Some(anim) = pack.animation("poster") {
-                        if let Some(frame) = anim.frames.first() {
-                            blit_frame(frame, poster_x, poster_y, buf);
-                        }
-                    }
-                }
-            }
-            wx += stride;
-            window_idx += 1;
+        // Pass 0.5: plants in the gaps between cubicles (deterministic
+        // placement so they don't shift between frames).
+        if let Some(plant) = plant_anim.and_then(|a| a.frames.first()) {
+            paint_plants(buf, buf_w, buf_h, &slots, plant);
         }
 
-        // --- Furniture + characters per desk slot ---
-        // Dimensions all live on `layout`; aliased here for readability.
-        let slot_w = layout.slot_w;
-        let slot_left_padding = layout.slot_left_padding;
-        let stack_h = layout.stack_h;
-        let row_h = layout.row_h;
-        let cols_per_row = layout.cols_per_row;
-        let rows_per_screen = layout.rows_per_screen;
-        let grid_top = layout.grid_top;
-
-        // --- Cubicle partitions between adjacent slot columns ---
-        // Vertical lines that separate workstations, drawn BEFORE the furniture
-        // so desks + characters paint on top of them.
-        if cols_per_row > 1 {
-            for row in 0..rows_per_screen {
-                let y_top = grid_top + row * row_h;
-                let y_bot = (y_top + stack_h).min(buf_h.saturating_sub(1));
-                for col in 1..cols_per_row {
-                    let px = slot_left_padding + col * slot_w - 1;
-                    draw_line(
-                        buf,
-                        px as i32,
-                        y_top.saturating_sub(1) as i32,
-                        px as i32,
-                        y_bot as i32,
-                        PARTITION,
-                    );
-                }
-            }
-        }
-
-        // Helper to safely blit a pack animation's first frame.
-        // `outlined`: paint a 1-px dark halo around the silhouette (good for
-        // furniture against the busy floor pattern; bad for small accents
-        // like the chair which then looks like horns above the character).
-        let blit_static = |buf: &mut RgbBuffer, name: &str, dx: u16, dy: u16, outlined: bool| {
-            if let Some(anim) = pack.animation(name) {
+        // Pass 1: desks (so character paints over them).
+        for (slot, _agent) in slots.iter().zip(agents.iter()) {
+            let dx = slot.x + (SLOT_W - DESK_W) / 2;
+            let dy = slot.y + SLOT_H - DESK_H;
+            if let Some(anim) = desk_anim {
                 if let Some(frame) = anim.frames.first() {
-                    if outlined {
-                        blit_frame_outlined(frame, dx, dy, buf, OUTLINE);
-                    } else {
-                        blit_frame(frame, dx, dy, buf);
-                    }
+                    blit_frame(frame, dx, dy, buf);
                 }
             }
-        };
+        }
 
-        let max_slots = layout.max_slots;
-        for slot in &agents {
-            let i = slot.desk_index as u16;
-            if i >= max_slots {
-                continue;
-            }
-            let (slot_x, stack_top) = layout.slot_origin(i);
-            let shirt = agent_shirt(slot.agent_id.raw());
-            let hair = agent_hair(slot.agent_id.raw());
-
-            // (Chair sprite removed in v0.1.2 — the dark-brown backrest above
-            // the character read as awkward "hat" pixels at this scale.
-            // Chair is now implied; future revival should use a lighter office
-            // chair color and a thinner backrest.)
-
-            // 2. Character animation with positional wander.
-            // After a task finishes the character takes a break: walks to a
-            // wander spot offset from their desk, idles there briefly, then
-            // walks back. All renderer-derived from time-since-idle.
-            let (offset_x, offset_y, in_wander, is_walking) =
-                wander_offset(slot, now);
-
-            let anim_name: &'static str = if in_wander && is_walking {
-                "walking"
-            } else if in_wander {
-                "idle"
-            } else {
-                match slot.state {
-                    ActivityState::Idle => "idle",
-                    ActivityState::Active { .. } => "typing",
-                    ActivityState::Waiting { .. } => "waiting",
-                }
+        // Pass 2: characters.
+        for (slot, agent) in slots.iter().zip(agents.iter()) {
+            let anim_name = match &agent.state {
+                ActivityState::Idle => "idle",
+                ActivityState::Active { .. } => "typing",
+                ActivityState::Waiting { .. } => "waiting",
             };
-
-            if let Some(anim) = pack.animation(anim_name).or_else(|| pack.animation("idle")) {
-                let idx = frame_index_at(
-                    slot.state_started_at,
-                    now,
-                    anim.frame_ms,
-                    anim.frames.len(),
-                );
-                // Cached recolor: same agent + same animation + same frame_idx
-                // → reuse the previously recolored Frame instead of cloning + rewriting.
-                let palette = &pack.palette;
-                let frames = &anim.frames;
-                let frame_rc = cache.get_or_make(slot.agent_id, anim_name, idx, || {
-                    recolor_frame(&frames[idx], palette, shirt, hair)
-                });
-
-                let base_x = slot_x as i32 + 3;
-                // Waiting sprite is 14 tall (raised arm) — shift up.
-                let base_y = if matches!(slot.state, ActivityState::Waiting { .. }) {
-                    stack_top.saturating_add(1) as i32
-                } else if in_wander {
-                    // Stand out of chair while wandering.
-                    (stack_top + 1) as i32
-                } else {
-                    (stack_top + 3) as i32
-                };
-
-                let char_x = (base_x + offset_x).max(0) as u16;
-                let char_y = (base_y + offset_y).max(0) as u16;
-                blit_frame_outlined(frame_rc, char_x, char_y, buf, OUTLINE);
-            }
-
-            // 3. Desk in front of character (16 wide, 6 tall, slightly oversized
-            //    so it occludes the character's lower body / hands).
-            let desk_y = stack_top + 4 + 12;
-            blit_static(buf, "desk", slot_x, desk_y, true);
-
-            // 4. Monitor sitting on desk — color reflects current activity state.
-            let monitor_y = desk_y + 1;
-            let monitor_x = slot_x + 5;
-            blit_monitor_state(pack, &slot.state, monitor_x, monitor_y, buf);
-        }
-
-        // --- Decorative plant in each empty visible slot ---
-        for i in 0..max_slots {
-            let occupied = agents.iter().any(|a| a.desk_index as u16 == i);
-            if occupied {
+            let Some(anim) = pack.animation(anim_name).or_else(|| pack.animation("idle")) else {
                 continue;
-            }
-            let (slot_x, slot_y) = layout.slot_origin(i);
-            // Plant sits on a desk surface — same desk row as a normal slot.
-            blit_static(buf, "desk", slot_x, slot_y + 4 + 12, true);
-            blit_static(buf, "plant", slot_x + 5, slot_y + 4 + 8, true);
+            };
+            let fi = frame_index_at(
+                agent.state_started_at,
+                now,
+                anim.frame_ms,
+                anim.frames.len(),
+            );
+            let frame = &anim.frames[fi];
+            let pal = agent_palette(&base_pal, agent);
+            let recolored = recolor_frame(frame, &pal, &base_pal);
+
+            let sx = slot.x + (SLOT_W - SPRITE_W) / 2;
+            let sy = slot.y + SLOT_H - DESK_H - SPRITE_H + 4; // overlap desk top
+            blit_frame(&recolored, sx, sy, buf);
         }
 
-        // --- Overflow indicator if there are more agents than visible slots ---
-        let hidden = agents
-            .iter()
-            .filter(|a| a.desk_index as u16 >= max_slots)
-            .count();
-        let overflow_text = if hidden > 0 {
-            Some(format!("+{hidden} more agent{}", if hidden == 1 { "" } else { "s" }))
-        } else {
-            None
-        };
-
-        // Write pixel buffer directly into ratatui's terminal Buffer as
-        // half-block cells. Avoids allocating Vec<Vec<HalfCell>> + Vec<Line>
-        // + ~2000 Spans per frame.
+        // Map RGB pixel buffer onto the ratatui terminal buffer as ▀ half-blocks.
         let term_buf = f.buffer_mut();
         let w = buf.width as usize;
-        let h = buf.height as usize;
-        let cell_rows = h.div_ceil(2);
+        let cell_rows = (buf.height / 2) as usize;
         for cy in 0..cell_rows {
-            let py_top = cy * 2;
-            let py_bot = (py_top + 1).min(h.saturating_sub(1));
-            for cx in 0..w {
+            for cx in 0..(buf.width as usize) {
                 let x = scene_rect.x + cx as u16;
                 let y = scene_rect.y + cy as u16;
                 if x >= scene_rect.x + scene_rect.width
@@ -543,6 +273,8 @@ pub fn draw_scene<B: Backend>(
                 {
                     continue;
                 }
+                let py_top = cy * 2;
+                let py_bot = cy * 2 + 1;
                 let fg = buf.pixels[py_top * w + cx];
                 let bg = buf.pixels[py_bot * w + cx];
                 let cell = &mut term_buf[(x, y)];
@@ -552,85 +284,152 @@ pub fn draw_scene<B: Backend>(
             }
         }
 
-        // Labels under each desk + speech bubble overlay for waiting state.
-        for slot in &agents {
-            let i = slot.desk_index as u16;
-            if i >= max_slots {
-                continue;
-            }
-            let (sx, sy) = layout.slot_origin(i);
-            let slot_x = scene_rect.x + sx;
-            // Label sits just below the desk row of this slot, in cell coords
-            // (each cell = 2 px, so divide by 2).
-            let label_y = scene_rect.y + (sy + stack_h).div_ceil(2);
-            let style = Style::default().fg(Color::White);
-            let label = Paragraph::new(Line::from(vec![Span::styled(
-                format!("{} {}", slot.label, summarize_state(&slot.state)),
-                style,
-            )]));
-            f.render_widget(
-                label,
-                Rect {
-                    x: slot_x,
-                    y: label_y.min(scene_rect.y + scene_rect.height.saturating_sub(1)),
-                    width: slot_w,
-                    height: 1,
-                },
-            );
-
-            if let ActivityState::Waiting { .. } = slot.state {
-                let bubble_y = scene_rect
-                    .y
-                    .saturating_add((sy / 2).saturating_sub(2));
-                let bubble = Paragraph::new(vec![
-                    Line::from(Span::styled(
-                        "┌─?─┐",
-                        Style::default().fg(Color::Yellow),
-                    )),
-                    Line::from(Span::styled(
-                        "└─v─┘",
-                        Style::default().fg(Color::Yellow),
-                    )),
-                ]);
-                f.render_widget(
-                    bubble,
-                    Rect {
-                        x: slot_x + 6,
-                        y: bubble_y,
-                        width: 6,
-                        height: 2,
-                    },
-                );
-            }
-        }
-
-        // Overflow text in the corner of the scene.
-        if let Some(text) = overflow_text {
-            let para = Paragraph::new(Line::from(Span::styled(
+        // Labels — one cell row above each cubicle.
+        for (slot, agent) in slots.iter().zip(agents.iter()) {
+            let lx = scene_rect.x + slot.x;
+            let ly = scene_rect.y + slot.y / 2;
+            let text = format!("{} {}", agent.label, summarize_state(&agent.state));
+            let para = Paragraph::new(Span::styled(
                 text,
-                Style::default().fg(Color::Yellow),
-            )));
-            let w = 20.min(scene_rect.width);
+                Style::default().fg(Color::White),
+            ));
             f.render_widget(
                 para,
                 Rect {
-                    x: scene_rect.x + scene_rect.width.saturating_sub(w + 1),
-                    y: scene_rect.y,
-                    width: w,
+                    x: lx,
+                    y: ly,
+                    width: SLOT_W,
                     height: 1,
                 },
             );
         }
-
-        let _ = Pixel::None; // silence unused-import warning on some builds
     })?;
     Ok(())
 }
 
-fn summarize_state(s: &ActivityState) -> &'static str {
-    match s {
+fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16) {
+    const PLANK_H: u16 = 6;
+    const TOP_WALL_H: u16 = 6;
+    const TOP_WALL_TRIM_H: u16 = 1;
+    const BASEBOARD_H: u16 = 3;
+
+    // Wood-plank floor across the full buffer.
+    for y in 0..buf_h {
+        // Stagger the plank seam x-positions across rows so the grain reads
+        // as planks instead of a brick wall.
+        let band = y / PLANK_H;
+        let seam_offset = (band as u32 * 13) % 16;
+        for x in 0..buf_w {
+            let in_seam = y % PLANK_H == PLANK_H - 1
+                || ((x as u32).wrapping_add(seam_offset)) % 16 == 0;
+            let color = if in_seam {
+                PLANK_LINE
+            } else if band % 2 == 0 {
+                PLANK_A
+            } else {
+                PLANK_B
+            };
+            buf.put(x, y, color);
+        }
+    }
+
+    // Top wall band + trim line.
+    for y in 0..TOP_WALL_H.min(buf_h) {
+        for x in 0..buf_w {
+            buf.put(x, y, WALL);
+        }
+    }
+    let trim_y = TOP_WALL_H;
+    if trim_y < buf_h {
+        for x in 0..buf_w {
+            for ty in 0..TOP_WALL_TRIM_H {
+                let py = trim_y + ty;
+                if py < buf_h {
+                    buf.put(x, py, WALL_TRIM);
+                }
+            }
+        }
+    }
+
+    // Bottom baseboard.
+    let base_y = buf_h.saturating_sub(BASEBOARD_H);
+    for y in base_y..buf_h {
+        for x in 0..buf_w {
+            buf.put(x, y, BASEBOARD);
+        }
+    }
+}
+
+fn paint_rug(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16, color: Rgb) {
+    // Rug spans the slot's footprint with a 1-px lighter border, slightly
+    // smaller than the cubicle so it doesn't bleed into neighbors.
+    let pad = 1;
+    let lighter = Rgb(
+        color.0.saturating_add(40),
+        color.1.saturating_add(40),
+        color.2.saturating_add(40),
+    );
+    for dy in pad..h.saturating_sub(pad) {
+        for dx in pad..w.saturating_sub(pad) {
+            let px = x + dx;
+            let py = y + dy;
+            if px >= buf.width || py >= buf.height {
+                continue;
+            }
+            let on_border = dy == pad
+                || dy == h - pad - 1
+                || dx == pad
+                || dx == w - pad - 1;
+            buf.put(px, py, if on_border { lighter } else { color });
+        }
+    }
+}
+
+fn paint_plants(
+    buf: &mut RgbBuffer,
+    buf_w: u16,
+    buf_h: u16,
+    slots: &[Slot],
+    frame: &Frame,
+) {
+    // For each adjacent pair of slots in the same row, drop a plant in the
+    // gap between them at floor level.
+    let col_w = SLOT_W + SLOT_GAP_X;
+    let row_h = SLOT_H + SLOT_GAP_Y;
+    let cols = (buf_w / col_w).max(1);
+
+    for (i, slot) in slots.iter().enumerate() {
+        let col = (i as u16) % cols;
+        // Only the *first* slot of each row places a plant on its LEFT side
+        // (corner of the room); other slots place a plant to their left in
+        // the gap between cubicles.
+        let plant_x = if col == 0 {
+            // Left wall corner
+            slot.x.saturating_sub(SLOT_GAP_X + frame.width)
+        } else {
+            slot.x.saturating_sub(frame.width + 1)
+        };
+        // Anchor plant just below the top wall so it sits in the floor area.
+        let plant_y = slot.y.saturating_sub(frame.height + 1).max(8);
+        // Only place if it actually fits in buf and doesn't trample a slot.
+        if plant_x + frame.width <= buf_w && plant_y + frame.height <= buf_h {
+            blit_frame(frame, plant_x, plant_y, buf);
+        }
+        // Also one to the right of the LAST slot in each row.
+        if col == cols - 1 || i == slots.len() - 1 {
+            let right_x = slot.x + SLOT_W + 1;
+            if right_x + frame.width <= buf_w {
+                let ry = (slot.y + row_h).saturating_sub(frame.height + 1).max(8);
+                blit_frame(frame, right_x, ry, buf);
+            }
+        }
+    }
+}
+
+fn summarize_state(state: &ActivityState) -> &'static str {
+    match state {
         ActivityState::Idle => "idle",
-        ActivityState::Active { .. } => "typing",
-        ActivityState::Waiting { .. } => "wait?",
+        ActivityState::Active { .. } => "working",
+        ActivityState::Waiting { .. } => "waiting",
     }
 }

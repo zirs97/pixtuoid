@@ -1,7 +1,9 @@
 [pack]
-name    = "default"
-version = "2"
+name    = "topdown"
+version = "1"
 
+# Same palette as the side-view pack; H (hair) and B (shirt) stay as the
+# per-agent recolor targets so the existing recolor pipeline works.
 [palette]
 "." = "transparent"
 "H" = "#2a1a0e"   # hair (per-agent recolor target)
@@ -10,15 +12,17 @@ version = "2"
 "m" = "#a04040"   # mouth
 "O" = "#3a1414"   # open-mouth (waiting)
 "B" = "#2e62cf"   # shirt (per-agent recolor target)
+"c" = "#7ed4e2"   # screen / monitor highlight
 "M" = "#3a3a40"   # monitor frame
-"c" = "#7ed4e2"   # monitor screen (state-recolor target)
+"k" = "#1a1a22"   # keyboard
 "D" = "#8b5a2b"   # desk wood
-"d" = "#5a3818"   # desk shadow / edge
-"n" = "#3a2a1c"   # chair / plant darker
+"d" = "#5a3818"   # desk shadow
+"n" = "#3a2a1c"   # outline / nose shadow
+"f" = "#6a4a26"   # floor mat warm
+"F" = "#5a3a20"   # floor mat dark
 "l" = "#4a8f3a"   # plant leaf
+"L" = "#2f6b25"   # plant leaf shadow
 "g" = "#c2734f"   # plant pot terracotta
-"P" = "#c8748f"   # poster bright
-"p" = "#7a4054"   # poster shadow
 
 [animations.idle]
 frames   = ["idle.sprite"]
@@ -32,26 +36,10 @@ frame_ms = 140
 frames   = ["waiting.sprite"]
 frame_ms = 400
 
-[animations.walking]
-frames   = ["walking_0.sprite", "walking_1.sprite"]
-frame_ms = 220
-
 [animations.desk]
 frames   = ["desk.sprite"]
-frame_ms = 1000
-
-[animations.chair]
-frames   = ["chair.sprite"]
-frame_ms = 1000
-
-[animations.monitor]
-frames   = ["monitor.sprite"]
-frame_ms = 1000
+frame_ms = 600
 
 [animations.plant]
 frames   = ["plant.sprite"]
-frame_ms = 1000
-
-[animations.poster]
-frames   = ["poster.sprite"]
-frame_ms = 1000
+frame_ms = 600
