@@ -39,6 +39,21 @@ pub fn cycle_ms_for(agent_id: AgentId) -> u64 {
     WANDER_CYCLE_BASE_MS + (agent_id.raw() >> 16) % WANDER_CYCLE_RANGE_MS
 }
 
+/// Probability (out of 10) that an agent takes a wander trip on a given
+/// cycle. The rest of the time they stay seated at their desk. 3/10 means
+/// roughly one trip every ~3 cycles ≈ every 30s of idle time per agent —
+/// office-realistic "coffee break" cadence.
+const TRIP_CHANCE_NUM: u64 = 3;
+const TRIP_CHANCE_DEN: u64 = 10;
+
+/// Deterministic per-(agent, cycle) decision: does this agent take a
+/// wander trip on this cycle, or stay seated? Mixed with a knuth-style
+/// constant so adjacent cycles don't share the same bit pattern.
+pub fn takes_trip(agent_id: AgentId, cycle_n: u64) -> bool {
+    let mix = agent_id.raw() ^ cycle_n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    (mix % TRIP_CHANCE_DEN) < TRIP_CHANCE_NUM
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pose {
     SeatedIdle,
@@ -76,9 +91,15 @@ fn idle_pose(slot: &AgentSlot, desk: Point, layout: &Layout, elapsed_ms: u64) ->
     let cycle_n = elapsed_ms / cycle_ms;
     let phase_t = elapsed_ms % cycle_ms;
 
-    // XOR cycle_n so the same agent picks a (typically) different waypoint
-    // each loop. Identical agents on identical cycles still match — only the
-    // cycle number changes the choice.
+    // Most cycles: stay seated. Only roll a wander trip ~30% of cycles, so
+    // the office reads as "people at their desks" with occasional movement.
+    if !takes_trip(slot.agent_id, cycle_n) || layout.waypoints.is_empty() {
+        return Pose::SeatedIdle;
+    }
+
+    // XOR cycle_n so a tripping agent picks a (typically) different
+    // destination each loop. Choices are couch vs coffee with the current
+    // 2-waypoint layout.
     let wp_idx =
         ((slot.agent_id.raw() ^ cycle_n) as usize) % layout.waypoints.len();
     let wp = layout.waypoints[wp_idx];
@@ -151,6 +172,15 @@ mod tests {
         )
     }
 
+    /// Find the lowest cycle index where the agent decides to take a trip.
+    /// Pose tests that probe walking/waypoint phases need a known trip cycle
+    /// to drive the elapsed offset off of.
+    fn first_trip_cycle(agent_id: AgentId) -> u64 {
+        (0u64..1000)
+            .find(|n| takes_trip(agent_id, *n))
+            .expect("agent should trip within first 1000 cycles")
+    }
+
     #[test]
     fn active_state_is_seated_typing_with_cycling_frame() {
         let (s, now) = slot(typing(), 0);
@@ -185,7 +215,9 @@ mod tests {
     fn idle_phase_1_is_walking_out() {
         let (test_slot, _) = slot(ActivityState::Idle, 0);
         let (seated_end, walk_out_end, _, _) = phases(test_slot.agent_id);
-        let midpoint = seated_end + (walk_out_end - seated_end) / 2;
+        let cycle = cycle_ms_for(test_slot.agent_id);
+        let trip_n = first_trip_cycle(test_slot.agent_id);
+        let midpoint = trip_n * cycle + seated_end + (walk_out_end - seated_end) / 2;
         let (s, now) = slot(ActivityState::Idle, midpoint);
         let l = layout();
         match derive(&s, now, &l).expect("pose") {
@@ -198,10 +230,12 @@ mod tests {
     }
 
     #[test]
-    fn idle_phase_2_is_standing_at_waypoint() {
+    fn idle_phase_2_is_at_waypoint() {
         let (test_slot, _) = slot(ActivityState::Idle, 0);
         let (_, walk_out_end, at_wp_end, _) = phases(test_slot.agent_id);
-        let midpoint = walk_out_end + (at_wp_end - walk_out_end) / 2;
+        let cycle = cycle_ms_for(test_slot.agent_id);
+        let trip_n = first_trip_cycle(test_slot.agent_id);
+        let midpoint = trip_n * cycle + walk_out_end + (at_wp_end - walk_out_end) / 2;
         let (s, now) = slot(ActivityState::Idle, midpoint);
         let l = layout();
         match derive(&s, now, &l).expect("pose") {
@@ -214,7 +248,8 @@ mod tests {
     fn idle_phase_3_is_walking_back() {
         let (test_slot, _) = slot(ActivityState::Idle, 0);
         let (_, _, at_wp_end, cycle) = phases(test_slot.agent_id);
-        let midpoint = at_wp_end + (cycle - at_wp_end) / 2;
+        let trip_n = first_trip_cycle(test_slot.agent_id);
+        let midpoint = trip_n * cycle + at_wp_end + (cycle - at_wp_end) / 2;
         let (s, now) = slot(ActivityState::Idle, midpoint);
         let l = layout();
         match derive(&s, now, &l).expect("pose") {
@@ -222,6 +257,40 @@ mod tests {
                 assert!((400..=600).contains(&t_x1000));
             }
             other => panic!("expected Walking, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn takes_trip_fires_roughly_30_percent_of_cycles() {
+        let id = AgentId::from_transcript_path("/p/sample.jsonl");
+        let trips = (0u64..1000).filter(|n| takes_trip(id, *n)).count();
+        // Allow wide tolerance — we're checking the math is reasonable,
+        // not asserting a perfect distribution.
+        assert!(
+            (200..=400).contains(&trips),
+            "expected ~300 trips out of 1000, got {trips}"
+        );
+    }
+
+    #[test]
+    fn non_trip_cycle_is_seated_idle_throughout() {
+        let (test_slot, _) = slot(ActivityState::Idle, 0);
+        let id = test_slot.agent_id;
+        let cycle = cycle_ms_for(id);
+        // Find a cycle where the agent does NOT trip.
+        let stay_n = (0u64..100)
+            .find(|n| !takes_trip(id, *n))
+            .expect("agent should have a non-trip cycle");
+        // Sample 10 points across that cycle; all should be SeatedIdle.
+        for k in 0..10 {
+            let t = stay_n * cycle + (k * cycle / 10);
+            let (s, now) = slot(ActivityState::Idle, t);
+            let l = layout();
+            assert_eq!(
+                derive(&s, now, &l),
+                Some(Pose::SeatedIdle),
+                "t={t} should be SeatedIdle on non-trip cycle"
+            );
         }
     }
 
@@ -278,9 +347,10 @@ mod tests {
         let (_, walk_out_end, at_wp_end, _) = phases(test_slot.agent_id);
         let mid_at_wp = walk_out_end + (at_wp_end - walk_out_end) / 2;
 
-        // Capture the waypoint chosen over the first 4 cycles.
+        // Capture the waypoint chosen across many cycles. Only trip cycles
+        // produce AtWaypoint so we scan widely.
         let mut chosen = std::collections::HashSet::new();
-        for n in 0..4u64 {
+        for n in 0..50u64 {
             let t = n * cycle + mid_at_wp;
             let (s, now) = slot(ActivityState::Idle, t);
             if let Some(Pose::AtWaypoint { wp, .. }) = derive(&s, now, &l) {

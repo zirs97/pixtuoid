@@ -250,29 +250,26 @@ fn paint_rug(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16, color: Rgb) {
 fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
     use crate::tui::layout::WaypointKind;
 
+    // Couch + coffee station get painted at their waypoint positions.
     for wp in &layout.waypoints {
-        match wp.kind {
-            WaypointKind::Couch => {
-                if let Some(f) = pack.animation("couch").and_then(|a| a.frames.first()) {
-                    let cx = wp.pos.x.saturating_sub(f.width / 2);
-                    let cy = wp.pos.y.saturating_sub(f.height / 2);
-                    blit_frame(f, cx, cy, buf);
-                }
-            }
-            WaypointKind::Coffee => {
-                if let Some(f) = pack.animation("coffee").and_then(|a| a.frames.first()) {
-                    let cx = wp.pos.x.saturating_sub(f.width / 2);
-                    let cy = wp.pos.y.saturating_sub(f.height / 2);
-                    blit_frame(f, cx, cy, buf);
-                }
-            }
-            WaypointKind::OpenFloor => {
-                if let Some(f) = pack.animation("plant").and_then(|a| a.frames.first()) {
-                    let px = wp.pos.x.saturating_sub(f.width / 2);
-                    let py = wp.pos.y.saturating_sub(f.height / 2);
-                    blit_frame(f, px, py, buf);
-                }
-            }
+        let anim_name = match wp.kind {
+            WaypointKind::Couch => "couch",
+            WaypointKind::Coffee => "coffee",
+        };
+        if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
+            let cx = wp.pos.x.saturating_sub(f.width / 2);
+            let cy = wp.pos.y.saturating_sub(f.height / 2);
+            blit_frame(f, cx, cy, buf);
+        }
+    }
+
+    // Plants are pure decor — painted at fixed positions from the layout,
+    // not at waypoints, so agents can stand near them without overlapping.
+    if let Some(plant) = pack.animation("plant").and_then(|a| a.frames.first()) {
+        for p in &layout.plants {
+            let px = p.x.saturating_sub(plant.width / 2);
+            let py = p.y.saturating_sub(plant.height / 2);
+            blit_frame(plant, px, py, buf);
         }
     }
 }
@@ -464,9 +461,6 @@ pub fn draw_scene<B: Backend>(
                             }
                             crate::tui::layout::WaypointKind::Coffee => {
                                 ("holding_coffee", waypoint_anchor(wp_obj.pos))
-                            }
-                            crate::tui::layout::WaypointKind::OpenFloor => {
-                                ("standing", waypoint_anchor(wp_obj.pos))
                             }
                         };
                         paint_character_at(buf, anim_name, 0, anchor, agent, pack);

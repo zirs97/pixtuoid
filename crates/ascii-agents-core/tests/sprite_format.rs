@@ -70,7 +70,7 @@ fn default_pack_loads_with_required_animations() {
     assert_eq!(seated.frames[0].height, 10);
 
     let standing = pack.animation("standing").unwrap();
-    assert_eq!(standing.frames[0].width, 6);
+    assert_eq!(standing.frames[0].width, 8);
     assert_eq!(standing.frames[0].height, 12);
 
     let walking = pack.animation("walking").unwrap();

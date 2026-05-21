@@ -14,12 +14,12 @@ pub struct Point {
 }
 
 /// Kind of a lounge waypoint — determines what pose an Idle agent strikes
-/// when they arrive there. Couch = sit, Coffee = drink, OpenFloor = stand.
+/// when they arrive there. Currently only destinations an agent would
+/// actually walk to (couch break, coffee break). Plants are pure decor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaypointKind {
     Couch,
     Coffee,
-    OpenFloor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,12 +37,15 @@ pub struct Layout {
     pub lounge_band: Rect,
     pub home_desks: Vec<Point>,
     pub waypoints: Vec<Waypoint>,
+    /// Fixed plant positions in the lounge band. Pure decor, not wander
+    /// destinations. Centers (the renderer offsets by half plant size).
+    pub plants: Vec<Point>,
 }
 
-pub const WAYPOINT_COUNT: usize = 4;
+pub const WAYPOINT_COUNT: usize = 2;
 pub const DESK_W: u16 = 12;
 pub const DESK_H: u16 = 6;
-pub const DESK_GAP_X: u16 = 4;
+pub const DESK_GAP_X: u16 = 2;
 /// Vertical gap between cubicle rows. Sized to clear the seated sprite's
 /// 8 px head-above-desk so row N+1's desk doesn't paint over row N's character.
 pub const DESK_GAP_Y: u16 = 10;
@@ -104,24 +107,28 @@ impl Layout {
             });
         }
 
-        // Waypoints: 4 fixed positions across the lounge band. Index 0 sits
-        // on the couch (far left, where paint_lounge_decor draws the couch),
-        // index 3 stands by the coffee station (far right). The middle two
-        // are open-floor spots near the plants.
+        // Two waypoints: couch on the left third, coffee on the right third.
+        // The plant decor sits in the middle gaps and on the far edges.
         let waypoint_y = lounge_band.y + lounge_band.height / 2;
-        let stride = buf_w / (WAYPOINT_COUNT as u16 + 1);
-        let kinds = [
-            WaypointKind::Couch,
-            WaypointKind::OpenFloor,
-            WaypointKind::OpenFloor,
-            WaypointKind::Coffee,
+        let waypoints = vec![
+            Waypoint {
+                pos: Point { x: buf_w / 3, y: waypoint_y },
+                kind: WaypointKind::Couch,
+            },
+            Waypoint {
+                pos: Point { x: buf_w * 2 / 3, y: waypoint_y },
+                kind: WaypointKind::Coffee,
+            },
         ];
-        let waypoints: Vec<Waypoint> = (1..=WAYPOINT_COUNT as u16)
-            .map(|i| Waypoint {
-                pos: Point { x: stride * i, y: waypoint_y },
-                kind: kinds[(i - 1) as usize],
-            })
-            .collect();
+
+        // Plants flank the lounge zone — one at each corner of the lounge
+        // band and one in the middle between couch and coffee.
+        let plant_y = lounge_band.y + lounge_band.height * 2 / 3;
+        let plants = vec![
+            Point { x: 6, y: plant_y },
+            Point { x: buf_w / 2, y: plant_y },
+            Point { x: buf_w.saturating_sub(8), y: plant_y },
+        ];
 
         Some(Self {
             buf_w,
@@ -131,6 +138,7 @@ impl Layout {
             lounge_band,
             home_desks,
             waypoints,
+            plants,
         })
     }
 }
@@ -166,17 +174,26 @@ mod tests {
     }
 
     #[test]
-    fn compute_places_exactly_waypoint_count_waypoints_in_lounge() {
+    fn compute_places_couch_and_coffee_waypoints() {
         let l = Layout::compute(120, 96, 1).expect("fits");
         assert_eq!(l.waypoints.len(), WAYPOINT_COUNT);
+        assert_eq!(l.waypoints[0].kind, WaypointKind::Couch);
+        assert_eq!(l.waypoints[1].kind, WaypointKind::Coffee);
         for w in &l.waypoints {
             assert!(w.pos.y >= l.lounge_band.y);
             assert!(w.pos.y < l.lounge_band.y + l.lounge_band.height);
-            assert!(w.pos.x < l.buf_w);
         }
-        // Couch first, coffee last — paint_lounge_decor relies on this.
-        assert_eq!(l.waypoints.first().map(|w| w.kind), Some(WaypointKind::Couch));
-        assert_eq!(l.waypoints.last().map(|w| w.kind), Some(WaypointKind::Coffee));
+    }
+
+    #[test]
+    fn compute_places_plants_in_lounge() {
+        let l = Layout::compute(120, 96, 1).expect("fits");
+        assert!(!l.plants.is_empty(), "expected at least one plant");
+        for p in &l.plants {
+            assert!(p.y >= l.lounge_band.y);
+            assert!(p.y < l.lounge_band.y + l.lounge_band.height);
+            assert!(p.x < l.buf_w);
+        }
     }
 
     #[test]
