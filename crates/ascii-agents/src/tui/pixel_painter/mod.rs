@@ -20,7 +20,7 @@ use ascii_agents_core::walkable::OccupancyOverlay;
 use ascii_agents_core::{AgentSlot, SceneState};
 
 use crate::tui::frame_cache::FrameCache;
-use crate::tui::layout::{Layout, Point, DESK_H, DESK_W};
+use crate::tui::layout::{Layout, Point, DESK_W};
 use crate::tui::pathfind::Router;
 use crate::tui::pose::{self, Pose};
 
@@ -779,7 +779,7 @@ fn walking_position(from: Point, to: Point, t_x1000: u16) -> Point {
 /// mirrors the sprite horizontally — used to make walkers face the direction
 /// they're moving.
 #[allow(clippy::too_many_arguments)]
-fn paint_character_at(
+pub(super) fn paint_character_at(
     buf: &mut RgbBuffer,
     anim_name: &'static str,
     frame_idx: usize,
@@ -829,7 +829,7 @@ fn paint_entry_mat(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16) {
 /// Low coffee table in front of the lounge couch. Wood top with darker
 /// trim along the front edge so it reads as a real piece of furniture,
 /// not just a brown rectangle.
-fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u16) {
+pub(super) fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u16) {
     const TOP: Rgb = Rgb(120, 80, 48);
     const TRIM: Rgb = Rgb(72, 48, 26);
     let min_x = cx.saturating_sub(w / 2);
@@ -847,7 +847,7 @@ fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u16) {
 /// Pantry bistro table — round-ish wood top (rounded corners by skipping
 /// the 4 corner pixels) painted with the same warm wood palette as the
 /// coffee table so they read as the same furniture family.
-fn paint_pantry_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
+pub(super) fn paint_pantry_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
     const TOP: Rgb = Rgb(132, 88, 52);
     const TRIM: Rgb = Rgb(78, 52, 28);
     let w: i32 = 7;
@@ -873,7 +873,7 @@ fn paint_pantry_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
 /// table" once placed next to `paint_pantry_table`. Different from the
 /// office chair (which is the agent's shirt color); these are unoccupied
 /// furniture so they stay neutral wood.
-fn paint_pantry_chair(buf: &mut RgbBuffer, cx: u16, cy: u16) {
+pub(super) fn paint_pantry_chair(buf: &mut RgbBuffer, cx: u16, cy: u16) {
     const SEAT: Rgb = Rgb(96, 68, 44);
     const TRIM: Rgb = Rgb(60, 40, 22);
     let put = |buf: &mut RgbBuffer, dx: i32, dy: i32, c: Rgb| {
@@ -1006,7 +1006,12 @@ pub(super) fn character_anchor(
 
 /// Office chair painted BEHIND the character — a darkened version of the
 /// agent's shirt color. Reads as a top-down chair back behind the sitter.
-fn paint_chair_behind(buf: &mut RgbBuffer, anchor: Point, agent: &AgentSlot, pack: &Pack) {
+pub(super) fn paint_chair_behind(
+    buf: &mut RgbBuffer,
+    anchor: Point,
+    agent: &AgentSlot,
+    pack: &Pack,
+) {
     let pal = agent_palette(&pack.palette, agent);
     let Some(shirt) = pal.get('B').flatten() else {
         return;
@@ -1036,7 +1041,7 @@ fn paint_chair_behind(buf: &mut RgbBuffer, anchor: Point, agent: &AgentSlot, pac
 /// glow is at least 2 terminal cells tall after half-block compression.
 /// Adds a moving scanline (one extra-bright column that cycles across the
 /// screen) so the monitor reads as actually displaying scrolling content.
-fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16, now: SystemTime) {
+pub(super) fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16, now: SystemTime) {
     const FRAME_LIT: Rgb = Rgb(180, 200, 200);
     const GLOW: Rgb = Rgb(140, 240, 170);
     const GLOW_BRIGHT: Rgb = Rgb(220, 255, 230);
@@ -1076,7 +1081,7 @@ fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16, now: SystemT
 /// Animated `z` rising above a sleeping character's head. Cycles ~2.4s
 /// (rise 12 px then disappear). Per-agent phase offset so a row of
 /// sleepers doesn't pulse in lockstep.
-fn paint_sleep_z(buf: &mut RgbBuffer, head_anchor: Point, now: SystemTime, seed: u64) {
+pub(super) fn paint_sleep_z(buf: &mut RgbBuffer, head_anchor: Point, now: SystemTime, seed: u64) {
     const Z_COLOR: Rgb = Rgb(110, 110, 140);
     const CYCLE_MS: u64 = 2400;
     let elapsed_ms = now
@@ -1101,7 +1106,7 @@ fn paint_sleep_z(buf: &mut RgbBuffer, head_anchor: Point, now: SystemTime, seed:
 }
 
 /// Three staggered grey puffs rising from a point — coffee steam.
-fn paint_coffee_steam(buf: &mut RgbBuffer, base: Point, now: SystemTime) {
+pub(super) fn paint_coffee_steam(buf: &mut RgbBuffer, base: Point, now: SystemTime) {
     const STEAM: Rgb = Rgb(190, 190, 210);
     let elapsed_ms = now
         .duration_since(std::time::UNIX_EPOCH)
@@ -1133,7 +1138,7 @@ fn paint_coffee_steam(buf: &mut RgbBuffer, base: Point, now: SystemTime) {
 }
 
 /// Small dust puff at the trailing foot of a walking character.
-fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, frame_idx: usize) {
+pub(super) fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, frame_idx: usize) {
     const DUST: Rgb = Rgb(150, 120, 85);
     let foot_y = walker_anchor.y + 12;
     let foot_x = walker_anchor.x + if frame_idx == 0 { 6 } else { 1 };
@@ -1152,7 +1157,7 @@ fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, frame_idx: usiz
 }
 
 // --- Speech bubble overlay (kept from the prior renderer) -----------------
-fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
+pub(super) fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
     const BUBBLE_FG: Rgb = Rgb(240, 200, 80);
     const BUBBLE_BG: Rgb = Rgb(30, 30, 40);
     let bx = anchor.x;
@@ -1180,311 +1185,8 @@ fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
         }
     }
 }
-// ============================================================================
-// Y-sorted drawable enum (painter's algorithm)
-// ============================================================================
-//
-// Top-down depth: every mid-ground entity carries an `anchor_y` = the
-// y-pixel row where it touches the floor (front-facing bottom edge for
-// items with thickness). Drawables sort ascending by `anchor_y` and
-// paint in order. Larger `anchor_y` = closer to camera = paints last
-// (on top). Solves the classic "character standing south of a desk
-// should appear in front of it" problem without per-pair special cases.
-//
-// What stays OUTSIDE the sort:
-//   - Background (floor / walls / lighting / corridor / room walls /
-//     entry mat / clock / shadows). All depth-independent.
-//   - Per-character attached effects (chair-behind, sleep_z,
-//     waiting_bubble, walker trail/dust, coffee steam, screen glow)
-//     paint AS PART of their parent `Drawable` — they ride along with
-//     the entity in z-order, not as a global foreground pass.
-
-struct Drawable<'a> {
-    anchor_y: u16,
-    kind: DrawableKind<'a>,
-}
-
-enum DrawableKind<'a> {
-    /// Whole cubicle as one z-unit: divider + filing cabinet (every
-    /// other desk) + desk sprite + trash bin + screen-glow if the
-    /// occupant is Active. Bundled so the cubicle paints atomically at
-    /// the desk's bottom-edge row.
-    DeskCubicle {
-        desk: Point,
-        is_last_col: bool,
-        has_cabinet: bool,
-        occupant_active: bool,
-    },
-    Character {
-        agent: &'a AgentSlot,
-        anim_name: &'static str,
-        frame_idx: usize,
-        anchor: Point,
-        flip_x: bool,
-        chair_behind: bool,
-        sleep_z_seed: Option<u64>,
-        waiting_bubble: bool,
-        walking_dust_frame: Option<usize>,
-    },
-    /// Lounge couch (mirror_vertical'd — back at bottom, seat at top).
-    WaypointCouch {
-        pos: Point,
-    },
-    /// Pantry counter (with coffee steam attached so steam rides above
-    /// the counter in z-order).
-    WaypointPantry {
-        pos: Point,
-    },
-    MeetingSofa {
-        pos: Point,
-        mirrored: bool,
-    },
-    MeetingTable {
-        pos: Point,
-    },
-    PantryTable {
-        pos: Point,
-    },
-    PantryChair {
-        pos: Point,
-    },
-    Plant {
-        kind: crate::tui::layout::PlantKind,
-        pos: Point,
-    },
-    FloorLamp {
-        pos: Point,
-    },
-    Door {
-        pos: Point,
-    },
-    WallDecor {
-        kind: crate::tui::layout::WallDecor,
-        pos: Point,
-    },
-    Cat {
-        pos: Point,
-        flip: bool,
-        frame_idx: usize,
-    },
-}
-
-/// Returns the cat's current position + flip + frame_idx, or `None` if
-/// the corridor isn't available. Pulled out of `paint_wandering_cat` so
-/// the y-sort can place the cat with everything else.
-fn cat_position(layout: &Layout, pack: &Pack, now: SystemTime) -> Option<(Point, bool, usize)> {
-    let anim = pack.animation("cat_walk")?;
-    if anim.frames.is_empty() {
-        return None;
-    }
-    let elapsed_ms = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    const CYCLE_MS: u64 = 30_000;
-    let phase = elapsed_ms % CYCLE_MS;
-    let frac = phase as f32 / CYCLE_MS as f32;
-    let (t, flip) = if frac < 0.4 {
-        (frac / 0.4, false)
-    } else if frac < 0.5 {
-        (1.0, false)
-    } else if frac < 0.9 {
-        (1.0 - (frac - 0.5) / 0.4, true)
-    } else {
-        (0.0, true)
-    };
-    let corridor = layout.corridor?;
-    let left_x = corridor.x + corridor.width * 8 / 100;
-    let right_x = corridor.x + corridor.width * 92 / 100;
-    let cx = left_x + ((right_x - left_x) as f32 * t) as u16;
-    let cy = corridor.y + corridor.height / 2;
-    let frame_idx = (elapsed_ms / 220) as usize % anim.frames.len();
-    Some((Point { x: cx, y: cy }, flip, frame_idx))
-}
-
-/// Dispatch one Drawable's paint. Effects attached to characters paint
-/// inline so they ride along with the character in z-order.
-fn paint_drawable(
-    d: &Drawable<'_>,
-    buf: &mut RgbBuffer,
-    pack: &Pack,
-    cache: &mut FrameCache,
-    now: SystemTime,
-) {
-    match &d.kind {
-        DrawableKind::DeskCubicle {
-            desk,
-            is_last_col,
-            has_cabinet,
-            occupant_active,
-        } => {
-            const DIVIDER: Rgb = Rgb(72, 82, 104);
-            if !is_last_col {
-                let div_x = desk.x + DESK_W + 3;
-                for dy in 0..(DESK_H + 1) {
-                    let py = desk.y.saturating_sub(1) + dy;
-                    if div_x < buf.width && py < buf.height {
-                        buf.put(div_x, py, DIVIDER);
-                    }
-                }
-            }
-            if *has_cabinet {
-                if let Some(cab) = pack
-                    .animation("filing_cabinet")
-                    .and_then(|a| a.frames.first())
-                {
-                    let cab_x = desk.x.saturating_sub(cab.width + 1);
-                    let cab_y = desk.y;
-                    if cab_y + cab.height <= buf.height {
-                        blit_frame(cab, cab_x, cab_y, buf);
-                    }
-                }
-            }
-            if let Some(frame) = pack.animation("desk").and_then(|a| a.frames.first()) {
-                blit_frame(frame, desk.x, desk.y, buf);
-            }
-            if let Some(bin) = pack.animation("trash_bin").and_then(|a| a.frames.first()) {
-                let bin_x = desk.x + DESK_W;
-                let bin_y = desk.y + 4;
-                if bin_x + bin.width <= buf.width && bin_y + bin.height <= buf.height {
-                    blit_frame(bin, bin_x, bin_y, buf);
-                }
-            }
-            if *occupant_active {
-                paint_screen_glow(buf, desk.x, desk.y, now);
-            }
-        }
-        DrawableKind::Character {
-            agent,
-            anim_name,
-            frame_idx,
-            anchor,
-            flip_x,
-            chair_behind,
-            sleep_z_seed,
-            waiting_bubble,
-            walking_dust_frame,
-        } => {
-            if *chair_behind {
-                paint_chair_behind(buf, *anchor, agent, pack);
-            }
-            if let Some(dust_frame) = walking_dust_frame {
-                paint_walking_dust(buf, *anchor, *dust_frame);
-            }
-            paint_character_at(
-                buf, anim_name, *frame_idx, *anchor, agent, pack, *flip_x, cache,
-            );
-            if let Some(seed) = sleep_z_seed {
-                paint_sleep_z(buf, *anchor, now, *seed);
-            }
-            if *waiting_bubble {
-                paint_waiting_bubble(buf, *anchor);
-            }
-        }
-        DrawableKind::WaypointCouch { pos } => {
-            if let Some(f) = pack.animation("couch").and_then(|a| a.frames.first()) {
-                let cx = pos.x.saturating_sub(f.width / 2);
-                let cy = pos.y.saturating_sub(f.height / 2);
-                let flipped = f.mirror_vertical();
-                blit_frame(&flipped, cx, cy, buf);
-            }
-        }
-        DrawableKind::WaypointPantry { pos } => {
-            if let Some(f) = pack.animation("pantry").and_then(|a| a.frames.first()) {
-                let cx = pos.x.saturating_sub(f.width / 2);
-                let cy = pos.y.saturating_sub(f.height / 2);
-                blit_frame(f, cx, cy, buf);
-            }
-            paint_coffee_steam(
-                buf,
-                Point {
-                    x: pos.x + 4,
-                    y: pos.y.saturating_sub(2),
-                },
-                now,
-            );
-        }
-        DrawableKind::MeetingSofa { pos, mirrored } => {
-            if let Some(f) = pack.animation("couch").and_then(|a| a.frames.first()) {
-                let sx = pos.x.saturating_sub(f.width / 2);
-                let sy = pos.y.saturating_sub(f.height / 2);
-                if *mirrored {
-                    let flipped = f.mirror_vertical();
-                    blit_frame(&flipped, sx, sy, buf);
-                } else {
-                    blit_frame(f, sx, sy, buf);
-                }
-            }
-        }
-        DrawableKind::MeetingTable { pos } => {
-            paint_coffee_table(buf, pos.x, pos.y, 11, 5);
-        }
-        DrawableKind::PantryTable { pos } => {
-            paint_pantry_table(buf, pos.x, pos.y);
-        }
-        DrawableKind::PantryChair { pos } => {
-            paint_pantry_chair(buf, pos.x, pos.y);
-        }
-        DrawableKind::Plant { kind, pos } => {
-            use crate::tui::layout::PlantKind;
-            let anim_name = match kind {
-                PlantKind::Ficus => "plant",
-                PlantKind::Tall => "plant_tall",
-                PlantKind::Flower => "plant_flower",
-                PlantKind::Succulent => "plant_succulent",
-            };
-            if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
-                let px = pos.x.saturating_sub(f.width / 2);
-                let py = pos.y.saturating_sub(f.height / 2);
-                blit_frame(f, px, py, buf);
-            }
-        }
-        DrawableKind::FloorLamp { pos } => {
-            if let Some(f) = pack.animation("floor_lamp").and_then(|a| a.frames.first()) {
-                let px = pos.x.saturating_sub(f.width / 2);
-                let py = pos.y.saturating_sub(f.height / 2);
-                blit_frame(f, px, py, buf);
-            }
-        }
-        DrawableKind::Door { pos } => {
-            if let Some(f) = pack.animation("door").and_then(|a| a.frames.first()) {
-                blit_frame(f, pos.x, pos.y, buf);
-            }
-        }
-        DrawableKind::WallDecor { kind, pos } => {
-            use crate::tui::layout::WallDecor;
-            let anim_name = match kind {
-                WallDecor::Bookshelf => "bookshelf",
-                WallDecor::BulletinBoard => "bulletin_board",
-                WallDecor::ExitSign => "exit_sign",
-                WallDecor::Whiteboard => "whiteboard",
-            };
-            if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
-                blit_frame(f, pos.x, pos.y, buf);
-            }
-        }
-        DrawableKind::Cat {
-            pos,
-            flip,
-            frame_idx,
-        } => {
-            let Some(anim) = pack.animation("cat_walk") else {
-                return;
-            };
-            let Some(frame) = anim.frames.get(*frame_idx) else {
-                return;
-            };
-            let final_frame = if *flip {
-                frame.mirror_horizontal()
-            } else {
-                frame.clone()
-            };
-            let px = pos.x.saturating_sub(final_frame.width / 2);
-            let py = pos.y.saturating_sub(final_frame.height / 2);
-            blit_frame(&final_frame, px, py, buf);
-        }
-    }
-}
+mod drawable;
+use drawable::{cat_position, paint_drawable, Drawable, DrawableKind};
 
 /// Pure pixel painting — no ratatui types, no terminal I/O. The signature
 /// is what any future non-terminal renderer (web canvas, PNG export, GIF
