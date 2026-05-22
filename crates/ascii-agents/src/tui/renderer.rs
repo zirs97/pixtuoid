@@ -47,11 +47,18 @@ const WALL: Rgb = Rgb(56, 56, 70);
 const WALL_TRIM: Rgb = Rgb(80, 80, 100);
 const BASEBOARD: Rgb = Rgb(40, 40, 52);
 /// Warm / extroverted shirt palette — used for higher-trip-chance agents.
+/// Warm / extroverted shirt palette — agents with higher trip_chance_pct
+/// pick from here. Expanded from 4 → 8 colors so a crowded office of
+/// 16 agents has visibly distinct silhouettes.
 const SHIRT_PRESETS_WARM: &[Rgb] = &[
     Rgb(0x9c, 0x27, 0x27), // crimson
     Rgb(0xc6, 0x6a, 0x1e), // burnt orange
     Rgb(0xb0, 0x32, 0xa8), // magenta
     Rgb(0xd0, 0x9c, 0x32), // mustard
+    Rgb(0xe0, 0x46, 0x46), // tomato
+    Rgb(0xa8, 0x4e, 0x9c), // rose violet
+    Rgb(0xcf, 0x7b, 0x2c), // pumpkin
+    Rgb(0xc4, 0x39, 0x6f), // raspberry
 ];
 /// Cool / homebody shirt palette — used for lower-trip-chance agents.
 const SHIRT_PRESETS_COOL: &[Rgb] = &[
@@ -59,19 +66,29 @@ const SHIRT_PRESETS_COOL: &[Rgb] = &[
     Rgb(0x16, 0xa0, 0x6e), // forest green
     Rgb(0x32, 0x82, 0x9b), // teal
     Rgb(0x6c, 0x4f, 0x9e), // violet
+    Rgb(0x4a, 0x7a, 0xb8), // steel blue
+    Rgb(0x2e, 0x8a, 0x84), // pine
+    Rgb(0x3e, 0x52, 0x9c), // indigo
+    Rgb(0x5c, 0x8a, 0x32), // moss green
 ];
+/// 8 hair colors — was 5. Added silver/grey for older-coded agents,
+/// ginger / strawberry blonde / jet black for more silhouette variety.
 const HAIR_PRESETS: &[Rgb] = &[
-    Rgb(0x2a, 0x1a, 0x0e), // near-black
+    Rgb(0x14, 0x0a, 0x06), // jet black
+    Rgb(0x2a, 0x1a, 0x0e), // near-black brown
     Rgb(0x52, 0x32, 0x10), // dark brown
+    Rgb(0x8a, 0x5a, 0x36), // light brown
     Rgb(0xc7, 0xa3, 0x4a), // blond
+    Rgb(0xd8, 0x68, 0x32), // ginger
     Rgb(0x7a, 0x32, 0x10), // auburn
-    Rgb(0x3a, 0x3a, 0x3a), // dark grey
+    Rgb(0xa8, 0xa8, 0xb0), // silver-grey
 ];
 const SKIN_PRESETS: &[Rgb] = &[
     Rgb(0xf4, 0xc7, 0x9a), // light peach (matches base palette S)
     Rgb(0xe0, 0xa8, 0x70), // medium
     Rgb(0xb8, 0x80, 0x50), // tan
     Rgb(0x8a, 0x5a, 0x36), // deep brown
+    Rgb(0xc8, 0x9a, 0x64), // warm tan
 ];
 
 // --- Terminal lifecycle ---------------------------------------------------
@@ -1265,6 +1282,54 @@ fn paint_coffee_steam(buf: &mut RgbBuffer, base: Point, now: SystemTime) {
     }
 }
 
+/// Fading footprint trail behind a walking character. Samples 5 past
+/// positions along the current segment (at t-50, t-100, ..., t-250 ms)
+/// and paints a 1-px dot at each in the agent's shirt color with linear
+/// alpha falloff. Adds visible motion reads without per-agent
+/// per-frame position history (positions are recomputed from the
+/// segment + t_x1000, so the trail is "free" memory-wise).
+///
+/// Trail goes BEHIND the walker — for forward-motion at t=600/1000,
+/// the trail samples are at t=550, 500, 450, 400, 350.
+fn paint_walker_trail(
+    buf: &mut RgbBuffer,
+    agent: &AgentSlot,
+    pack: &Pack,
+    from: Point,
+    to: Point,
+    t_x1000: u16,
+) {
+    // Stride in t-units per trail step. 50 ≈ 5% of the current segment;
+    // 5 steps × 50 = 250 covers a quarter-segment of trail.
+    const STRIDE: u16 = 50;
+    const STEPS: u16 = 5;
+    // Trail color = agent shirt. Falls back to a warm grey if the
+    // palette has no shirt entry.
+    let pal = agent_palette(&pack.palette, agent);
+    let shirt = pal.get('B').flatten().unwrap_or(Rgb(180, 140, 110));
+    for i in 1..=STEPS {
+        let past_t = t_x1000.saturating_sub(i * STRIDE);
+        let pos = walking_position(from, to, past_t);
+        let fx = pos.x;
+        let fy = pos.y + 4; // foot height — just below sprite bottom
+        if fx >= buf.width || fy >= buf.height {
+            continue;
+        }
+        // Alpha fade: i=1 → 0.55, i=2 → 0.44, ... i=5 → 0.11.
+        let alpha = 0.55 - 0.11 * (i as f32 - 1.0);
+        let cur = buf.get(fx, fy);
+        buf.put(
+            fx,
+            fy,
+            Rgb(
+                blend(cur.0, shirt.0, alpha),
+                blend(cur.1, shirt.1, alpha),
+                blend(cur.2, shirt.2, alpha),
+            ),
+        );
+    }
+}
+
 /// Small dust puff at the trailing foot of a walking character.
 fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, frame_idx: usize) {
     const DUST: Rgb = Rgb(150, 120, 85);
@@ -1466,8 +1531,21 @@ pub fn render_to_rgb_buffer(
     // ceiling fluorescents + the floor lamp halo paint the visible
     // bright spots. During the day the dim is near-zero and the pools
     // are subtle ambient highlights.
-    dim_floor_overlay(buf, top_wall_h, buf_h, look.darkness * 0.45);
-    let pool_strength = 0.15 + 0.30 * look.darkness;
+    //
+    // After-hours boost: when nobody's actively working (zero Active
+    // agents), nudge the dim factor higher even during the day — reads
+    // as "the office is quiet right now" without going pitch black.
+    // Floor lamp + window backlight stay bright (they're independent
+    // layers), so the empty office gets a moody half-lit look.
+    let active_count = scene
+        .agents
+        .values()
+        .filter(|a| matches!(a.state, ActivityState::Active { .. }))
+        .count();
+    let afterhours = if active_count == 0 { 0.35 } else { 0.0 };
+    let effective_darkness = (look.darkness + afterhours).min(1.0);
+    dim_floor_overlay(buf, top_wall_h, buf_h, effective_darkness * 0.45);
+    let pool_strength = 0.15 + 0.30 * effective_darkness;
     for desk in &layout.home_desks {
         paint_ceiling_pool(
             buf,
@@ -1501,7 +1579,9 @@ pub fn render_to_rgb_buffer(
         );
     }
     if let Some(lamp) = layout.floor_lamp {
-        paint_floor_lamp_halo(buf, lamp.x, lamp.y, look.darkness * 0.55);
+        // Lamp halo follows the after-hours boost too, so the lamp
+        // visibly glows when the office is quiet during the day.
+        paint_floor_lamp_halo(buf, lamp.x, lamp.y, effective_darkness * 0.55);
     }
 
     // Live wall clock painted after the wall (so hands sit on top of it)
@@ -1781,6 +1861,10 @@ pub fn render_to_rgb_buffer(
             } => {
                 let pos = walking_position(from, to, t_x1000);
                 let walker_anchor = walking_anchor(pos);
+                // Trail painted BEFORE the dust + character so the
+                // walker's current sprite sits on top — trail reads
+                // as "where I came from", not "shadow under me".
+                paint_walker_trail(buf, agent, pack, from, to, t_x1000);
                 paint_walking_dust(buf, walker_anchor, frame);
                 // Direction-aware sprite: when the walker is moving UP
                 // more than horizontally (|dy| > |dx| and dy < 0), use
