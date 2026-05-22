@@ -33,9 +33,12 @@ pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
 // --- Colors ---------------------------------------------------------------
 const BG: Rgb = Rgb(28, 32, 40);
-const PLANK_A: Rgb = Rgb(120, 84, 50);
-const PLANK_B: Rgb = Rgb(100, 70, 38);
-const PLANK_LINE: Rgb = Rgb(72, 48, 24);
+// Carpet — soft neutral tan/grey with random flecks. Replaces the wood
+// plank pattern, which read as a brick-style staggered floor and competed
+// with the wall texture above.
+const CARPET_BASE: Rgb = Rgb(108, 96, 80);
+const CARPET_LIGHT: Rgb = Rgb(128, 116, 96);
+const CARPET_DARK: Rgb = Rgb(88, 78, 64);
 const WALL: Rgb = Rgb(56, 56, 70);
 const WALL_TRIM: Rgb = Rgb(80, 80, 100);
 const BASEBOARD: Rgb = Rgb(40, 40, 52);
@@ -140,29 +143,23 @@ fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) -> Frame {
 
 // --- Floor / walls / decor -----------------------------------------------
 fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16, now: SystemTime) {
-    // Smaller planks (4 px tall × 10 px wide) read as tile/parquet rather
-    // than the previous oversized 6×16 boards that dominated the scene.
-    const PLANK_H: u16 = 4;
-    const PLANK_W: u32 = 10;
     const TOP_WALL_H: u16 = 14;
     const BASEBOARD_H: u16 = 3;
     const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
-    // Glass + spill scale with local hour — dark windows at night, full
-    // daylight 8..18, smooth ramps at dawn/dusk.
     let look = time_of_day_look(now);
 
+    // Carpet: warm tan/grey base with deterministic light/dark flecks.
+    // No seams, no grid — softer than the previous plank pattern.
     for y in 0..buf_h {
-        let band = y / PLANK_H;
-        let seam_offset = (band as u32 * 7) % PLANK_W;
         for x in 0..buf_w {
-            let in_seam = y % PLANK_H == PLANK_H - 1
-                || ((x as u32).wrapping_add(seam_offset)) % PLANK_W == 0;
-            let color = if in_seam {
-                PLANK_LINE
-            } else if band % 2 == 0 {
-                PLANK_A
-            } else {
-                PLANK_B
+            let hash = (x as u32)
+                .wrapping_mul(73)
+                .wrapping_add((y as u32).wrapping_mul(151))
+                ^ ((x as u32).wrapping_mul(11) ^ (y as u32).wrapping_mul(37));
+            let color = match hash % 17 {
+                0 | 1 => CARPET_LIGHT,
+                2 | 3 => CARPET_DARK,
+                _ => CARPET_BASE,
             };
             buf.put(x, y, color);
         }
