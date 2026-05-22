@@ -58,7 +58,11 @@ impl Frame {
                 pixels.push(self.pixels[row_start + x]);
             }
         }
-        Self { width: self.width, height: self.height, pixels }
+        Self {
+            width: self.width,
+            height: self.height,
+            pixels,
+        }
     }
 
     /// Flip rows top-to-bottom. Used to face a couch the opposite way
@@ -73,7 +77,11 @@ impl Frame {
                 pixels.push(self.pixels[row_start + x]);
             }
         }
-        Self { width: self.width, height: self.height, pixels }
+        Self {
+            width: self.width,
+            height: self.height,
+            pixels,
+        }
     }
 }
 
@@ -147,17 +155,28 @@ mod tests {
             width: 3,
             height: 2,
             pixels: vec![
-                Some(Rgb(1, 0, 0)), None, Some(Rgb(2, 0, 0)),
-                Some(Rgb(3, 0, 0)), Some(Rgb(4, 0, 0)), None,
+                Some(Rgb(1, 0, 0)),
+                None,
+                Some(Rgb(2, 0, 0)),
+                Some(Rgb(3, 0, 0)),
+                Some(Rgb(4, 0, 0)),
+                None,
             ],
         };
         let m = f.mirror_horizontal();
         assert_eq!(m.width, 3);
         assert_eq!(m.height, 2);
-        assert_eq!(m.pixels, vec![
-            Some(Rgb(2, 0, 0)), None, Some(Rgb(1, 0, 0)),
-            None, Some(Rgb(4, 0, 0)), Some(Rgb(3, 0, 0)),
-        ]);
+        assert_eq!(
+            m.pixels,
+            vec![
+                Some(Rgb(2, 0, 0)),
+                None,
+                Some(Rgb(1, 0, 0)),
+                None,
+                Some(Rgb(4, 0, 0)),
+                Some(Rgb(3, 0, 0)),
+            ]
+        );
     }
 
     #[test]

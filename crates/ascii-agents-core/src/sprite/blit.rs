@@ -31,11 +31,10 @@ pub fn blit_frame_outlined(
                 continue;
             }
             // Transparent (or boundary) cell — does any opaque neighbor exist?
-            let has_opaque_neighbor =
-                is_opaque(fx - 1, fy)
-                    || is_opaque(fx + 1, fy)
-                    || is_opaque(fx, fy - 1)
-                    || is_opaque(fx, fy + 1);
+            let has_opaque_neighbor = is_opaque(fx - 1, fy)
+                || is_opaque(fx + 1, fy)
+                || is_opaque(fx, fy - 1)
+                || is_opaque(fx, fy + 1);
             if !has_opaque_neighbor {
                 continue;
             }

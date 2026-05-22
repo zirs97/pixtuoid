@@ -12,10 +12,7 @@ pub const EVENTS: &[&str] = &[
 /// Merge ascii-agents hook entries into a CC settings.json document.
 /// Idempotent: re-running replaces existing ascii-agents entries.
 pub fn merge_install(doc: Value, hook_command: &str) -> Value {
-    let mut root: Map<String, Value> = doc
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let mut root: Map<String, Value> = doc.as_object().cloned().unwrap_or_default();
     let hooks = root
         .entry("hooks".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
@@ -39,9 +36,7 @@ pub fn merge_install(doc: Value, hook_command: &str) -> Value {
             }
         };
         // Drop any prior ascii-agents entries so we re-add the current one.
-        arr.retain(|entry| {
-            entry.get(SENTINEL_KEY).and_then(|v| v.as_bool()) != Some(true)
-        });
+        arr.retain(|entry| entry.get(SENTINEL_KEY).and_then(|v| v.as_bool()) != Some(true));
         arr.push(json!({
             SENTINEL_KEY: true,
             "matcher": ".*",
@@ -64,9 +59,7 @@ pub fn merge_uninstall(mut doc: Value) -> Value {
     };
     for (_ev, list) in hooks_obj.iter_mut() {
         if let Some(arr) = list.as_array_mut() {
-            arr.retain(|entry| {
-                entry.get(SENTINEL_KEY).and_then(|v| v.as_bool()) != Some(true)
-            });
+            arr.retain(|entry| entry.get(SENTINEL_KEY).and_then(|v| v.as_bool()) != Some(true));
         }
     }
     let to_remove: Vec<String> = hooks_obj

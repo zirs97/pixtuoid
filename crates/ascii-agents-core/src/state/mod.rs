@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::id::AgentId;
@@ -7,26 +8,30 @@ use crate::source::Activity;
 
 pub mod reducer;
 
+/// `AgentSlot` strings (label, source, session_id) and paths (cwd) are
+/// stored as `Arc<str>` / `Arc<Path>` so `SceneState::clone()` is a series
+/// of pointer copies instead of heap allocations. At 30 fps with N agents
+/// this turns ~5N allocations/frame into 0.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivityState {
     Idle,
     Active {
         activity: Activity,
-        tool_use_id: Option<String>,
-        detail: Option<String>,
+        tool_use_id: Option<Arc<str>>,
+        detail: Option<Arc<str>>,
     },
     Waiting {
-        reason: String,
+        reason: Arc<str>,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct AgentSlot {
     pub agent_id: AgentId,
-    pub source: String,
-    pub session_id: String,
-    pub cwd: PathBuf,
-    pub label: String,
+    pub source: Arc<str>,
+    pub session_id: Arc<str>,
+    pub cwd: Arc<Path>,
+    pub label: Arc<str>,
     pub state: ActivityState,
     pub state_started_at: SystemTime,
     /// Wall-clock time the slot was first created. Distinct from
@@ -83,10 +88,10 @@ mod tests {
                 id,
                 AgentSlot {
                     agent_id: id,
-                    source: "claude-code".into(),
-                    session_id: format!("s{i}"),
-                    cwd: PathBuf::from("/"),
-                    label: format!("cc#{i}"),
+                    source: Arc::from("claude-code"),
+                    session_id: Arc::from(format!("s{i}").as_str()),
+                    cwd: Arc::from(Path::new("/")),
+                    label: Arc::from(format!("cc#{i}").as_str()),
                     state: ActivityState::Idle,
                     state_started_at: now,
                     created_at: now,

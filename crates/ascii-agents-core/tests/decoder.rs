@@ -15,8 +15,7 @@ fn load_jsonl(name: &str) -> serde_json::Value {
 #[test]
 fn decode_session_start() {
     let ev = decode_hook_payload(load("session_start")).unwrap();
-    let expected_id =
-        AgentId::from_transcript_path("/Users/me/.claude/projects/x/ses-abc.jsonl");
+    let expected_id = AgentId::from_transcript_path("/Users/me/.claude/projects/x/ses-abc.jsonl");
     match ev {
         AgentEvent::SessionStart {
             agent_id,
@@ -40,7 +39,7 @@ fn decode_pre_tool_use_write_maps_to_typing() {
             activity, detail, ..
         } => {
             assert_eq!(activity, Activity::Typing);
-            assert!(detail.unwrap().contains("Write"));
+            assert!(detail.unwrap().display().contains("Write"));
         }
         other => panic!("got {other:?}"),
     }
@@ -88,7 +87,7 @@ fn jsonl_assistant_tool_use_is_activity_start_with_tool_use_id() {
         } => {
             assert_eq!(*activity, Activity::Typing);
             assert_eq!(tool_use_id.as_deref(), Some("tu_123"));
-            assert!(detail.as_deref().unwrap().contains("Write"));
+            assert!(detail.as_ref().unwrap().display().contains("Write"));
         }
         other => panic!("got {other:?}"),
     }
@@ -125,7 +124,7 @@ fn decode_hook_payload_with_multibyte_tool_input_does_not_panic() {
     match ev {
         AgentEvent::ActivityStart { detail, .. } => {
             let d = detail.expect("detail set");
-            assert!(d.contains("Bash"), "got: {d}");
+            assert!(d.display().contains("Bash"), "got: {}", d.display());
             // Should end with ellipsis if truncated; either way no panic.
         }
         other => panic!("expected ActivityStart, got {other:?}"),
@@ -148,9 +147,16 @@ fn decode_pre_tool_use_carries_tool_use_id_from_payload() {
     });
     let ev = decode_hook_payload(payload).unwrap();
     match ev {
-        AgentEvent::ActivityStart { tool_use_id, detail, .. } => {
+        AgentEvent::ActivityStart {
+            tool_use_id,
+            detail,
+            ..
+        } => {
             assert_eq!(tool_use_id.as_deref(), Some("toolu_01ABC"));
-            assert!(detail.unwrap().starts_with("Task"));
+            assert!(
+                detail.expect("detail set").is_task(),
+                "Task tool should produce Task variant"
+            );
         }
         other => panic!("got {other:?}"),
     }
@@ -197,10 +203,12 @@ fn jsonl_subagent_line_with_attribution_emits_rename() {
     });
     let events = decode_jsonl_line(transcript, v).unwrap();
     // Plugin prefix is stripped so the 18-cell slot can fit the name.
-    let has_rename = events.iter().any(|e| matches!(
-        e,
-        AgentEvent::Rename { label, .. } if label == "code-explorer"
-    ));
+    let has_rename = events.iter().any(|e| {
+        matches!(
+            e,
+            AgentEvent::Rename { label, .. } if label == "code-explorer"
+        )
+    });
     assert!(has_rename, "expected Rename event, got {events:?}");
 }
 

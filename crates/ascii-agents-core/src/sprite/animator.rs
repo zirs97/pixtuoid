@@ -1,11 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-pub fn frame_index_at(
-    start: SystemTime,
-    now: SystemTime,
-    frame_ms: u32,
-    n_frames: usize,
-) -> usize {
+pub fn frame_index_at(start: SystemTime, now: SystemTime, frame_ms: u32, n_frames: usize) -> usize {
     if n_frames <= 1 {
         return 0;
     }

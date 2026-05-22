@@ -19,9 +19,7 @@ pub fn parse_sprite_file(src: &str, palette: &Palette) -> Result<Vec<Frame>> {
 
         if let Some(rest) = line.strip_prefix("@frame") {
             if let Some(rows) = current.take() {
-                frames.push(
-                    rows_to_frame(rows).map_err(|e| anyhow!("{e} (line {})", lineno + 1))?,
-                );
+                frames.push(rows_to_frame(rows).map_err(|e| anyhow!("{e} (line {})", lineno + 1))?);
             }
             let _ = rest
                 .trim()
@@ -35,8 +33,7 @@ pub fn parse_sprite_file(src: &str, palette: &Palette) -> Result<Vec<Frame>> {
             .as_mut()
             .ok_or_else(|| anyhow!("pixel data before any @frame (line {})", lineno + 1))?;
 
-        let row = parse_row(line, palette)
-            .map_err(|e| anyhow!("{e} (line {})", lineno + 1))?;
+        let row = parse_row(line, palette).map_err(|e| anyhow!("{e} (line {})", lineno + 1))?;
         rows.push(row);
     }
 
@@ -134,8 +131,8 @@ pub fn load_pack(dir: &Path) -> Result<Pack> {
     let toml_path = dir.join("pack.toml");
     let toml_src = std::fs::read_to_string(&toml_path)
         .with_context(|| format!("reading {}", toml_path.display()))?;
-    let parsed: PackToml = toml::from_str(&toml_src)
-        .with_context(|| format!("parsing {}", toml_path.display()))?;
+    let parsed: PackToml =
+        toml::from_str(&toml_src).with_context(|| format!("parsing {}", toml_path.display()))?;
 
     let palette = build_palette(&parsed.palette)?;
 
@@ -181,8 +178,8 @@ pub fn load_pack_from_strings(pack_toml: &str, frames: &[(&str, &str)]) -> Resul
             let src = frame_lookup
                 .get(fname.as_str())
                 .ok_or_else(|| anyhow!("missing embedded frame {fname}"))?;
-            let mut decoded = parse_sprite_file(src, &palette)
-                .with_context(|| format!("decoding {fname}"))?;
+            let mut decoded =
+                parse_sprite_file(src, &palette).with_context(|| format!("decoding {fname}"))?;
             frames_vec.append(&mut decoded);
         }
         animations.insert(

@@ -129,6 +129,10 @@ frame_ms = 600
 frames   = ["sitting_couch.sprite"]
 frame_ms = 600
 
+[animations.back_couch]
+frames   = ["back_couch.sprite"]
+frame_ms = 600
+
 [animations.seated_sleeping]
 frames   = ["seated_sleeping.sprite"]
 frame_ms = 600

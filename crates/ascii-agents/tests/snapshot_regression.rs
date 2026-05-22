@@ -54,10 +54,10 @@ fn fixture_scene(now: SystemTime) -> SceneState {
             id,
             AgentSlot {
                 agent_id: id,
-                source: "claude-code".into(),
-                session_id: format!("session-{i}"),
-                cwd: PathBuf::from("/demo"),
-                label: key.to_string(),
+                source: std::sync::Arc::from("claude-code"),
+                session_id: std::sync::Arc::from(format!("session-{i}").as_str()),
+                cwd: std::sync::Arc::from(PathBuf::from("/demo").as_path()),
+                label: std::sync::Arc::from(*key),
                 state: state.clone(),
                 state_started_at: now,
                 created_at,
@@ -76,7 +76,19 @@ fn render_pixel_hash(now: SystemTime) -> u64 {
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
     let pack = load_default_pack().expect("pack");
     let mut cache = FrameCache::new();
-    draw_scene(&mut term, &scene, &pack, now, &mut buf, &mut cache).expect("render");
+    let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
+    let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();
+    draw_scene(
+        &mut term,
+        &scene,
+        &pack,
+        now,
+        &mut buf,
+        &mut cache,
+        &mut router,
+        &mut overlay,
+    )
+    .expect("render");
 
     let mut hasher = DefaultHasher::new();
     for px in &buf.pixels {
@@ -130,7 +142,19 @@ fn render_changes_when_an_agent_state_changes() {
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
     let pack = load_default_pack().expect("pack");
     let mut cache = FrameCache::new();
-    draw_scene(&mut term, &scene_idle, &pack, now, &mut buf, &mut cache).expect("render");
+    let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
+    let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();
+    draw_scene(
+        &mut term,
+        &scene_idle,
+        &pack,
+        now,
+        &mut buf,
+        &mut cache,
+        &mut router,
+        &mut overlay,
+    )
+    .expect("render");
     let mut hasher = DefaultHasher::new();
     for px in &buf.pixels {
         px.0.hash(&mut hasher);

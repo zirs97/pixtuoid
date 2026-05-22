@@ -51,8 +51,7 @@ impl JsonlWatcher {
         let seen_sessions: Arc<Mutex<HashMap<PathBuf, bool>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        let (notify_tx, mut notify_rx) =
-            tokio::sync::mpsc::unbounded_channel::<PathBuf>();
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
         let mut watcher: RecommendedWatcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
@@ -60,7 +59,7 @@ impl JsonlWatcher {
                         if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                             let _ = notify_tx.send(path);
                         }
-            }
+                    }
                 }
             })?;
         let _ = tokio::fs::create_dir_all(&self.root).await;
@@ -141,10 +140,7 @@ async fn initial_seed_walk(
         // Stale: seed cursor at end so historical events don't replay, and
         // leave `seen` untouched so the first future write triggers a fresh
         // SessionStart-on-first-sight via walk_jsonl.
-        cursors
-            .lock()
-            .await
-            .insert(path.to_path_buf(), meta.len());
+        cursors.lock().await.insert(path.to_path_buf(), meta.len());
     }
 }
 
@@ -224,10 +220,7 @@ async fn walk_jsonl(
             path.display(),
             MAX_PENDING_BYTES
         );
-        cursors
-            .lock()
-            .await
-            .insert(path.to_path_buf(), file_len);
+        cursors.lock().await.insert(path.to_path_buf(), file_len);
         return;
     }
 

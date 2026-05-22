@@ -30,7 +30,10 @@ fn rejects_unknown_palette_key() {
     let palette = palette();
     let src = "@frame 0\nA . ? .";
     let err = parse_sprite_file(src, &palette).unwrap_err();
-    assert!(err.to_string().contains("unknown palette key"), "got: {err}");
+    assert!(
+        err.to_string().contains("unknown palette key"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -60,9 +63,17 @@ fn missing_animation_returns_none() {
 fn default_pack_loads_with_required_animations() {
     let pack = load_pack(Path::new("../../assets/sprites/default")).unwrap();
     for name in &[
-        "seated", "typing", "standing", "walking",
-        "desk", "plant", "couch", "coffee",
-        "pantry", "whiteboard", "bookshelf",
+        "seated",
+        "typing",
+        "standing",
+        "walking",
+        "desk",
+        "plant",
+        "couch",
+        "coffee",
+        "pantry",
+        "whiteboard",
+        "bookshelf",
     ] {
         assert!(pack.animation(name).is_some(), "missing animation: {name}");
     }

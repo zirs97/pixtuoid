@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 
-use crate::source::{Activity, AgentEvent};
+use crate::source::{Activity, AgentEvent, ToolDetail};
 use crate::AgentId;
 
 pub const SOURCE_NAME: &str = "claude-code";
@@ -28,11 +28,7 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
 
     match event {
         "SessionStart" => {
-            let cwd = obj
-                .get("cwd")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .into();
+            let cwd = obj.get("cwd").and_then(|s| s.as_str()).unwrap_or("").into();
             Ok(AgentEvent::SessionStart {
                 agent_id,
                 source: SOURCE_NAME.into(),
@@ -41,10 +37,7 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
             })
         }
         "PreToolUse" => {
-            let tool_name = obj
-                .get("tool_name")
-                .and_then(|s| s.as_str())
-                .unwrap_or("?");
+            let tool_name = obj.get("tool_name").and_then(|s| s.as_str()).unwrap_or("?");
             let target = describe_tool_target(tool_name, obj.get("tool_input"));
             let tool_use_id = obj
                 .get("tool_use_id")
@@ -54,7 +47,7 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
                 agent_id,
                 activity: Activity::Typing,
                 tool_use_id,
-                detail: Some(format!("{tool_name}{target}")),
+                detail: Some(make_tool_detail(tool_name, target)),
             })
         }
         "PostToolUse" => {
@@ -79,6 +72,20 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
         }
         "SessionEnd" => Ok(AgentEvent::SessionEnd { agent_id }),
         other => bail!("unsupported hook_event_name: {other}"),
+    }
+}
+
+/// Map a raw `(tool_name, target)` pair to a structured `ToolDetail`. CC's
+/// Task tool gets the `Task` variant (the reducer keys on this for
+/// subagent-leak suppression); everything else becomes `Generic` carrying
+/// the formatted display string.
+fn make_tool_detail(tool_name: &str, target: String) -> ToolDetail {
+    if tool_name == "Task" {
+        ToolDetail::Task
+    } else {
+        ToolDetail::Generic {
+            display: format!("{tool_name}{target}"),
+        }
     }
 }
 
@@ -142,10 +149,7 @@ pub fn decode_jsonl_line(transcript_path: &str, v: Value) -> Result<Vec<AgentEve
                 if btype != "tool_use" {
                     continue;
                 }
-                let id = bobj
-                    .get("id")
-                    .and_then(|s| s.as_str())
-                    .map(String::from);
+                let id = bobj.get("id").and_then(|s| s.as_str()).map(String::from);
                 let name = bobj.get("name").and_then(|s| s.as_str()).unwrap_or("?");
                 let input = bobj.get("input");
                 let target = describe_tool_target(name, input);
@@ -153,7 +157,7 @@ pub fn decode_jsonl_line(transcript_path: &str, v: Value) -> Result<Vec<AgentEve
                     agent_id,
                     activity: Activity::Typing,
                     tool_use_id: id,
-                    detail: Some(format!("{name}{target}")),
+                    detail: Some(make_tool_detail(name, target)),
                 });
             }
         }

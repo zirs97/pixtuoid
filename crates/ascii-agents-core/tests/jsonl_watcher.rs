@@ -166,7 +166,10 @@ async fn watcher_does_not_consume_partial_trailing_line() {
             }
         }
     }
-    assert!(got_tu_2, "tu_2 should appear after partial line is completed");
+    assert!(
+        got_tu_2,
+        "tu_2 should appear after partial line is completed"
+    );
 
     handle.abort();
 }
@@ -198,16 +201,11 @@ async fn watcher_skips_session_start_for_stale_files_on_startup() {
         }
     });
     tokio::fs::write(&stale, format!("{line}\n")).await.unwrap();
-    let backdated = FileTime::from_system_time(
-        SystemTime::now() - Duration::from_secs(3600),
-    );
+    let backdated = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(3600));
     set_file_mtime(&stale, backdated).unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::with_initial_window(
-        projects_root.clone(),
-        Duration::from_secs(60),
-    );
+    let watcher = JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(60));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     // Give the initial scan a moment to run.
@@ -251,10 +249,8 @@ async fn watcher_emits_session_start_for_recent_files_on_startup() {
     // mtime is "now" (just written) — well inside the 1 hour window.
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::with_initial_window(
-        projects_root.clone(),
-        Duration::from_secs(3600),
-    );
+    let watcher =
+        JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(3600));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     let mut got_start = false;
@@ -293,15 +289,15 @@ async fn stale_file_emits_session_start_when_written_to() {
     .unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::with_initial_window(
-        projects_root.clone(),
-        Duration::from_secs(60),
-    );
+    let watcher = JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(60));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // No SessionStart yet (stale + skipped).
-    while tokio::time::timeout(Duration::from_millis(20), rx.recv()).await.is_ok() {}
+    while tokio::time::timeout(Duration::from_millis(20), rx.recv())
+        .await
+        .is_ok()
+    {}
 
     // Append a real assistant tool_use line — file is now live.
     let line = serde_json::json!({

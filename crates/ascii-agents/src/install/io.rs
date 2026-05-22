@@ -19,9 +19,7 @@ pub fn default_hook_binary() -> Result<PathBuf> {
         return Ok(p);
     }
     let exe = std::env::current_exe().context("current_exe")?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| anyhow!("exe has no parent"))?;
+    let dir = exe.parent().ok_or_else(|| anyhow!("exe has no parent"))?;
     let candidate = dir.join("ascii-agents-hook");
     if candidate.exists() {
         return Ok(candidate);

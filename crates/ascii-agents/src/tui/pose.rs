@@ -13,19 +13,21 @@
 use std::time::{Duration, SystemTime};
 
 use ascii_agents_core::state::{ActivityState, AgentSlot};
+use ascii_agents_core::walkable::OccupancyOverlay;
 use ascii_agents_core::AgentId;
 
 use crate::tui::layout::{Layout, Point, WaypointKind};
+use crate::tui::pathfind::Router;
 
 /// Base cycle length. Each agent's actual cycle = base + per-agent jitter.
 pub const WANDER_CYCLE_BASE_MS: u64 = 7_000;
 /// Maximum extra time added per agent — jitter range is `[0, RANGE)`.
 pub const WANDER_CYCLE_RANGE_MS: u64 = 6_000;
 /// Phase fractions of a cycle (×1000 to stay in integer math).
-const PHASE_SEATED_FRAC: u64 = 389;        // 0..389/1000
-const PHASE_WALK_OUT_FRAC: u64 = 556;      // 389..556/1000
-const PHASE_AT_WAYPOINT_FRAC: u64 = 833;   // 556..833/1000
-// walk-back is 833..1000/1000.
+const PHASE_SEATED_FRAC: u64 = 389; // 0..389/1000
+const PHASE_WALK_OUT_FRAC: u64 = 556; // 389..556/1000
+const PHASE_AT_WAYPOINT_FRAC: u64 = 833; // 556..833/1000
+                                         // walk-back is 833..1000/1000.
 
 /// Frame-cycle period for animated poses.
 pub const TYPING_FRAME_MS: u64 = 140;
@@ -55,8 +57,8 @@ pub struct Personality {
 pub fn personality_for(agent_id: AgentId) -> Personality {
     let h = agent_id.raw();
     Personality {
-        trip_chance_pct: (10 + (h % 41)) as u8,    // 10..=50
-        aimless_pref_pct: ((h >> 8) % 71) as u8,    // 0..=70
+        trip_chance_pct: (10 + (h % 41)) as u8,  // 10..=50
+        aimless_pref_pct: ((h >> 8) % 71) as u8, // 0..=70
     }
 }
 
@@ -82,24 +84,38 @@ pub fn is_aimless_cycle(agent_id: AgentId, cycle_n: u64) -> bool {
 /// Per-(agent, cycle) waypoint index. Only meaningful when `takes_trip` is
 /// true AND `is_aimless_cycle` is false. Returns 0 if `num_waypoints` is 0.
 pub fn waypoint_index_for_cycle(agent_id: AgentId, cycle_n: u64, num_waypoints: usize) -> usize {
-    if num_waypoints == 0 { return 0; }
+    if num_waypoints == 0 {
+        return 0;
+    }
     ((agent_id.raw() ^ cycle_n) as usize) % num_waypoints
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pose {
     SeatedIdle,
-    SeatedTyping { frame: usize },
+    SeatedTyping {
+        frame: usize,
+    },
     StandingAtDesk,
     /// At a lounge waypoint. Concrete render depends on the kind:
     ///   Couch    → sit on couch sprite
     ///   Coffee   → standing + holding-coffee sprite
     ///   Others   → plain standing
-    AtWaypoint { wp: usize, kind: WaypointKind },
-    Walking { from: Point, to: Point, t_x1000: u16, frame: usize },
+    AtWaypoint {
+        wp: usize,
+        kind: WaypointKind,
+    },
+    Walking {
+        from: Point,
+        to: Point,
+        t_x1000: u16,
+        frame: usize,
+    },
     /// Standing at a random walkway point (not at any waypoint). The dest field
     /// is the buf-pixel target the agent walked to. Used by aimless wander.
-    AimlessAt { dest: Point },
+    AimlessAt {
+        dest: Point,
+    },
 }
 
 /// Milliseconds of one-shot walk-from-door entry animation. Overrides the
@@ -123,8 +139,10 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose
     let desk = *layout.home_desks.get(slot.desk_index)?;
 
     // Exit takes priority — once SessionEnd fires we always walk to the
-    // door regardless of entry-window or normal state.
-    if let (Some(exit_time), Some(door)) = (slot.exiting_at, layout.door) {
+    // door regardless of entry-window or normal state. Use door_threshold
+    // (on-floor point below the door) as the walk target so the character
+    // doesn't paint through the wall trim.
+    if let (Some(exit_time), Some(target)) = (slot.exiting_at, layout.door_threshold) {
         let since_exit = now
             .duration_since(exit_time)
             .unwrap_or(Duration::ZERO)
@@ -132,15 +150,20 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose
         if since_exit < ENTRY_ANIMATION_MS {
             let t = (since_exit * 1000 / ENTRY_ANIMATION_MS).min(1000) as u16;
             let frame = ((since_exit / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
-            return Some(Pose::Walking { from: desk, to: door, t_x1000: t, frame });
+            return Some(Pose::Walking {
+                from: desk,
+                to: target,
+                t_x1000: t,
+                frame,
+            });
         }
         // Past exit window: nothing to render, slot will be GC'd shortly.
         return None;
     }
 
     // Entry animation overrides everything for the first ENTRY_ANIMATION_MS
-    // after creation — agent walks in from the door to their desk.
-    if let Some(door) = layout.door {
+    // after creation — agent walks in from the door threshold to their desk.
+    if let Some(from) = layout.door_threshold {
         let since_spawn = now
             .duration_since(slot.created_at)
             .unwrap_or(Duration::ZERO)
@@ -148,7 +171,12 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose
         if since_spawn < ENTRY_ANIMATION_MS {
             let t = (since_spawn * 1000 / ENTRY_ANIMATION_MS).min(1000) as u16;
             let frame = ((since_spawn / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
-            return Some(Pose::Walking { from: door, to: desk, t_x1000: t, frame });
+            return Some(Pose::Walking {
+                from,
+                to: desk,
+                t_x1000: t,
+                frame,
+            });
         }
     }
 
@@ -165,6 +193,78 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose
         ActivityState::Waiting { .. } => Some(Pose::StandingAtDesk),
         ActivityState::Idle => Some(idle_pose(slot, desk, layout, elapsed)),
     }
+}
+
+/// Routed variant of `derive`. For Walking poses, asks `router` for an
+/// A*-routed polyline (composed against the layout's static mask + the
+/// per-frame `overlay`) and converts the global t (0..1000) into a
+/// per-segment Walking pose so the character traces the path
+/// corner-by-corner instead of cutting through obstacles or other agents.
+pub fn derive_with_routing(
+    slot: &AgentSlot,
+    now: SystemTime,
+    layout: &Layout,
+    router: &mut dyn Router,
+    overlay: &OccupancyOverlay,
+) -> Option<Pose> {
+    let pose = derive(slot, now, layout)?;
+    let Pose::Walking {
+        from,
+        to,
+        t_x1000,
+        frame,
+    } = pose
+    else {
+        return Some(pose);
+    };
+    let path = router.route(&layout.walkable, overlay, from, to);
+    if path.len() <= 2 {
+        return Some(pose);
+    }
+    // Map global t to a (segment_idx, t_within_segment) using cumulative
+    // octile distance — same metric A* used to plan the path, so timing
+    // stays uniform along diagonals.
+    let mut leg_lens: Vec<u32> = Vec::with_capacity(path.len() - 1);
+    for w in path.windows(2) {
+        leg_lens.push(octile_distance(w[0], w[1]));
+    }
+    let total: u32 = leg_lens.iter().sum();
+    if total == 0 {
+        return Some(pose);
+    }
+    let traveled = (t_x1000 as u32 * total) / 1000;
+    let mut acc: u32 = 0;
+    for (i, &leg) in leg_lens.iter().enumerate() {
+        if acc + leg >= traveled {
+            let into_leg = traveled - acc;
+            let seg_t = if leg > 0 {
+                ((into_leg * 1000) / leg).min(1000) as u16
+            } else {
+                1000
+            };
+            return Some(Pose::Walking {
+                from: path[i],
+                to: path[i + 1],
+                t_x1000: seg_t,
+                frame,
+            });
+        }
+        acc += leg;
+    }
+    // Past the last segment — snap to final.
+    let last = path.len() - 1;
+    Some(Pose::Walking {
+        from: path[last - 1],
+        to: path[last],
+        t_x1000: 1000,
+        frame,
+    })
+}
+
+fn octile_distance(a: Point, b: Point) -> u32 {
+    let dx = (a.x as i32 - b.x as i32).unsigned_abs();
+    let dy = (a.y as i32 - b.y as i32).unsigned_abs();
+    14 * dx.min(dy) + 10 * (dx.max(dy) - dx.min(dy))
 }
 
 fn idle_pose(slot: &AgentSlot, desk: Point, layout: &Layout, elapsed_ms: u64) -> Pose {
@@ -200,7 +300,13 @@ fn idle_pose(slot: &AgentSlot, desk: Point, layout: &Layout, elapsed_ms: u64) ->
     } else {
         let wp_idx = waypoint_index_for_cycle(slot.agent_id, cycle_n, layout.waypoints.len());
         let wp = layout.waypoints[wp_idx];
-        (wp.pos, Pose::AtWaypoint { wp: wp_idx, kind: wp.kind })
+        (
+            wp.pos,
+            Pose::AtWaypoint {
+                wp: wp_idx,
+                kind: wp.kind,
+            },
+        )
     };
 
     if phase_t < seated_end {
@@ -209,23 +315,33 @@ fn idle_pose(slot: &AgentSlot, desk: Point, layout: &Layout, elapsed_ms: u64) ->
         let span = walk_out_end - seated_end;
         let t = ((phase_t - seated_end) * 1000 / span) as u16;
         let frame = ((elapsed_ms / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
-        Pose::Walking { from: desk, to: dest, t_x1000: t, frame }
+        Pose::Walking {
+            from: desk,
+            to: dest,
+            t_x1000: t,
+            frame,
+        }
     } else if phase_t < at_wp_end {
         at_dest_pose
     } else {
         let span = cycle_ms - at_wp_end;
         let t = ((phase_t - at_wp_end) * 1000 / span) as u16;
         let frame = ((elapsed_ms / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
-        Pose::Walking { from: dest, to: desk, t_x1000: t, frame }
+        Pose::Walking {
+            from: dest,
+            to: desk,
+            t_x1000: t,
+            frame,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ascii_agents_core::source::Activity;
     use std::path::PathBuf;
     use std::time::Duration;
-    use ascii_agents_core::source::Activity;
 
     fn slot(state: ActivityState, age_ms: u64) -> (AgentSlot, SystemTime) {
         let id = AgentId::from_transcript_path("/p/a.jsonl");
@@ -236,10 +352,10 @@ mod tests {
         let created = started - Duration::from_secs(60);
         let s = AgentSlot {
             agent_id: id,
-            source: "claude-code".into(),
-            session_id: "abc".into(),
-            cwd: PathBuf::from("/repo"),
-            label: "cc".into(),
+            source: std::sync::Arc::from("claude-code"),
+            session_id: std::sync::Arc::from("abc"),
+            cwd: std::sync::Arc::from(PathBuf::from("/repo").as_path()),
+            label: std::sync::Arc::from("cc"),
             state,
             state_started_at: started,
             created_at: created,
@@ -295,7 +411,9 @@ mod tests {
     #[test]
     fn waiting_state_is_standing_at_desk() {
         let (s, now) = slot(
-            ActivityState::Waiting { reason: "perm".into() },
+            ActivityState::Waiting {
+                reason: "perm".into(),
+            },
             5_000,
         );
         let l = layout();
@@ -378,13 +496,14 @@ mod tests {
     #[test]
     fn personality_varies_across_agents() {
         let ps: Vec<Personality> = (0..20)
-            .map(|i| personality_for(
-                AgentId::from_transcript_path(&format!("/p/{i}.jsonl"))
-            ))
+            .map(|i| personality_for(AgentId::from_transcript_path(&format!("/p/{i}.jsonl"))))
             .collect();
         let trip_chances: std::collections::HashSet<u8> =
             ps.iter().map(|p| p.trip_chance_pct).collect();
-        assert!(trip_chances.len() >= 5, "expected variance in trip_chance_pct");
+        assert!(
+            trip_chances.len() >= 5,
+            "expected variance in trip_chance_pct"
+        );
         for p in &ps {
             assert!((10..=50).contains(&p.trip_chance_pct));
             assert!(p.aimless_pref_pct <= 70);
@@ -437,10 +556,10 @@ mod tests {
         // created_at == now0, so since_spawn = 1500ms at probe time
         let s = AgentSlot {
             agent_id: id,
-            source: "claude-code".into(),
-            session_id: "abc".into(),
-            cwd: PathBuf::from("/repo"),
-            label: "cc".into(),
+            source: std::sync::Arc::from("claude-code"),
+            session_id: std::sync::Arc::from("abc"),
+            cwd: std::sync::Arc::from(PathBuf::from("/repo").as_path()),
+            label: std::sync::Arc::from("cc"),
             state: ActivityState::Idle,
             state_started_at: now0,
             created_at: now0,
@@ -480,8 +599,7 @@ mod tests {
         );
         for c in &cycles {
             assert!(
-                *c >= WANDER_CYCLE_BASE_MS
-                    && *c < WANDER_CYCLE_BASE_MS + WANDER_CYCLE_RANGE_MS
+                *c >= WANDER_CYCLE_BASE_MS && *c < WANDER_CYCLE_BASE_MS + WANDER_CYCLE_RANGE_MS
             );
         }
     }

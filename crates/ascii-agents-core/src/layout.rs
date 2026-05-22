@@ -1,0 +1,687 @@
+//! Zone-based scene layout for the top-down office — primitive geometry
+//! only, no terminal deps. Computed once per (buf_w, buf_h, num_agents)
+//! triple; serializable / wire-shippable for the future v2 daemon split.
+//!
+//! Splits a buf-pixel rectangle into quadrants (meeting / pantry /
+//! cubicles / lounge), then computes per-agent home desks, named lounge
+//! waypoints, decor positions, and a per-pixel walkability mask.
+
+use crate::walkable::WalkableMask;
+
+/// Primitive rectangle. Same shape as `ratatui::layout::Rect` so the
+/// binary can convert with a one-line field-by-field copy without paying
+/// for the ratatui dep in core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Bounds {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Point {
+    pub x: u16,
+    pub y: u16,
+}
+
+/// Kind of a lounge waypoint — determines what pose an Idle agent strikes
+/// when they arrive there. Plants are pure decor, not waypoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WaypointKind {
+    Couch,
+    Coffee,
+    Pantry,
+}
+
+/// Wall-mounted / wall-leaning furniture, painted as decor in the top wall
+/// area. Not a wander destination — agents can't walk through their own
+/// cubicle row to reach the back wall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WallDecor {
+    Bookshelf,
+    Whiteboard,
+    BulletinBoard,
+    ExitSign,
+}
+
+/// Variety of potted plants — each renders a different sprite. Spread
+/// these around the lounge so it doesn't feel like one ficus repeated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlantKind {
+    Ficus,
+    Tall,
+    Flower,
+    Succulent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waypoint {
+    pub pos: Point,
+    pub kind: WaypointKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneLayout {
+    pub buf_w: u16,
+    pub buf_h: u16,
+    pub cubicle_band: Bounds,
+    pub walkway: Bounds,
+    pub lounge_band: Bounds,
+    pub home_desks: Vec<Point>,
+    pub waypoints: Vec<Waypoint>,
+    pub plants: Vec<(PlantKind, Point)>,
+    pub wall_decor: Vec<(WallDecor, Point)>,
+    pub floor_lamp: Option<Point>,
+    pub door: Option<Point>,
+    pub door_threshold: Option<Point>,
+    pub floor_seats: Vec<Point>,
+    pub meeting_room: Option<Bounds>,
+    pub pantry_room: Option<Bounds>,
+    pub meeting_sofas: Vec<Point>,
+    pub meeting_table: Option<Point>,
+    pub room_walls: Vec<(Point, Point)>,
+    pub top_margin: u16,
+    pub pantry_table: Option<Point>,
+    pub pantry_chairs: Vec<Point>,
+    pub corridor: Option<Bounds>,
+    pub walkable: WalkableMask,
+}
+
+/// Padding (in pixels) added around every obstacle when building the
+/// walkable mask. Reserves a buffer zone so characters route AROUND
+/// furniture rather than scraping along its edge.
+pub const OBSTACLE_PAD_PX: u16 = 2;
+
+pub const WAYPOINT_COUNT: usize = 3;
+pub const DESK_W: u16 = 12;
+pub const DESK_H: u16 = 6;
+/// Hard cap on how many cubicles get painted regardless of how high
+/// `max_desks` is set. Past this count, agents overflow to floor seats.
+pub const MAX_VISIBLE_DESKS: usize = 8;
+pub const DESK_GAP_X: u16 = 11;
+pub const DESK_GAP_Y: u16 = 14;
+pub const MIN_TOP_MARGIN: u16 = 20;
+
+impl SceneLayout {
+    /// Returns `None` if the buffer is too small for even one cubicle and the
+    /// fixed lounge area. Caller should paint a "terminal too small" message.
+    pub fn compute(buf_w: u16, buf_h: u16, num_agents: usize) -> Option<Self> {
+        const MIN_W: u16 = DESK_W + DESK_GAP_X * 2;
+        let min_h: u16 = 40 + MIN_TOP_MARGIN;
+        if buf_w < MIN_W || buf_h < min_h {
+            return None;
+        }
+
+        let top_margin = (buf_h / 4).max(MIN_TOP_MARGIN);
+        let usable_h = buf_h - top_margin;
+        let mid_x = buf_w * 28 / 100;
+        let mid_y_split = top_margin + usable_h / 2;
+
+        let meeting_room = Some(Bounds {
+            x: 0,
+            y: top_margin,
+            width: mid_x,
+            height: usable_h / 2,
+        });
+        let pantry_room = Some(Bounds {
+            x: 0,
+            y: mid_y_split,
+            width: mid_x,
+            height: usable_h - usable_h / 2,
+        });
+
+        let right_x = mid_x + 2;
+        let right_w = buf_w.saturating_sub(right_x);
+        let cubicle_h = usable_h * 68 / 100;
+        let walkway_h = usable_h * 6 / 100;
+        let lounge_h = usable_h - cubicle_h - walkway_h;
+        let cubicle_band = Bounds {
+            x: right_x,
+            y: top_margin,
+            width: right_w,
+            height: cubicle_h,
+        };
+        let walkway = Bounds {
+            x: right_x,
+            y: top_margin + cubicle_h,
+            width: right_w,
+            height: walkway_h,
+        };
+        let lounge_band = Bounds {
+            x: right_x,
+            y: top_margin + cubicle_h + walkway_h,
+            width: right_w,
+            height: lounge_h,
+        };
+
+        let col_w = DESK_W + DESK_GAP_X;
+        let row_h = DESK_H + DESK_GAP_Y;
+        let cols = ((right_w.saturating_sub(DESK_GAP_X)) / col_w).max(1);
+        let rows = (cubicle_h / row_h).max(1);
+        let max_grid = (cols * rows) as usize;
+        let n = num_agents.min(max_grid).min(MAX_VISIBLE_DESKS);
+        let mut home_desks = Vec::with_capacity(n);
+        for i in 0..n {
+            let r = (i as u16) / cols;
+            let c = (i as u16) % cols;
+            home_desks.push(Point {
+                x: right_x + DESK_GAP_X + c * col_w,
+                y: cubicle_band.y + DESK_GAP_Y + r * row_h,
+            });
+        }
+
+        let meeting_sofas = if let Some(mr) = meeting_room {
+            let cx = mr.x + mr.width / 2;
+            vec![
+                Point {
+                    x: cx,
+                    y: mr.y + mr.height * 30 / 100,
+                },
+                Point {
+                    x: cx,
+                    y: mr.y + mr.height * 80 / 100,
+                },
+            ]
+        } else {
+            vec![]
+        };
+        let meeting_table = meeting_room.map(|mr| Point {
+            x: mr.x + mr.width / 2,
+            y: mr.y + mr.height / 2,
+        });
+
+        let mut room_walls = Vec::new();
+        let v_x = mid_x;
+        let v_top = top_margin;
+        let v_bot = mid_y_split;
+        let v_door_top = top_margin + usable_h * 30 / 100;
+        let v_door_bot = top_margin + usable_h * 40 / 100;
+        room_walls.push((
+            Point { x: v_x, y: v_top },
+            Point {
+                x: v_x,
+                y: v_door_top,
+            },
+        ));
+        room_walls.push((
+            Point {
+                x: v_x,
+                y: v_door_bot,
+            },
+            Point { x: v_x, y: v_bot },
+        ));
+        let h_y = mid_y_split;
+        let h_door_left = mid_x * 55 / 100;
+        let h_door_right = mid_x * 70 / 100;
+        room_walls.push((
+            Point { x: 0, y: h_y },
+            Point {
+                x: h_door_left,
+                y: h_y,
+            },
+        ));
+        room_walls.push((
+            Point {
+                x: h_door_right,
+                y: h_y,
+            },
+            Point { x: mid_x, y: h_y },
+        ));
+
+        let couch_y = top_margin + 7;
+        let mut waypoints: Vec<Waypoint> = vec![
+            Waypoint {
+                pos: Point {
+                    x: lounge_band.x + lounge_band.width * 35 / 100,
+                    y: couch_y,
+                },
+                kind: WaypointKind::Couch,
+            },
+            Waypoint {
+                pos: Point {
+                    x: lounge_band.x + lounge_band.width * 85 / 100,
+                    y: lounge_band.y + lounge_band.height * 60 / 100,
+                },
+                kind: WaypointKind::Coffee,
+            },
+        ];
+        if let Some(pr) = pantry_room {
+            waypoints.push(Waypoint {
+                pos: Point {
+                    x: pr.x + pr.width * 60 / 100,
+                    y: pr.y + pr.height * 40 / 100,
+                },
+                kind: WaypointKind::Pantry,
+            });
+        }
+
+        let plants: Vec<(PlantKind, Point)> = vec![
+            (
+                PlantKind::Tall,
+                Point {
+                    x: lounge_band.x + lounge_band.width * 10 / 100,
+                    y: lounge_band.y + lounge_band.height * 30 / 100,
+                },
+            ),
+            (
+                PlantKind::Flower,
+                Point {
+                    x: lounge_band.x + lounge_band.width * 55 / 100,
+                    y: lounge_band.y + lounge_band.height * 25 / 100,
+                },
+            ),
+            (
+                PlantKind::Succulent,
+                Point {
+                    x: lounge_band.x + lounge_band.width * 95 / 100,
+                    y: lounge_band.y + lounge_band.height * 90 / 100,
+                },
+            ),
+            (
+                PlantKind::Ficus,
+                Point {
+                    x: lounge_band.x + lounge_band.width * 70 / 100,
+                    y: lounge_band.y + lounge_band.height * 90 / 100,
+                },
+            ),
+        ]
+        .into_iter()
+        .chain(pantry_room.into_iter().flat_map(|pr| {
+            vec![
+                (
+                    PlantKind::Tall,
+                    Point {
+                        x: pr.x + pr.width * 10 / 100,
+                        y: pr.y + pr.height * 80 / 100,
+                    },
+                ),
+                (
+                    PlantKind::Succulent,
+                    Point {
+                        x: pr.x + pr.width * 90 / 100,
+                        y: pr.y + pr.height * 80 / 100,
+                    },
+                ),
+            ]
+        }))
+        .chain(meeting_room.into_iter().flat_map(|mr| {
+            vec![(
+                PlantKind::Tall,
+                Point {
+                    x: mr.x + mr.width.saturating_sub(4),
+                    y: mr.y + 4,
+                },
+            )]
+        }))
+        .collect();
+
+        let floor_lamp = Some(Point {
+            x: lounge_band.x + lounge_band.width * 48 / 100,
+            y: lounge_band.y + 7,
+        });
+
+        let door = if buf_w >= 12 {
+            Some(Point {
+                x: buf_w.saturating_sub(10),
+                y: top_margin.saturating_sub(10),
+            })
+        } else {
+            None
+        };
+        let door_threshold = door.map(|d| Point {
+            x: d.x.saturating_add(2),
+            y: top_margin + 6,
+        });
+
+        let wall_decor = vec![
+            (
+                WallDecor::Bookshelf,
+                Point {
+                    x: buf_w * 18 / 100,
+                    y: 6,
+                },
+            ),
+            (
+                WallDecor::BulletinBoard,
+                Point {
+                    x: buf_w * 42 / 100,
+                    y: 8,
+                },
+            ),
+            (
+                WallDecor::ExitSign,
+                Point {
+                    x: buf_w.saturating_sub(9),
+                    y: top_margin.saturating_sub(13),
+                },
+            ),
+            (
+                WallDecor::Whiteboard,
+                Point {
+                    x: mid_x + 3,
+                    y: v_door_bot + 2,
+                },
+            ),
+        ];
+
+        let used_before_floor = home_desks.len() + meeting_sofas.len();
+        let overflow_count = num_agents.saturating_sub(used_before_floor).min(8);
+        let mut floor_seats: Vec<Point> = Vec::with_capacity(overflow_count);
+        if let Some(pr) = pantry_room {
+            for slot in 0..overflow_count.min(2) {
+                floor_seats.push(Point {
+                    x: pr.x + pr.width * (25 + slot as u16 * 40) / 100,
+                    y: pr.y + pr.height * 60 / 100,
+                });
+            }
+        }
+        let remaining = overflow_count.saturating_sub(floor_seats.len());
+        for slot in 0..remaining {
+            let c = (slot as u16) % 3;
+            let r = (slot as u16) / 3;
+            floor_seats.push(Point {
+                x: lounge_band.x + lounge_band.width * (15 + c * 30) / 100,
+                y: lounge_band.y + 4 + r * 12,
+            });
+        }
+
+        let (pantry_table, pantry_chairs) = if let Some(pr) = pantry_room {
+            let tx = pr.x + pr.width * 25 / 100;
+            let ty = pr.y + pr.height * 25 / 100;
+            (
+                Some(Point { x: tx, y: ty }),
+                vec![
+                    Point {
+                        x: tx.saturating_sub(4),
+                        y: ty,
+                    },
+                    Point { x: tx + 4, y: ty },
+                    Point {
+                        x: tx,
+                        y: ty.saturating_sub(3),
+                    },
+                    Point { x: tx, y: ty + 3 },
+                ],
+            )
+        } else {
+            (None, vec![])
+        };
+
+        let corridor = Some(Bounds {
+            x: 0,
+            y: walkway.y,
+            width: buf_w,
+            height: walkway.height,
+        });
+
+        let walkable = build_walkable_mask(
+            buf_w,
+            buf_h,
+            top_margin,
+            door,
+            &home_desks,
+            &meeting_sofas,
+            meeting_table,
+            pantry_table,
+            &pantry_chairs,
+            &waypoints,
+            &plants,
+            floor_lamp,
+            &wall_decor,
+            &room_walls,
+        );
+
+        Some(Self {
+            buf_w,
+            buf_h,
+            cubicle_band,
+            walkway,
+            lounge_band,
+            home_desks,
+            waypoints,
+            plants,
+            wall_decor,
+            floor_lamp,
+            door,
+            door_threshold,
+            floor_seats,
+            meeting_room,
+            pantry_room,
+            meeting_sofas,
+            meeting_table,
+            room_walls,
+            top_margin,
+            pantry_table,
+            pantry_chairs,
+            corridor,
+            walkable,
+        })
+    }
+
+    pub fn is_walkable(&self, x: u16, y: u16) -> bool {
+        self.walkable.is_walkable(x, y)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_walkable_mask(
+    buf_w: u16,
+    buf_h: u16,
+    top_margin: u16,
+    door: Option<Point>,
+    home_desks: &[Point],
+    meeting_sofas: &[Point],
+    meeting_table: Option<Point>,
+    pantry_table: Option<Point>,
+    pantry_chairs: &[Point],
+    waypoints: &[Waypoint],
+    plants: &[(PlantKind, Point)],
+    floor_lamp: Option<Point>,
+    wall_decor: &[(WallDecor, Point)],
+    room_walls: &[(Point, Point)],
+) -> WalkableMask {
+    let mut mask = WalkableMask::new_open(buf_w, buf_h);
+
+    mask.mark_blocked(0, 0, buf_w, top_margin, 0);
+    if let Some(d) = door {
+        let cut_x = d.x.saturating_sub(2);
+        let cut_h = top_margin.saturating_add(OBSTACLE_PAD_PX);
+        mask.mark_walkable(cut_x, 0, 8, cut_h);
+    }
+
+    let baseboard_top = buf_h.saturating_sub(3);
+    mask.mark_blocked(0, baseboard_top, buf_w, 3, 0);
+
+    for (start, end) in room_walls {
+        if start.x == end.x {
+            mask.mark_blocked(
+                start.x,
+                start.y.min(end.y),
+                2,
+                start.y.abs_diff(end.y) + 1,
+                OBSTACLE_PAD_PX,
+            );
+        } else {
+            mask.mark_blocked(
+                start.x.min(end.x),
+                start.y,
+                start.x.abs_diff(end.x) + 1,
+                2,
+                OBSTACLE_PAD_PX,
+            );
+        }
+    }
+
+    for desk in home_desks {
+        mask.mark_blocked(
+            desk.x,
+            desk.y.saturating_sub(8),
+            DESK_W + 2,
+            DESK_H + 8,
+            OBSTACLE_PAD_PX,
+        );
+    }
+
+    for sofa in meeting_sofas {
+        mask.mark_blocked(
+            sofa.x.saturating_sub(7),
+            sofa.y.saturating_sub(3),
+            14,
+            6,
+            OBSTACLE_PAD_PX,
+        );
+    }
+
+    if let Some(t) = meeting_table {
+        mask.mark_blocked(
+            t.x.saturating_sub(6),
+            t.y.saturating_sub(3),
+            12,
+            6,
+            OBSTACLE_PAD_PX,
+        );
+    }
+
+    if let Some(t) = pantry_table {
+        mask.mark_blocked(
+            t.x.saturating_sub(4),
+            t.y.saturating_sub(2),
+            8,
+            5,
+            OBSTACLE_PAD_PX,
+        );
+    }
+    for chair in pantry_chairs {
+        mask.mark_blocked(
+            chair.x.saturating_sub(2),
+            chair.y.saturating_sub(2),
+            3,
+            3,
+            1,
+        );
+    }
+
+    for wp in waypoints {
+        let (w, h) = match wp.kind {
+            WaypointKind::Couch => (14, 6),
+            WaypointKind::Coffee => (10, 5),
+            WaypointKind::Pantry => (14, 7),
+        };
+        mask.mark_blocked(
+            wp.pos.x.saturating_sub(w / 2),
+            wp.pos.y.saturating_sub(h / 2),
+            w,
+            h,
+            OBSTACLE_PAD_PX,
+        );
+    }
+
+    for (_, p) in plants {
+        mask.mark_blocked(p.x.saturating_sub(3), p.y.saturating_sub(3), 6, 6, 1);
+    }
+
+    if let Some(lamp) = floor_lamp {
+        mask.mark_blocked(lamp.x.saturating_sub(2), lamp.y.saturating_sub(3), 4, 6, 1);
+    }
+
+    for (kind, pos) in wall_decor {
+        if matches!(kind, WallDecor::Whiteboard) {
+            mask.mark_blocked(pos.x, pos.y, 14, 11, OBSTACLE_PAD_PX);
+        }
+    }
+
+    mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_returns_none_when_buf_too_small() {
+        assert!(SceneLayout::compute(20, 20, 4).is_none());
+    }
+
+    #[test]
+    fn compute_zones_are_ordered_top_to_bottom_and_nonoverlapping() {
+        let l = SceneLayout::compute(120, 80, 6).expect("fits");
+        assert!(l.cubicle_band.y < l.walkway.y);
+        assert!(l.walkway.y < l.lounge_band.y);
+        let c_bot = l.cubicle_band.y + l.cubicle_band.height;
+        let w_bot = l.walkway.y + l.walkway.height;
+        assert!(c_bot <= l.walkway.y, "cubicle overlaps walkway");
+        assert!(w_bot <= l.lounge_band.y, "walkway overlaps lounge");
+    }
+
+    #[test]
+    fn compute_places_one_home_desk_per_agent() {
+        let l = SceneLayout::compute(160, 80, 5).expect("fits");
+        assert!(l.home_desks.len() <= 5 && !l.home_desks.is_empty());
+        for d in &l.home_desks {
+            assert!(d.y >= l.cubicle_band.y);
+            assert!(d.y + DESK_H <= l.cubicle_band.y + l.cubicle_band.height);
+            assert!(d.x >= l.cubicle_band.x);
+        }
+    }
+
+    #[test]
+    fn compute_places_all_waypoint_kinds() {
+        let l = SceneLayout::compute(120, 96, 1).expect("fits");
+        assert_eq!(l.waypoints.len(), WAYPOINT_COUNT);
+        let kinds: std::collections::HashSet<_> = l.waypoints.iter().map(|w| w.kind).collect();
+        assert!(kinds.contains(&WaypointKind::Couch));
+        assert!(kinds.contains(&WaypointKind::Pantry));
+        assert!(kinds.contains(&WaypointKind::Coffee));
+        for w in &l.waypoints {
+            match w.kind {
+                WaypointKind::Pantry => {
+                    let pr = l.pantry_room.expect("pantry");
+                    assert!(w.pos.y >= pr.y && w.pos.y < pr.y + pr.height);
+                    assert!(w.pos.x >= pr.x && w.pos.x < pr.x + pr.width);
+                }
+                WaypointKind::Couch => {
+                    assert!(w.pos.y >= l.top_margin);
+                    assert!(w.pos.y < l.cubicle_band.y + DESK_GAP_Y);
+                }
+                WaypointKind::Coffee => {
+                    assert!(w.pos.y >= l.lounge_band.y);
+                    assert!(w.pos.y < l.lounge_band.y + l.lounge_band.height);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compute_places_bookshelf_on_wall_and_whiteboard_in_walkway() {
+        let l = SceneLayout::compute(120, 96, 1).expect("fits");
+        let bookshelf = l
+            .wall_decor
+            .iter()
+            .find(|(k, _)| *k == WallDecor::Bookshelf);
+        let whiteboard = l
+            .wall_decor
+            .iter()
+            .find(|(k, _)| *k == WallDecor::Whiteboard);
+        assert!(bookshelf.is_some());
+        assert!(whiteboard.is_some());
+        assert!(bookshelf.unwrap().1.y < l.cubicle_band.y);
+        assert!(whiteboard.unwrap().1.y > l.cubicle_band.y);
+    }
+
+    #[test]
+    fn compute_places_plants_in_lounge_and_walkway() {
+        let l = SceneLayout::compute(120, 96, 1).expect("fits");
+        assert!(!l.plants.is_empty());
+        for (_, p) in &l.plants {
+            assert!(p.x < l.buf_w);
+            assert!(p.y < l.buf_h);
+        }
+    }
+
+    #[test]
+    fn compute_truncates_home_desks_when_more_agents_than_fit() {
+        let l = SceneLayout::compute(50, 80, 20).expect("fits");
+        assert!(l.home_desks.len() < 20);
+    }
+}

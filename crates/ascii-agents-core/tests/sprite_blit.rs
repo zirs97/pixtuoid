@@ -95,11 +95,7 @@ fn outlined_blit_paints_halo_around_silhouette() {
     let frame = Frame {
         width: 3,
         height: 3,
-        pixels: vec![
-            t(), t(), t(),
-            t(), px(200, 0, 0), t(),
-            t(), t(), t(),
-        ],
+        pixels: vec![t(), t(), t(), t(), px(200, 0, 0), t(), t(), t(), t()],
     };
     let mut buf = RgbBuffer::filled(5, 5, Rgb(0, 0, 0));
     blit_frame_outlined(&frame, 1, 1, &mut buf, Rgb(50, 50, 50));
@@ -122,10 +118,7 @@ fn outlined_blit_does_not_outline_interior_opaque_pixels() {
     let frame = Frame {
         width: 2,
         height: 2,
-        pixels: vec![
-            px(100, 0, 0), px(100, 0, 0),
-            px(100, 0, 0), px(100, 0, 0),
-        ],
+        pixels: vec![px(100, 0, 0), px(100, 0, 0), px(100, 0, 0), px(100, 0, 0)],
     };
     let mut buf = RgbBuffer::filled(4, 4, Rgb(0, 0, 0));
     blit_frame_outlined(&frame, 1, 1, &mut buf, Rgb(50, 50, 50));

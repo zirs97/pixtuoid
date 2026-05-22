@@ -25,11 +25,7 @@ fn install_then_uninstall_round_trip() {
         .unwrap());
 
     let status = std::process::Command::new(bin)
-        .args([
-            "uninstall-hooks",
-            "--settings",
-            settings.to_str().unwrap(),
-        ])
+        .args(["uninstall-hooks", "--settings", settings.to_str().unwrap()])
         .status()
         .unwrap();
     assert!(status.success());

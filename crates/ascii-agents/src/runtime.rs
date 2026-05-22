@@ -5,10 +5,18 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use ascii_agents_core::source::claude_code::ClaudeCodeSource;
 use ascii_agents_core::state::ActivityState;
-use ascii_agents_core::{
-    AgentEvent, Reducer, SceneState, TaggedReceiver, Transport,
-};
-use tokio::sync::{mpsc, RwLock};
+use ascii_agents_core::{AgentEvent, Reducer, SceneState, TaggedReceiver, Transport};
+use tokio::sync::{mpsc, watch};
+
+/// The reducer publishes a fresh `Arc<SceneState>` on every mutation through
+/// this watch channel. Consumers (renderer, headless summary loop) hold a
+/// `Receiver`, call `borrow()` for an O(1) pointer read, and never block
+/// the writer. Replaces the old `Arc<RwLock<SceneState>>` so:
+///   - cloning is a pointer copy (Arc::clone), not a heap allocation per
+///     field (thanks to interned `Arc<str>` strings in `AgentSlot`)
+///   - the renderer never holds a lock that could block the reducer
+///   - swapping in a v2 daemon means publishing the same Arc over a socket
+pub type SceneRx = watch::Receiver<Arc<SceneState>>;
 
 pub fn run(
     socket: Option<PathBuf>,
@@ -16,7 +24,9 @@ pub fn run(
     max_desks: usize,
     headless: bool,
 ) -> Result<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async move { run_async(socket, projects_root, max_desks, headless).await })
 }
 
@@ -35,10 +45,9 @@ async fn run_async(
     }
 
     let (tx, rx) = mpsc::channel::<(Transport, AgentEvent)>(256);
-    let scene: Arc<RwLock<SceneState>> = Arc::new(RwLock::new(SceneState::new(max_desks)));
+    let (scene_tx, scene_rx) = watch::channel(Arc::new(SceneState::new(max_desks)));
 
-    let scene_for_reducer = scene.clone();
-    tokio::spawn(reducer_task(rx, scene_for_reducer));
+    tokio::spawn(reducer_task(rx, scene_tx, max_desks));
 
     let src_box: Box<dyn ascii_agents_core::source::Source> = Box::new(src);
     tokio::spawn(async move {
@@ -48,14 +57,19 @@ async fn run_async(
     });
 
     if headless {
-        headless_loop(scene).await
+        headless_loop(scene_rx).await
     } else {
-        crate::tui::run_tui(scene).await
+        crate::tui::run_tui(scene_rx).await
     }
 }
 
-async fn reducer_task(mut rx: TaggedReceiver, scene: Arc<RwLock<SceneState>>) {
+async fn reducer_task(
+    mut rx: TaggedReceiver,
+    scene_tx: watch::Sender<Arc<SceneState>>,
+    max_desks: usize,
+) {
     let mut reducer = Reducer::new();
+    let mut scene = SceneState::new(max_desks);
     // 1-Hz tick so exit-grace sweeps run even when no new events arrive.
     let mut sweep_interval = tokio::time::interval(Duration::from_secs(1));
     sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -65,25 +79,27 @@ async fn reducer_task(mut rx: TaggedReceiver, scene: Arc<RwLock<SceneState>>) {
                 let Some((transport, ev)) = event else { break };
                 let now = SystemTime::now();
                 tracing::info!(?transport, ?ev, "event");
-                let mut s = scene.write().await;
-                reducer.apply(&mut s, ev, now, transport);
+                reducer.apply(&mut scene, ev, now, transport);
+                // Send a fresh Arc snapshot. send() ignores errors when
+                // there are no active receivers — that's fine.
+                let _ = scene_tx.send(Arc::new(scene.clone()));
             }
             _ = sweep_interval.tick() => {
-                let mut s = scene.write().await;
-                reducer.tick(&mut s, SystemTime::now());
+                reducer.tick(&mut scene, SystemTime::now());
+                let _ = scene_tx.send(Arc::new(scene.clone()));
             }
         }
     }
 }
 
-async fn headless_loop(scene: Arc<RwLock<SceneState>>) -> Result<()> {
+async fn headless_loop(mut scene_rx: SceneRx) -> Result<()> {
     eprintln!("ascii-agents headless mode — Ctrl-C to quit");
     let mut prev_summary = String::new();
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                let s = scene.read().await;
-                let summary = summarize(&s);
+                let snapshot = scene_rx.borrow_and_update().clone();
+                let summary = summarize(&snapshot);
                 if summary != prev_summary {
                     println!("{summary}");
                     prev_summary = summary;
@@ -104,10 +120,9 @@ fn summarize(scene: &SceneState) -> String {
         .map(|a| {
             let state = match &a.state {
                 ActivityState::Idle => "idle".to_string(),
-                ActivityState::Active { detail, .. } => format!(
-                    "active({})",
-                    detail.as_deref().unwrap_or("?")
-                ),
+                ActivityState::Active { detail, .. } => {
+                    format!("active({})", detail.as_deref().unwrap_or("?"))
+                }
                 ActivityState::Waiting { reason } => format!("waiting({reason})"),
             };
             format!("{}@{}:{}", a.label, a.desk_index, state)

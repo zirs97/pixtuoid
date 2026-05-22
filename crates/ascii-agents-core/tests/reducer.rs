@@ -40,7 +40,7 @@ fn session_start_creates_idle_slot_at_first_free_desk() {
 
     let slot = scene.agents.get(&id).expect("agent inserted");
     assert_eq!(slot.desk_index, 0);
-    assert_eq!(slot.label, "repo", "label derived from cwd basename");
+    assert_eq!(&*slot.label, "repo", "label derived from cwd basename");
     assert_eq!(slot.state, ActivityState::Idle);
 }
 
@@ -121,13 +121,14 @@ fn waiting_sets_state_with_reason() {
     );
 
     match &scene.agents.get(&id).unwrap().state {
-        ActivityState::Waiting { reason } => assert_eq!(reason, "Bash: rm -rf?"),
+        ActivityState::Waiting { reason } => assert_eq!(&**reason, "Bash: rm -rf?"),
         other => panic!("unexpected state: {other:?}"),
     }
 }
 
 #[test]
-fn session_end_removes_slot_and_frees_desk() {
+fn session_end_marks_slot_exiting_then_tick_removes_it_after_grace() {
+    use ascii_agents_core::state::reducer::EXIT_GRACE_WINDOW;
     let mut scene = SceneState::new(2);
     let mut r = Reducer::new();
     let a = AgentId::from_transcript_path("/p/a.jsonl");
@@ -135,14 +136,31 @@ fn session_end_removes_slot_and_frees_desk() {
     start(&mut r, &mut scene, a);
     start(&mut r, &mut scene, b);
 
+    let t0 = SystemTime::now();
     r.apply(
         &mut scene,
         AgentEvent::SessionEnd { agent_id: a },
-        SystemTime::now(),
+        t0,
         Transport::Hook,
     );
 
-    assert!(!scene.agents.contains_key(&a));
+    let slot = scene
+        .agents
+        .get(&a)
+        .expect("slot still present during exit walk-out");
+    assert!(
+        slot.exiting_at.is_some(),
+        "SessionEnd should mark exiting_at"
+    );
+
+    r.tick(
+        &mut scene,
+        t0 + EXIT_GRACE_WINDOW + std::time::Duration::from_millis(100),
+    );
+    assert!(
+        !scene.agents.contains_key(&a),
+        "tick should sweep expired exit"
+    );
     assert_eq!(scene.next_free_desk(), Some(0));
 }
 
@@ -166,14 +184,13 @@ fn jsonl_duplicate_of_recent_hook_is_dropped() {
         Transport::Hook,
     );
 
-    let detail_marker = Some("FROM_JSONL".to_string());
     r.apply(
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
             activity: Activity::Reading,
             tool_use_id: Some("t-1".into()),
-            detail: detail_marker.clone(),
+            detail: Some("FROM_JSONL".into()),
         },
         t0 + Duration::from_millis(100),
         Transport::Jsonl,
@@ -185,7 +202,11 @@ fn jsonl_duplicate_of_recent_hook_is_dropped() {
             activity, detail, ..
         } => {
             assert_eq!(*activity, Activity::Typing, "hook event must win");
-            assert_ne!(*detail, detail_marker, "jsonl detail must not overwrite");
+            assert_ne!(
+                detail.as_deref(),
+                Some("FROM_JSONL"),
+                "jsonl detail must not overwrite"
+            );
         }
         other => panic!("unexpected: {other:?}"),
     }
@@ -233,13 +254,14 @@ fn hook_activity_during_active_task_is_suppressed() {
         Transport::Hook,
     );
 
-    // Parent slot should still reflect Task, not the leaked Read.
+    // Parent slot should still reflect Task (now rendered as "Delegating"
+    // per ToolDetail::display), not the leaked Read.
     let slot = scene.agents.get(&parent).unwrap();
     match &slot.state {
         ActivityState::Active { detail, .. } => {
-            assert_eq!(detail.as_deref(), Some("Task"));
+            assert_eq!(detail.as_deref(), Some("Delegating"));
         }
-        other => panic!("expected Active(Task), got {other:?}"),
+        other => panic!("expected Active(Delegating), got {other:?}"),
     }
 
     // Subagent's PostToolUse hook for Read also lands on parent — drop it.
@@ -364,7 +386,7 @@ fn session_start_with_cwd_derives_label_from_basename() {
         SystemTime::now(),
         Transport::Hook,
     );
-    assert_eq!(scene.agents.get(&id).unwrap().label, "ascii-agents");
+    assert_eq!(&*scene.agents.get(&id).unwrap().label, "ascii-agents");
 }
 
 #[test]
@@ -383,7 +405,7 @@ fn session_start_without_cwd_falls_back_to_cc_label() {
         SystemTime::now(),
         Transport::Hook,
     );
-    assert_eq!(scene.agents.get(&id).unwrap().label, "cc#1");
+    assert_eq!(&*scene.agents.get(&id).unwrap().label, "cc#1");
 }
 
 #[test]
@@ -402,7 +424,7 @@ fn rename_updates_slot_label() {
         Transport::Jsonl,
     );
     assert_eq!(
-        scene.agents.get(&id).unwrap().label,
+        &*scene.agents.get(&id).unwrap().label,
         "feature-dev:code-explorer"
     );
 }

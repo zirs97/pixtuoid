@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::source::AgentEvent;
@@ -65,18 +66,13 @@ impl Reducer {
         // Task's own PostToolUse is exempt — its tool_use_id matches one we
         // are tracking, so it passes through and clears the slot.
         if from == Transport::Hook {
-            let in_task = self
-                .active_tasks
-                .get(&id)
-                .is_some_and(|s| !s.is_empty());
+            let in_task = self.active_tasks.get(&id).is_some_and(|s| !s.is_empty());
             let suppress = match &event {
                 AgentEvent::ActivityStart { .. } => in_task,
                 AgentEvent::ActivityEnd { tool_use_id, .. } => {
-                    let is_task_self_end = tool_use_id.as_ref().is_some_and(|t| {
-                        self.active_tasks
-                            .get(&id)
-                            .is_some_and(|s| s.contains(t))
-                    });
+                    let is_task_self_end = tool_use_id
+                        .as_ref()
+                        .is_some_and(|t| self.active_tasks.get(&id).is_some_and(|s| s.contains(t)));
                     in_task && !is_task_self_end
                 }
                 _ => false,
@@ -118,7 +114,7 @@ impl Reducer {
                 tool_use_id: Some(tuid),
                 detail: Some(d),
                 ..
-            } if is_task_detail(d) => {
+            } if d.is_task() => {
                 self.active_tasks
                     .entry(*agent_id)
                     .or_default()
@@ -126,8 +122,8 @@ impl Reducer {
                 if let Some(slot) = scene.agents.get_mut(agent_id) {
                     slot.state = ActivityState::Active {
                         activity: crate::source::Activity::Typing,
-                        tool_use_id: Some(tuid.clone()),
-                        detail: Some("Delegating".to_string()),
+                        tool_use_id: Some(Arc::<str>::from(tuid.as_str())),
+                        detail: Some(Arc::<str>::from("Delegating")),
                     };
                     slot.state_started_at = now;
                 }
@@ -170,12 +166,14 @@ impl Reducer {
                     return;
                 };
                 self.next_label_n += 1;
-                let label = cwd
+                let label: Arc<str> = cwd
                     .file_name()
                     .and_then(|n| n.to_str())
                     .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .unwrap_or_else(|| format!("cc#{}", self.next_label_n));
+                    .map(Arc::<str>::from)
+                    .unwrap_or_else(|| {
+                        Arc::<str>::from(format!("cc#{}", self.next_label_n).as_str())
+                    });
                 // Disambiguation for multiple sessions sharing a cwd happens
                 // at render time, not here — we don't want to suffix unique
                 // sessions with a noisy `·xxxx` they don't need.
@@ -183,9 +181,9 @@ impl Reducer {
                     agent_id,
                     AgentSlot {
                         agent_id,
-                        source,
-                        session_id,
-                        cwd,
+                        source: Arc::<str>::from(source.as_str()),
+                        session_id: Arc::<str>::from(session_id.as_str()),
+                        cwd: Arc::<std::path::Path>::from(cwd.as_path()),
                         label,
                         state: ActivityState::Idle,
                         state_started_at: now,
@@ -204,8 +202,8 @@ impl Reducer {
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
                     slot.state = ActivityState::Active {
                         activity,
-                        tool_use_id,
-                        detail,
+                        tool_use_id: tool_use_id.map(|s| Arc::<str>::from(s.as_str())),
+                        detail: detail.map(|d| Arc::<str>::from(d.display())),
                     };
                     slot.state_started_at = now;
                 }
@@ -218,14 +216,16 @@ impl Reducer {
             }
             AgentEvent::Waiting { agent_id, reason } => {
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
-                    slot.state = ActivityState::Waiting { reason };
+                    slot.state = ActivityState::Waiting {
+                        reason: Arc::<str>::from(reason.as_str()),
+                    };
                     slot.state_started_at = now;
                 }
             }
             AgentEvent::Rename { agent_id, label } => {
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
-                    if slot.label != label {
-                        slot.label = label;
+                    if &*slot.label != label.as_str() {
+                        slot.label = Arc::<str>::from(label.as_str());
                     }
                 }
             }
@@ -245,10 +245,8 @@ impl Reducer {
     fn gc(&mut self, now: SystemTime) {
         // SystemTime::duration_since returns Err when `ts` is in the future
         // (clock went backwards). Drop those — stale entries either way.
-        self.recent_hook_tool_uses.retain(|_, ts| {
-            now.duration_since(*ts)
-                .is_ok_and(|d| d < HOOK_WINS_WINDOW)
-        });
+        self.recent_hook_tool_uses
+            .retain(|_, ts| now.duration_since(*ts).is_ok_and(|d| d < HOOK_WINS_WINDOW));
     }
 
     /// Remove agents whose exit animation has finished. Called at the top
@@ -277,11 +275,4 @@ fn event_tool_use_id(ev: &AgentEvent) -> Option<&str> {
         | AgentEvent::ActivityEnd { tool_use_id, .. } => tool_use_id.as_deref(),
         _ => None,
     }
-}
-
-fn is_task_detail(detail: &str) -> bool {
-    // The decoder formats ActivityStart detail as "{tool_name}{target}", so
-    // Task tool calls produce "Task" or "Task: ..." (Task currently has no
-    // target template, so usually just "Task").
-    detail == "Task" || detail.starts_with("Task:") || detail.starts_with("Task ")
 }

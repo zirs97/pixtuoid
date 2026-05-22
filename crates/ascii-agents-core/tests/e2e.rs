@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use ascii_agents_core::render::test_renderer::TestRenderer;
 use ascii_agents_core::source::Activity;
 use ascii_agents_core::state::ActivityState;
-use ascii_agents_core::{AgentEvent, AgentId, Reducer, Renderer, SceneState, Transport};
+use ascii_agents_core::{AgentEvent, AgentId, Reducer, SceneState, Transport};
 
 #[test]
 fn scripted_timeline_drives_scene_through_states() {
@@ -16,18 +16,17 @@ fn scripted_timeline_drives_scene_through_states() {
     let id = AgentId::from_transcript_path("/p/a.jsonl");
 
     let mut now = SystemTime::now();
-    let mut step =
-        |events: Vec<AgentEvent>,
-         dt_ms: u64,
-         r: &mut Reducer,
-         s: &mut SceneState,
-         render: &mut TestRenderer| {
-            for ev in events {
-                r.apply(s, ev, now, Transport::Hook);
-            }
-            render.render(s).unwrap();
-            now += Duration::from_millis(dt_ms);
-        };
+    let mut step = |events: Vec<AgentEvent>,
+                    dt_ms: u64,
+                    r: &mut Reducer,
+                    s: &mut SceneState,
+                    render: &mut TestRenderer| {
+        for ev in events {
+            r.apply(s, ev, now, Transport::Hook);
+        }
+        render.record(s);
+        now += Duration::from_millis(dt_ms);
+    };
 
     step(
         vec![AgentEvent::SessionStart {
@@ -101,7 +100,10 @@ fn scripted_timeline_drives_scene_through_states() {
     // walkout animation) and the reducer's sweep removes it ~4.5s later
     // on the next tick / event. The slot is still present in the
     // immediate snapshot but has `exiting_at` set.
-    let exit_slot = snaps[4].agents.get(&id).expect("slot still present for exit animation");
+    let exit_slot = snaps[4]
+        .agents
+        .get(&id)
+        .expect("slot still present for exit animation");
     assert!(
         exit_slot.exiting_at.is_some(),
         "SessionEnd should mark exiting_at, not drop immediately"

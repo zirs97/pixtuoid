@@ -73,7 +73,18 @@ fn main() -> Result<()> {
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
     let pack = load_default_pack()?;
     let mut cache = FrameCache::new();
-    draw_scene(&mut term, &scene, &pack, now, &mut buf, &mut cache)?;
+    let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
+    let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();
+    draw_scene(
+        &mut term,
+        &scene,
+        &pack,
+        now,
+        &mut buf,
+        &mut cache,
+        &mut router,
+        &mut overlay,
+    )?;
 
     save_backend_as_png(&term, &args.out)?;
     println!("wrote {}", args.out.display());
@@ -125,10 +136,7 @@ async fn capture_live_scene(projects_root: &str, listen_secs: u64) -> Result<Sce
     for (id, slot) in &snapshot.agents {
         println!(
             "  {} ({}) at desk {}: {:?}",
-            slot.label,
-            id,
-            slot.desk_index,
-            slot.state
+            slot.label, id, slot.desk_index, slot.state
         );
     }
     watcher_handle.abort();
@@ -139,21 +147,35 @@ fn sample_scene(now: SystemTime) -> SceneState {
     use std::time::Duration as D;
     let mut s = SceneState::new(12);
     let agents: [(&str, ActivityState, D); 7] = [
-        ("working",   ActivityState::Active {
-            activity: Activity::Typing,
-            tool_use_id: Some("tu_a".into()),
-            detail: Some("Write: src/foo.rs".into()),
-        }, D::from_millis(0)),
-        ("waiting",   ActivityState::Waiting { reason: "permission?".into() }, D::from_millis(0)),
-        ("idle-sit",  ActivityState::Idle, D::from_millis(1_000)),       // phase 0
-        ("walk-out",  ActivityState::Idle, D::from_millis(4_250)),       // phase 1
-        ("at-wp",     ActivityState::Idle, D::from_millis(6_000)),       // phase 2
-        ("walk-back", ActivityState::Idle, D::from_millis(8_250)),       // phase 3
-        ("working-2", ActivityState::Active {
-            activity: Activity::Typing,
-            tool_use_id: Some("tu_b".into()),
-            detail: Some("Edit: lib.rs".into()),
-        }, D::from_millis(140)),                                          // mid typing cycle
+        (
+            "working",
+            ActivityState::Active {
+                activity: Activity::Typing,
+                tool_use_id: Some("tu_a".into()),
+                detail: Some("Write: src/foo.rs".into()),
+            },
+            D::from_millis(0),
+        ),
+        (
+            "waiting",
+            ActivityState::Waiting {
+                reason: "permission?".into(),
+            },
+            D::from_millis(0),
+        ),
+        ("idle-sit", ActivityState::Idle, D::from_millis(1_000)), // phase 0
+        ("walk-out", ActivityState::Idle, D::from_millis(4_250)), // phase 1
+        ("at-wp", ActivityState::Idle, D::from_millis(6_000)),    // phase 2
+        ("walk-back", ActivityState::Idle, D::from_millis(8_250)), // phase 3
+        (
+            "working-2",
+            ActivityState::Active {
+                activity: Activity::Typing,
+                tool_use_id: Some("tu_b".into()),
+                detail: Some("Edit: lib.rs".into()),
+            },
+            D::from_millis(140),
+        ), // mid typing cycle
     ];
     for (i, (key, state, age)) in agents.iter().enumerate() {
         let id = AgentId::from_transcript_path(&format!("/demo/{key}.jsonl"));
@@ -161,10 +183,10 @@ fn sample_scene(now: SystemTime) -> SceneState {
             id,
             AgentSlot {
                 agent_id: id,
-                source: "claude-code".into(),
-                session_id: format!("demo-{key}"),
-                cwd: PathBuf::from("/demo"),
-                label: key.to_string(),
+                source: std::sync::Arc::from("claude-code"),
+                session_id: std::sync::Arc::from(format!("demo-{key}").as_str()),
+                cwd: std::sync::Arc::from(PathBuf::from("/demo").as_path()),
+                label: std::sync::Arc::from(*key),
                 state: state.clone(),
                 state_started_at: now - *age,
                 created_at: now - *age,
