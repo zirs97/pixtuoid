@@ -265,6 +265,19 @@ fn paint_floor_and_walls(
 /// Per-dot twinkle: each city-window dot has its own ~600-1400ms cycle and
 /// each cycle rerolls on/off via a deterministic hash. Bias toward "on" so
 /// the skyline is mostly lit with the occasional dot blinking off.
+/// Static "is this building window lit?" decision — independent of time.
+/// Deterministic hash of (window_idx, dx, dy) so each building's window
+/// pattern is stable across frames; only `city_dot_twinkle` animates
+/// on top. ~75% of grid slots are lit so the city reads as "alive at
+/// night" without every single window being on.
+fn city_dot_lit(window_idx: u16, dx: u16, dy: u16) -> bool {
+    let mut h = (window_idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    h ^= (dx as u64).wrapping_mul(0xc6a4_a793_5bd1_e995);
+    h ^= (dy as u64).wrapping_mul(0x1656_67b1_9e37_79b9);
+    h ^= h >> 17;
+    (h % 100) < 75
+}
+
 fn city_dot_twinkle(window_idx: u16, dx: u16, dy: u16, now: SystemTime) -> bool {
     let now_ms = now
         .duration_since(std::time::UNIX_EPOCH)
@@ -546,13 +559,16 @@ fn paint_floor_to_ceiling_window(
     let lit_color = lerp_rgb(DARK_WINDOW, LIT_WINDOW, lit_strength);
     let building = lerp_rgb(BUILDING_LIGHT, BUILDING_DARK, look.darkness);
 
-    // Sky gradient precomputed once per row instead of per pixel —
-    // mix_lab is an sRGB→Lab→Mix→sRGB roundtrip and was the single
-    // largest per-frame cost (a 22×12 window × 5 windows = 1320 calls /
-    // frame). Now N=glass_h calls total per window.
-    let skyline: &[u16] = &[3, 5, 4, 6, 3, 5, 4, 5, 3, 6, 4, 5];
-    let lit_dots: &[(u16, u16)] = &[(1, 1), (3, 0), (5, 2), (7, 1), (9, 2), (2, 3), (6, 3)];
+    // Skyline silhouette as a 0..15 PATTERN; the actual pixel height is
+    // computed per-window so the skyline auto-scales with the glass
+    // height. On a 12-px-tall window the buildings are 3..7 px, on a
+    // 50-px-tall window they fill 12..24 px — same visual proportion.
+    const SKYLINE_PATTERN: &[u8] = &[8, 14, 11, 15, 6, 13, 9, 12, 7, 15, 10, 13];
+    const PATTERN_MAX: u16 = 15;
     let glass_h = h.saturating_sub(2);
+    let min_bh = (glass_h / 5).max(3);
+    let max_bh = (glass_h * 50 / 100).max(min_bh + 4);
+    let bh_range = max_bh.saturating_sub(min_bh);
     let sky_norm = (glass_h as f32) * 0.7;
     let sky_row: Vec<Rgb> = (0..glass_h)
         .map(|gy| {
@@ -576,15 +592,22 @@ fn paint_floor_to_ceiling_window(
             }
             let glass_dx = dx - 1;
             let glass_dy = dy - 1;
-            let building_h = skyline[((glass_dx + window_idx * 3) % skyline.len() as u16) as usize];
+            let pat_idx = ((glass_dx + window_idx * 3) % SKYLINE_PATTERN.len() as u16) as usize;
+            let pat = SKYLINE_PATTERN[pat_idx] as u16;
+            let building_h = min_bh + (pat * bh_range) / PATTERN_MAX;
             let in_building = glass_dy >= glass_h.saturating_sub(building_h);
 
             if in_building {
                 let bldg_y = glass_dy - (glass_h - building_h);
-                let is_dot = lit_dots
-                    .iter()
-                    .any(|&(lx, ly)| lx == glass_dx && ly == bldg_y);
-                if is_dot && city_dot_twinkle(window_idx, glass_dx, bldg_y, now) {
+                // Lit-window dots arranged on a 2-px grid (every other
+                // column + every other row of the building). Per-dot
+                // lit/unlit decision is hashed from (col, row, win_idx)
+                // so the same building always shows the same pattern;
+                // ~70 % of grid slots are lit at night. Twinkle animates
+                // the lit ones on independent cycles.
+                let on_grid = glass_dx % 2 == 1 && bldg_y % 2 == 1;
+                let lit_base = on_grid && city_dot_lit(window_idx, glass_dx, bldg_y);
+                if lit_base && city_dot_twinkle(window_idx, glass_dx, bldg_y, now) {
                     buf.put(px, py, lit_color);
                 } else {
                     buf.put(px, py, building);
@@ -1530,22 +1553,11 @@ pub fn render_to_rgb_buffer(
     // Artificial light pass — at night the floor dims toward navy and
     // ceiling fluorescents + the floor lamp halo paint the visible
     // bright spots. During the day the dim is near-zero and the pools
-    // are subtle ambient highlights.
-    //
-    // After-hours boost: when nobody's actively working (zero Active
-    // agents), nudge the dim factor higher even during the day — reads
-    // as "the office is quiet right now" without going pitch black.
-    // Floor lamp + window backlight stay bright (they're independent
-    // layers), so the empty office gets a moody half-lit look.
-    let active_count = scene
-        .agents
-        .values()
-        .filter(|a| matches!(a.state, ActivityState::Active { .. }))
-        .count();
-    let afterhours = if active_count == 0 { 0.35 } else { 0.0 };
-    let effective_darkness = (look.darkness + afterhours).min(1.0);
-    dim_floor_overlay(buf, top_wall_h, buf_h, effective_darkness * 0.45);
-    let pool_strength = 0.15 + 0.30 * effective_darkness;
+    // are subtle ambient highlights. The wall-clock-based darkness
+    // already handles "after hours" cleanly — an activity-based boost
+    // flickers because Active flips on/off per tool call.
+    dim_floor_overlay(buf, top_wall_h, buf_h, look.darkness * 0.45);
+    let pool_strength = 0.15 + 0.30 * look.darkness;
     for desk in &layout.home_desks {
         paint_ceiling_pool(
             buf,
@@ -1579,9 +1591,7 @@ pub fn render_to_rgb_buffer(
         );
     }
     if let Some(lamp) = layout.floor_lamp {
-        // Lamp halo follows the after-hours boost too, so the lamp
-        // visibly glows when the office is quiet during the day.
-        paint_floor_lamp_halo(buf, lamp.x, lamp.y, effective_darkness * 0.55);
+        paint_floor_lamp_halo(buf, lamp.x, lamp.y, look.darkness * 0.55);
     }
 
     // Live wall clock painted after the wall (so hands sit on top of it)

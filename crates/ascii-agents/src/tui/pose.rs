@@ -303,15 +303,40 @@ fn idle_pose(slot: &AgentSlot, desk: Point, layout: &Layout, elapsed_ms: u64) ->
 
     // Destination: lounge waypoint OR aimless point.
     let (dest, at_dest_pose): (Point, Pose) = if aimless {
-        // Aimless point: random spot in the walkway, deterministic per-cycle.
-        let walkway = &layout.walkway;
-        let rand = (slot.agent_id.raw() ^ cycle_n.wrapping_mul(0xd1b5_4a32_d192_ed03)) as u32;
-        let dx = (rand as u16) % walkway.width.max(1);
-        let dy = walkway.height / 2;
-        let p = Point {
-            x: walkway.x + dx,
-            y: walkway.y + dy,
-        };
+        // Aimless: ANY walkable pixel in the office is fair game —
+        // meeting room interior, pantry, cubicle aisles, the corridor,
+        // anywhere a character could stand. Rejection-sample up to
+        // 16 hashed (x, y) pairs against the walkability mask; pick
+        // the first walkable one. Falls back to the corridor center
+        // if every probe lands on furniture (vanishingly rare).
+        //
+        // Sampling bounds avoid the top wall band (y < top_margin) and
+        // the baseboard (last 3 rows). Deterministic per (agent, cycle).
+        let seed = slot.agent_id.raw() ^ cycle_n.wrapping_mul(0xd1b5_4a32_d192_ed03);
+        let y_lo = layout.top_margin;
+        let y_hi = layout.buf_h.saturating_sub(3);
+        let y_range = y_hi.saturating_sub(y_lo).max(1);
+        let mut found: Option<Point> = None;
+        for i in 0..16u64 {
+            let h = seed
+                .wrapping_add(i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+                .wrapping_mul(0xc6a4_a793_5bd1_e995);
+            let x = (h as u16) % layout.buf_w.max(1);
+            let y = y_lo + ((h >> 16) as u16) % y_range;
+            if layout.is_walkable(x, y) {
+                found = Some(Point { x, y });
+                break;
+            }
+        }
+        let p = found.unwrap_or_else(|| {
+            // Vanishingly rare fallback — the corridor center is always
+            // walkable by construction.
+            let c = layout.corridor.unwrap_or(layout.walkway);
+            Point {
+                x: c.x + c.width / 2,
+                y: c.y + c.height / 2,
+            }
+        });
         (p, Pose::AimlessAt { dest: p })
     } else {
         let wp_idx = waypoint_index_for_cycle(slot.agent_id, cycle_n, layout.waypoints.len());
