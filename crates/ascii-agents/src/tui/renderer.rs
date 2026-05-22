@@ -663,16 +663,31 @@ pub fn draw_scene<B: Backend>(
             }
         }
 
-        // Labels above each home desk. Same indexing fix as the passes
-        // above. State is conveyed visually (screen glow for Active,
-        // waiting bubble for Waiting) so the label only carries identity —
-        // budget the whole 16-char widget for the name, and keep the
-        // session-id disambiguation suffix when the base would overflow.
+        // Labels above each home desk. Disambiguate ONLY when multiple
+        // visible agents share a label (e.g. two CC sessions in the same
+        // project directory). Unique sessions get the bare name — no
+        // noisy `·xxxx` suffix.
+        let mut label_counts: HashMap<&str, usize> = HashMap::new();
+        for agent in &agents {
+            *label_counts.entry(agent.label.as_str()).or_insert(0) += 1;
+        }
         for agent in &agents {
             let Some(desk) = layout.home_desks.get(agent.desk_index) else { continue };
             let lx = scene_rect.x + desk.x;
             let ly = scene_rect.y + (desk.y / 2).saturating_sub(1);
-            let display = truncate_label(&agent.label, (DESK_W + 4) as usize);
+            let needs_disambig =
+                label_counts.get(agent.label.as_str()).copied().unwrap_or(0) > 1
+                    && agent.session_id.len() >= 4;
+            let raw: std::borrow::Cow<'_, str> = if needs_disambig {
+                std::borrow::Cow::Owned(format!(
+                    "{}·{}",
+                    agent.label,
+                    &agent.session_id[..4]
+                ))
+            } else {
+                std::borrow::Cow::Borrowed(agent.label.as_str())
+            };
+            let display = truncate_label(&raw, (DESK_W + 4) as usize);
             let para = Paragraph::new(Span::styled(
                 display.into_owned(),
                 Style::default().fg(Color::White),

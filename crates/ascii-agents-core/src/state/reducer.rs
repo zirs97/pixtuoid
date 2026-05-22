@@ -138,21 +138,15 @@ impl Reducer {
                     return;
                 };
                 self.next_label_n += 1;
-                let base = cwd
+                let label = cwd
                     .file_name()
                     .and_then(|n| n.to_str())
                     .filter(|s| !s.is_empty())
                     .map(String::from)
                     .unwrap_or_else(|| format!("cc#{}", self.next_label_n));
-                // Disambiguate multiple sessions sharing a cwd (e.g. several
-                // CC processes in TikTok-Android/) by suffixing a short slice
-                // of the session_id. Subagents will overwrite this when their
-                // attributionAgent Rename event arrives.
-                let label = if session_id.len() >= 4 {
-                    format!("{base}·{}", &session_id[..4])
-                } else {
-                    base
-                };
+                // Disambiguation for multiple sessions sharing a cwd happens
+                // at render time, not here — we don't want to suffix unique
+                // sessions with a noisy `·xxxx` they don't need.
                 scene.agents.insert(
                     agent_id,
                     AgentSlot {
