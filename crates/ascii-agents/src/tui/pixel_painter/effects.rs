@@ -12,26 +12,24 @@ use ascii_agents_core::sprite::format::Pack;
 use ascii_agents_core::sprite::{Rgb, RgbBuffer};
 use ascii_agents_core::AgentSlot;
 
-use super::palette::{agent_palette, blend};
+use super::palette::blend;
 use crate::tui::layout::Point;
 
-/// Office chair painted BEHIND the character — a darkened version of the
-/// agent's shirt color. Reads as a top-down chair back behind the sitter.
+/// Office chair painted BEHIND the character — flat charcoal grey,
+/// independent of the agent. Used to read as a top-down chair from
+/// behind the sitter. (Was previously tinted by shirt color, which
+/// looked like a colored background rather than a chair.)
+///
+/// `_pack` and `_agent` are intentionally unused now but kept in the
+/// signature so the drawable dispatch site doesn't need to change if
+/// we later want per-agent chair variants (e.g. exec chair vs stool).
 pub(super) fn paint_chair_behind(
     buf: &mut RgbBuffer,
     anchor: Point,
-    agent: &AgentSlot,
-    pack: &Pack,
+    _agent: &AgentSlot,
+    _pack: &Pack,
 ) {
-    let pal = agent_palette(&pack.palette, agent);
-    let Some(shirt) = pal.get('B').flatten() else {
-        return;
-    };
-    let chair = Rgb(
-        ((shirt.0 as u16) * 55 / 100) as u8,
-        ((shirt.1 as u16) * 55 / 100) as u8,
-        ((shirt.2 as u16) * 55 / 100) as u8,
-    );
+    const CHAIR: Rgb = Rgb(56, 58, 66);
     // Slightly larger than the 8x10 seated sprite footprint — chair extends
     // 1 px past the character on each side so the upholstery is visible
     // even where the character body is fully opaque.
@@ -40,7 +38,7 @@ pub(super) fn paint_chair_behind(
             let px = anchor.x.saturating_sub(1) + dx;
             let py = anchor.y + dy;
             if px < buf.width && py < buf.height {
-                buf.put(px, py, chair);
+                buf.put(px, py, CHAIR);
             }
         }
     }
