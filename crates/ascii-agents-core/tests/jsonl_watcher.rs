@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use ascii_agents_core::source::jsonl::JsonlWatcher;
 use ascii_agents_core::source::AgentEvent;
-use ascii_agents_core::state::reducer::Transport;
+use ascii_agents_core::source::Transport;
 
 #[tokio::test]
 async fn watcher_emits_session_start_then_activity_for_tool_use() {
@@ -268,6 +268,63 @@ async fn watcher_emits_session_start_for_recent_files_on_startup() {
     }
     assert!(got_start, "fresh file should produce SessionStart");
     assert!(got_activity, "fresh file content should be replayed");
+    handle.abort();
+}
+
+/// First-sight cwd extraction must scan past unparsable prefix lines.
+/// `extract_cwd` previously short-circuited via `?` on the first non-JSON
+/// (or non-UTF8) line, even if a later line carried the `cwd` field.
+#[tokio::test]
+async fn first_sight_extracts_cwd_past_non_json_prefix() {
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().to_path_buf();
+    let project_dir = projects_root.join("proj-cwd");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+    let transcript = project_dir.join("ses-cwd.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let watcher = JsonlWatcher::new(projects_root.clone());
+    let handle = tokio::spawn(async move { watcher.run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // First line: garbage. Second line: a system line carrying cwd. Third
+    // line: a tool_use. Watcher should still derive cwd = /real-repo on the
+    // SessionStart for first-sight.
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    f.write_all(b"not-json-prefix\n").await.unwrap();
+    let sys_line = serde_json::json!({
+        "type": "system",
+        "subtype": "session_start",
+        "sessionId": "ses-cwd",
+        "cwd": "/real-repo"
+    });
+    f.write_all(format!("{sys_line}\n").as_bytes())
+        .await
+        .unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut found_cwd = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((_, AgentEvent::SessionStart { cwd, .. }))) =
+            tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
+        {
+            found_cwd = Some(cwd);
+            break;
+        }
+    }
+    assert_eq!(
+        found_cwd,
+        Some(std::path::PathBuf::from("/real-repo")),
+        "extract_cwd must scan past non-JSON lines to find cwd"
+    );
     handle.abort();
 }
 

@@ -6,8 +6,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, warn};
 
 use crate::source::decoder::decode_hook_payload;
-use crate::source::TaggedSender;
-use crate::state::reducer::Transport;
+use crate::source::{TaggedSender, Transport};
 
 pub struct HookSocketListener {
     listener: UnixListener,

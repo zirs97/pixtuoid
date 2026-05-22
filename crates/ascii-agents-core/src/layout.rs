@@ -171,7 +171,14 @@ impl SceneLayout {
         let col_w = DESK_W + DESK_GAP_X;
         let row_h = DESK_H + DESK_GAP_Y;
         let cols = ((right_w.saturating_sub(DESK_GAP_X)) / col_w).max(1);
-        let rows = (cubicle_h / row_h).max(1);
+        // Extra padding between the viewing couch (top of cubicle area)
+        // and the first row of desks. Scales with buf_h so taller
+        // terminals get more breathing room — about 1 extra row of
+        // pixels per 20 px of buffer height above 60. At buf_h=70 this
+        // is ~0 (no change from old layout); at buf_h=200 it adds 7 px.
+        let couch_to_desk_extra = buf_h.saturating_sub(60) / 20;
+        let rows_available = cubicle_h.saturating_sub(couch_to_desk_extra);
+        let rows = (rows_available / row_h).max(1);
         let max_grid = (cols * rows) as usize;
         let n = num_agents.min(max_grid).min(MAX_VISIBLE_DESKS);
         let mut home_desks = Vec::with_capacity(n);
@@ -180,7 +187,7 @@ impl SceneLayout {
             let c = (i as u16) % cols;
             home_desks.push(Point {
                 x: right_x + DESK_GAP_X + c * col_w,
-                y: cubicle_band.y + DESK_GAP_Y + r * row_h,
+                y: cubicle_band.y + DESK_GAP_Y + couch_to_desk_extra + r * row_h,
             });
         }
 

@@ -5,7 +5,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::id::AgentId;
-use crate::state::reducer::Transport;
+
+/// Which transport produced an event — used by the reducer for hook-wins
+/// dedup. Lives on the source side because every `Source` implementor must
+/// tag its own events; the reducer is downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Hook,
+    Jsonl,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Activity {

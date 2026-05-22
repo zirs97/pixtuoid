@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use ascii_agents_core::source::{Activity, AgentEvent};
-use ascii_agents_core::state::reducer::{Reducer, Transport};
+use ascii_agents_core::source::{Activity, AgentEvent, Transport};
+use ascii_agents_core::state::reducer::Reducer;
 use ascii_agents_core::state::{ActivityState, SceneState};
 use ascii_agents_core::AgentId;
 
@@ -444,6 +444,82 @@ fn rename_for_unknown_agent_is_noop() {
         Transport::Jsonl,
     );
     assert!(!scene.agents.contains_key(&id));
+}
+
+/// Regression guard: if a Hook PostToolUse arrives for a Task before its
+/// JSONL ActivityStart (startup race where Pre was missed), the matching
+/// JSONL ActivityEnd that always follows in the same transcript still drains
+/// active_tasks. After the drain, normal hook events are no longer suppressed.
+#[test]
+fn active_tasks_drained_by_jsonl_end_even_if_hook_end_arrived_first() {
+    use ascii_agents_core::source::ToolDetail;
+
+    let mut scene = SceneState::new(4);
+    let mut r = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/a.jsonl");
+    start(&mut r, &mut scene, id);
+
+    let t0 = SystemTime::now();
+
+    // Hook PostToolUse arrives first (active_tasks empty — Pre was missed).
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityEnd {
+            agent_id: id,
+            tool_use_id: Some("task-X".into()),
+        },
+        t0,
+        Transport::Hook,
+    );
+
+    // JSONL ActivityStart for the same Task arrives after the hook dedup
+    // window has expired — passes through and populates active_tasks.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("task-X".into()),
+            detail: Some(ToolDetail::Task),
+        },
+        t0 + Duration::from_millis(700),
+        Transport::Jsonl,
+    );
+
+    // JSONL ActivityEnd from the same transcript drains active_tasks.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityEnd {
+            agent_id: id,
+            tool_use_id: Some("task-X".into()),
+        },
+        t0 + Duration::from_millis(800),
+        Transport::Jsonl,
+    );
+
+    // Subsequent hook activity must apply normally — proves active_tasks drained.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("other".into()),
+            detail: Some("Bash: ls".into()),
+        },
+        t0 + Duration::from_millis(900),
+        Transport::Hook,
+    );
+
+    match &scene.agents.get(&id).unwrap().state {
+        ActivityState::Active { detail, .. } => {
+            assert_eq!(
+                detail.as_deref(),
+                Some("Bash: ls"),
+                "active_tasks must drain so subsequent hook events apply"
+            );
+        }
+        other => panic!("expected Active(Bash: ls), got {other:?}"),
+    }
 }
 
 #[test]

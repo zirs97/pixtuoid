@@ -2,16 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use crate::source::AgentEvent;
+use crate::source::{AgentEvent, Transport};
 use crate::state::{ActivityState, AgentSlot, SceneState};
 use crate::AgentId;
-
-/// Which transport produced an event — used for dedup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Transport {
-    Hook,
-    Jsonl,
-}
 
 /// Window in which a Hook event suppresses a later Jsonl event with the same tool_use_id.
 pub const HOOK_WINS_WINDOW: Duration = Duration::from_millis(500);

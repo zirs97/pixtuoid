@@ -10,8 +10,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use crate::source::decoder::{decode_jsonl_line, SOURCE_NAME};
-use crate::source::{AgentEvent, TaggedSender};
-use crate::state::reducer::Transport;
+use crate::source::{AgentEvent, TaggedSender, Transport};
 use crate::AgentId;
 
 pub struct JsonlWatcher {
@@ -323,8 +322,12 @@ fn extract_cwd(bytes: &[u8]) -> Option<PathBuf> {
         if line.is_empty() {
             continue;
         }
-        let s = std::str::from_utf8(line).ok()?;
-        let v: serde_json::Value = serde_json::from_str(s).ok()?;
+        let Ok(s) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
+            continue;
+        };
         if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
             return Some(PathBuf::from(cwd));
         }

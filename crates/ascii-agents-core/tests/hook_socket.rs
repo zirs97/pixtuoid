@@ -6,8 +6,7 @@ use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
 use ascii_agents_core::source::hook::HookSocketListener;
-use ascii_agents_core::source::AgentEvent;
-use ascii_agents_core::state::reducer::Transport;
+use ascii_agents_core::source::{AgentEvent, Transport};
 
 #[tokio::test]
 async fn listener_parses_line_and_emits_event() {
