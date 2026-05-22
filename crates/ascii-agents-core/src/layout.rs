@@ -581,7 +581,7 @@ fn build_walkable_mask(
     for wp in waypoints {
         let (w, h) = match wp.kind {
             WaypointKind::Couch => (14, 6),
-            WaypointKind::Pantry => (14, 7),
+            WaypointKind::Pantry => (20, 8),
         };
         // Pad=1 (not OBSTACLE_PAD_PX=2) — waypoint furniture paints in
         // Pass 1.5 (after characters) so a visitor's body is occluded

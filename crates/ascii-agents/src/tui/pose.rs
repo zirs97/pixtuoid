@@ -228,7 +228,7 @@ impl PoseHistory {
 /// instantly place the agent back at their desk. 600ms is short enough
 /// to feel responsive (the user wants to see the tool fire) but long
 /// enough to read as motion, not a pop.
-const SNAP_BACK_MS: u64 = 600;
+const SNAP_BACK_MS: u64 = 900;
 /// Minimum manhattan distance (px) from current rendered position to
 /// the desk before we bother animating the snap-back. Below this the
 /// teleport is invisible and animating wastes a frame.
@@ -272,11 +272,22 @@ pub fn derive_with_routing(
             let dist =
                 (prev.x as i32 - desk.x as i32).abs() + (prev.y as i32 - desk.y as i32).abs();
             if dist >= SNAP_BACK_MIN_DIST {
+                // Walk-end target is offset (+6, +4) from the desk pixel so
+                // walking_anchor(target) lands on the SAME sprite anchor
+                // that seated_anchor(desk) would. Without this offset the
+                // sprite jumps ~6 px right + 4 px down at the moment the
+                // pose flips from Walking → SeatedTyping. The agent ends
+                // visually AT the desk (anchor-equivalent), so there's no
+                // perceivable transition flash.
+                let snap_target = Point {
+                    x: desk.x + 6,
+                    y: desk.y + 4,
+                };
                 let t = (since_state * 1000 / SNAP_BACK_MS).min(1000) as u16;
                 let frame = ((since_state / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
                 Pose::Walking {
                     from: prev,
-                    to: desk,
+                    to: snap_target,
                     t_x1000: t,
                     frame,
                 }
