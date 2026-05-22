@@ -512,11 +512,20 @@ fn paint_floor_to_ceiling_window(
     let lit_color = lerp_rgb(DARK_WINDOW, LIT_WINDOW, lit_strength);
     let building = lerp_rgb(BUILDING_LIGHT, BUILDING_DARK, look.darkness);
 
-    // Building skyline heights per glass column. Six-pattern repeated,
-    // offset by window_idx so adjacent windows don't show identical skylines.
+    // Sky gradient precomputed once per row instead of per pixel —
+    // mix_lab is an sRGB→Lab→Mix→sRGB roundtrip and was the single
+    // largest per-frame cost (a 22×12 window × 5 windows = 1320 calls /
+    // frame). Now N=glass_h calls total per window.
     let skyline: &[u16] = &[3, 5, 4, 6, 3, 5, 4, 5, 3, 6, 4, 5];
-    // Lit-window dot positions inside each building (dx_in_glass, dy_from_top_of_building).
     let lit_dots: &[(u16, u16)] = &[(1, 1), (3, 0), (5, 2), (7, 1), (9, 2), (2, 3), (6, 3)];
+    let glass_h = h.saturating_sub(2);
+    let sky_norm = (glass_h as f32) * 0.7;
+    let sky_row: Vec<Rgb> = (0..glass_h)
+        .map(|gy| {
+            let sky_t = (gy as f32 / sky_norm).min(1.0);
+            lerp_rgb(look.glass_b, look.glass_a, sky_t)
+        })
+        .collect();
 
     for dy in 0..h {
         for dx in 0..w {
@@ -533,17 +542,10 @@ fn paint_floor_to_ceiling_window(
             }
             let glass_dx = dx - 1;
             let glass_dy = dy - 1;
-            let glass_h = h - 2;
-            // Sky gradient — light top, deeper bottom — uses time-of-day colors.
-            let sky_t = (glass_dy as f32) / (glass_h as f32 * 0.7);
-            let sky_color = lerp_rgb(look.glass_b, look.glass_a, sky_t.min(1.0));
-
-            // Building silhouette at the bottom of the glass.
             let building_h = skyline[((glass_dx + window_idx * 3) % skyline.len() as u16) as usize];
             let in_building = glass_dy >= glass_h.saturating_sub(building_h);
 
             if in_building {
-                // Building wall (dark slab) with occasional lit window dots.
                 let bldg_y = glass_dy - (glass_h - building_h);
                 let is_dot = lit_dots.iter().any(|&(lx, ly)| lx == glass_dx && ly == bldg_y);
                 if is_dot && city_dot_twinkle(window_idx, glass_dx, bldg_y, now) {
@@ -552,7 +554,7 @@ fn paint_floor_to_ceiling_window(
                     buf.put(px, py, building);
                 }
             } else {
-                buf.put(px, py, sky_color);
+                buf.put(px, py, sky_row[glass_dy as usize]);
             }
         }
     }
