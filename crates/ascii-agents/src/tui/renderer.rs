@@ -33,12 +33,12 @@ pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
 // --- Colors ---------------------------------------------------------------
 const BG: Rgb = Rgb(28, 32, 40);
-// Carpet — soft neutral tan/grey with random flecks. Replaces the wood
-// plank pattern, which read as a brick-style staggered floor and competed
-// with the wall texture above.
-const CARPET_BASE: Rgb = Rgb(108, 96, 80);
-const CARPET_LIGHT: Rgb = Rgb(128, 116, 96);
-const CARPET_DARK: Rgb = Rgb(88, 78, 64);
+// Wood floor — warm oak tones with random light/dark flecks. Keeps the
+// soft per-pixel grain pattern from the carpet phase (no seams, no brick
+// grid) but in a wood color palette.
+const CARPET_BASE: Rgb = Rgb(150, 110, 72);
+const CARPET_LIGHT: Rgb = Rgb(178, 138, 96);
+const CARPET_DARK: Rgb = Rgb(118, 82, 50);
 const WALL: Rgb = Rgb(56, 56, 70);
 const WALL_TRIM: Rgb = Rgb(80, 80, 100);
 const BASEBOARD: Rgb = Rgb(40, 40, 52);
@@ -644,6 +644,9 @@ fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack, now: Sy
     for wp in &layout.waypoints {
         if wp.kind == WaypointKind::Couch {
             paint_lounge_rug(buf, wp.pos.x, wp.pos.y + 1, 9, 4);
+            // Small coffee table in front of the couch — wood plank with
+            // dark trim.
+            paint_coffee_table(buf, wp.pos.x, wp.pos.y + 7, 7, 3);
         }
     }
 
@@ -817,6 +820,43 @@ fn paint_character_at(
     let recolored = recolor_frame(frame, &pal, &base_pal);
     let final_frame = if flip_x { recolored.mirror_horizontal() } else { recolored };
     blit_frame(&final_frame, anchor.x, anchor.y, buf);
+}
+
+/// Small entry mat painted on the floor just inside the office door —
+/// defines the arrival zone and breaks up the otherwise-empty wood strip
+/// next to the door.
+fn paint_entry_mat(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16) {
+    const MAT_BASE: Rgb = Rgb(60, 90, 130);
+    const MAT_BORDER: Rgb = Rgb(40, 64, 96);
+    for dy in 0..h {
+        for dx in 0..w {
+            let px = x + dx;
+            let py = y + dy;
+            if px >= buf.width || py >= buf.height {
+                continue;
+            }
+            let on_border = dy == 0 || dy + 1 == h || dx == 0 || dx + 1 == w;
+            buf.put(px, py, if on_border { MAT_BORDER } else { MAT_BASE });
+        }
+    }
+}
+
+/// Low coffee table in front of the lounge couch. Wood top with darker
+/// trim along the front edge so it reads as a real piece of furniture,
+/// not just a brown rectangle.
+fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u16) {
+    const TOP: Rgb = Rgb(120, 80, 48);
+    const TRIM: Rgb = Rgb(72, 48, 26);
+    let min_x = cx.saturating_sub(w / 2);
+    let max_x = (cx + w / 2 + (w & 1)).min(buf.width);
+    let min_y = cy.saturating_sub(h / 2);
+    let max_y = (cy + h / 2 + (h & 1)).min(buf.height);
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let on_front = y + 1 == max_y;
+            buf.put(x, y, if on_front { TRIM } else { TOP });
+        }
+    }
 }
 
 /// Decorative lounge rug under the couch. Warm rust-red with a slightly
@@ -1134,6 +1174,11 @@ pub fn draw_scene<B: Backend>(
             if let Some(frame) = pack.animation("door").and_then(|a| a.frames.first()) {
                 blit_frame(frame, door_pos.x, door_pos.y, buf);
             }
+            // Entry mat on the floor just inside the door. Defines the
+            // arrival zone and breaks up the empty wood strip there.
+            let mat_x = door_pos.x.saturating_sub(2);
+            let mat_y = 15;
+            paint_entry_mat(buf, mat_x, mat_y, 10, 2);
         }
         paint_lounge_decor(buf, &layout, pack, now);
 
