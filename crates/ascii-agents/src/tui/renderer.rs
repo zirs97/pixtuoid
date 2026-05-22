@@ -417,7 +417,9 @@ fn walking_position(from: Point, to: Point, t_x1000: u16) -> Point {
     }
 }
 
-/// Paint a character at an arbitrary anchor with per-agent recolor.
+/// Paint a character at an arbitrary anchor with per-agent recolor. `flip_x`
+/// mirrors the sprite horizontally — used to make walkers face the direction
+/// they're moving.
 fn paint_character_at(
     buf: &mut RgbBuffer,
     anim_name: &str,
@@ -425,13 +427,32 @@ fn paint_character_at(
     anchor: Point,
     agent: &AgentSlot,
     pack: &Pack,
+    flip_x: bool,
 ) {
     let base_pal = pack.palette.clone();
     let pal = agent_palette(&base_pal, agent);
     let Some(anim) = pack.animation(anim_name) else { return };
     let Some(frame) = anim.frames.get(frame_idx).or_else(|| anim.frames.first()) else { return };
     let recolored = recolor_frame(frame, &pal, &base_pal);
-    blit_frame(&recolored, anchor.x, anchor.y, buf);
+    let final_frame = if flip_x { recolored.mirror_horizontal() } else { recolored };
+    blit_frame(&final_frame, anchor.x, anchor.y, buf);
+}
+
+/// "Active" screen glow painted on top of the desk sprite while an agent is
+/// in `ActivityState::Active`. Reads instantly from across the screen as
+/// "this workstation is busy", which the typing-frame animation alone is too
+/// small (8 px head) to convey.
+fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16) {
+    const GLOW: Rgb = Rgb(140, 240, 170);
+    for dy in 1..=2 {
+        for dx in 4..=9 {
+            let px = desk_x + dx;
+            let py = desk_y + dy;
+            if px < buf.width && py < buf.height {
+                buf.put(px, py, GLOW);
+            }
+        }
+    }
 }
 
 // --- Speech bubble overlay (kept from the prior renderer) -----------------
@@ -545,6 +566,9 @@ pub fn draw_scene<B: Backend>(
             if let Some(frame) = desk_anim.and_then(|a| a.frames.first()) {
                 blit_frame(frame, desk.x, desk.y, buf);
             }
+            if matches!(agent.state, ActivityState::Active { .. }) {
+                paint_screen_glow(buf, desk.x, desk.y);
+            }
         }
 
         // Pass 2: characters by pose.
@@ -553,14 +577,14 @@ pub fn draw_scene<B: Backend>(
             let Some(p) = pose::derive(agent, now, &layout) else { continue };
             match p {
                 Pose::SeatedIdle => {
-                    paint_character_at(buf, "seated", 0, seated_anchor(desk), agent, pack);
+                    paint_character_at(buf, "seated", 0, seated_anchor(desk), agent, pack, false);
                 }
                 Pose::SeatedTyping { frame } => {
-                    paint_character_at(buf, "typing", frame, seated_anchor(desk), agent, pack);
+                    paint_character_at(buf, "typing", frame, seated_anchor(desk), agent, pack, false);
                 }
                 Pose::StandingAtDesk => {
                     let anchor = standing_at_desk_anchor(desk);
-                    paint_character_at(buf, "standing", 0, anchor, agent, pack);
+                    paint_character_at(buf, "standing", 0, anchor, agent, pack, false);
                     if matches!(agent.state, ActivityState::Waiting { .. }) {
                         paint_waiting_bubble(buf, anchor);
                     }
@@ -578,15 +602,16 @@ pub fn draw_scene<B: Backend>(
                                 ("standing", waypoint_anchor(wp_obj.pos))
                             }
                         };
-                        paint_character_at(buf, anim_name, 0, anchor, agent, pack);
+                        paint_character_at(buf, anim_name, 0, anchor, agent, pack, false);
                     }
                 }
                 Pose::AimlessAt { dest } => {
-                    paint_character_at(buf, "standing", 0, waypoint_anchor(dest), agent, pack);
+                    paint_character_at(buf, "standing", 0, waypoint_anchor(dest), agent, pack, false);
                 }
                 Pose::Walking { from, to, t_x1000, frame } => {
                     let pos = walking_position(from, to, t_x1000);
-                    paint_character_at(buf, "walking", frame, walking_anchor(pos), agent, pack);
+                    let flip = to.x < from.x;
+                    paint_character_at(buf, "walking", frame, walking_anchor(pos), agent, pack, flip);
                 }
             }
         }

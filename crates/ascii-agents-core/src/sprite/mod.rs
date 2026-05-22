@@ -44,6 +44,24 @@ pub struct Frame {
     pub pixels: Vec<Pixel>,
 }
 
+impl Frame {
+    /// Reverse each row in place — turns a right-facing sprite into a
+    /// left-facing one. Cheap (single pass, no reallocation when called
+    /// repeatedly on a buffer reuse pattern).
+    pub fn mirror_horizontal(&self) -> Self {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let mut pixels = Vec::with_capacity(self.pixels.len());
+        for y in 0..h {
+            let row_start = y * w;
+            for x in (0..w).rev() {
+                pixels.push(self.pixels[row_start + x]);
+            }
+        }
+        Self { width: self.width, height: self.height, pixels }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Sprite {
     pub frames: Vec<Frame>,
@@ -106,6 +124,25 @@ mod tests {
         let p2 = p.with_override('B', Some(Rgb(255, 0, 0)));
         assert_eq!(p2.get('B'), Some(Some(Rgb(255, 0, 0))));
         assert_eq!(p.get('B'), Some(Some(Rgb(0, 0, 255))));
+    }
+
+    #[test]
+    fn mirror_horizontal_reverses_each_row() {
+        let f = Frame {
+            width: 3,
+            height: 2,
+            pixels: vec![
+                Some(Rgb(1, 0, 0)), None, Some(Rgb(2, 0, 0)),
+                Some(Rgb(3, 0, 0)), Some(Rgb(4, 0, 0)), None,
+            ],
+        };
+        let m = f.mirror_horizontal();
+        assert_eq!(m.width, 3);
+        assert_eq!(m.height, 2);
+        assert_eq!(m.pixels, vec![
+            Some(Rgb(2, 0, 0)), None, Some(Rgb(1, 0, 0)),
+            None, Some(Rgb(4, 0, 0)), Some(Rgb(3, 0, 0)),
+        ]);
     }
 
     #[test]
