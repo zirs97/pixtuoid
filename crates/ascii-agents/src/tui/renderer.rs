@@ -1177,16 +1177,11 @@ pub fn draw_scene<B: Backend>(
         let buf_h = scene_rect.height * 2;
         buf.ensure_size(buf_w, buf_h, BG);
 
-        // Size the cubicle grid to fit each agent's actual desk_index, not
-        // just the count of live agents. After SessionEnd, desk_indexes can
-        // be sparse (e.g. {0,1,3,4} with 4 agents) — sizing to .len() would
-        // truncate the agent at the highest index.
-        let needed_desks = agents
-            .iter()
-            .map(|a| a.desk_index + 1)
-            .max()
-            .unwrap_or(0);
-        let Some(layout) = Layout::compute(buf_w, buf_h, needed_desks) else {
+        // Pre-render the full cubicle grid (sized by scene.max_desks)
+        // regardless of how many agents are currently active. Empty desks
+        // sit visible and unoccupied — the office looks like an office,
+        // and a new session walking in has a real desk to walk to.
+        let Some(layout) = Layout::compute(buf_w, buf_h, scene.max_desks) else {
             return;
         };
 
@@ -1350,10 +1345,10 @@ pub fn draw_scene<B: Backend>(
         let desk_anim = pack.animation("desk");
         let bin_anim = pack.animation("trash_bin");
         let cab_anim = pack.animation("filing_cabinet");
-        for (i, agent) in agents.iter().enumerate() {
-            let Some(desk) = layout.home_desks.get(agent.desk_index) else { continue };
-            // Cubicle divider on the right side of each desk — short
-            // vertical fabric panel reading as a cube wall in top-down.
+        // Iterate ALL desks (even unoccupied ones) so the cubicle furniture
+        // is always painted. Then look up whether an agent is sitting here
+        // to decide on the screen-glow / active-monitor overlay.
+        for (i, desk) in layout.home_desks.iter().enumerate() {
             let div_x = desk.x + DESK_W + 2;
             for dy in 0..(DESK_H + 4) {
                 for dx in 0..2 {
@@ -1364,7 +1359,6 @@ pub fn draw_scene<B: Backend>(
                     }
                 }
             }
-            // Filing cabinet next to every other desk (left side).
             if i % 2 == 0 {
                 if let Some(cab) = cab_anim.and_then(|a| a.frames.first()) {
                     let cab_x = desk.x.saturating_sub(cab.width + 1);
@@ -1384,8 +1378,11 @@ pub fn draw_scene<B: Backend>(
                     blit_frame(bin, bin_x, bin_y, buf);
                 }
             }
-            if matches!(agent.state, ActivityState::Active { .. }) {
-                paint_screen_glow(buf, desk.x, desk.y, now);
+            let occupant = agents.iter().find(|a| a.desk_index == i && a.exiting_at.is_none());
+            if let Some(agent) = occupant {
+                if matches!(agent.state, ActivityState::Active { .. }) {
+                    paint_screen_glow(buf, desk.x, desk.y, now);
+                }
             }
         }
 
