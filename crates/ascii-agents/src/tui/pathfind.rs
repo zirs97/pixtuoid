@@ -116,9 +116,8 @@ fn path_clear_under(path: &[Point], overlay: &OccupancyOverlay) -> bool {
         let steps = dx.abs().max(dy.abs()).max(1) / 4; // sample every 4 px
         let n = steps.max(1);
         for i in 0..=n {
-            let t = i as i32;
-            let x = (a.x as i32 + dx * t / n).max(0) as u16;
-            let y = (a.y as i32 + dy * t / n).max(0) as u16;
+            let x = (a.x as i32 + dx * i / n).max(0) as u16;
+            let y = (a.y as i32 + dy * i / n).max(0) as u16;
             if overlay.blocks(x, y) {
                 return false;
             }

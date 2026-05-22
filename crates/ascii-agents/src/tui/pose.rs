@@ -237,11 +237,10 @@ pub fn derive_with_routing(
     for (i, &leg) in leg_lens.iter().enumerate() {
         if acc + leg >= traveled {
             let into_leg = traveled - acc;
-            let seg_t = if leg > 0 {
-                ((into_leg * 1000) / leg).min(1000) as u16
-            } else {
-                1000
-            };
+            let seg_t = (into_leg * 1000)
+                .checked_div(leg)
+                .map(|t| t.min(1000) as u16)
+                .unwrap_or(1000);
             return Some(Pose::Walking {
                 from: path[i],
                 to: path[i + 1],

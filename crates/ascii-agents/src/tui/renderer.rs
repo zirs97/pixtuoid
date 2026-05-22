@@ -196,7 +196,7 @@ fn paint_floor_and_walls(
             WINDOW_W,
             window_h,
             WINDOW_FRAME,
-            &look,
+            look,
             idx as u16,
             now,
         );
@@ -316,7 +316,7 @@ fn time_of_day_look(now: SystemTime) -> TimeOfDayLook {
     let h = local.hour() as f32 + local.minute() as f32 / 60.0;
 
     // Daylight intensity: full from 8 to 17, smooth ramp 5..8 and 17..20.
-    let day = if h < 5.0 || h >= 20.0 {
+    let day = if !(5.0..20.0).contains(&h) {
         0.0
     } else if h < 8.0 {
         (h - 5.0) / 3.0
@@ -500,6 +500,7 @@ fn mix_lab(a: Rgb, b: Rgb, t: f32) -> Rgb {
 /// colors; the lower portion shows building silhouettes whose "windows"
 /// (1-pixel dots) light up at night and twinkle on a per-dot cycle so the
 /// skyline reads as alive instead of stamped.
+#[allow(clippy::too_many_arguments)]
 fn paint_floor_to_ceiling_window(
     buf: &mut RgbBuffer,
     x: u16,
@@ -676,7 +677,6 @@ fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack, now: Sy
     for wp in &layout.waypoints {
         let anim_name = match wp.kind {
             WaypointKind::Couch => "couch",
-            WaypointKind::Coffee => "coffee",
             WaypointKind::Pantry => "pantry",
         };
         if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
@@ -689,12 +689,15 @@ fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack, now: Sy
                 blit_frame(f, cx, cy, buf);
             }
         }
-        if wp.kind == WaypointKind::Coffee {
+        // Pantry sprite has the coffee machine on its counter — emit the
+        // steam wisps over that machine so a visiting agent reads as
+        // "getting coffee" without a separate waypoint.
+        if wp.kind == WaypointKind::Pantry {
             paint_coffee_steam(
                 buf,
                 Point {
-                    x: wp.pos.x,
-                    y: wp.pos.y.saturating_sub(4),
+                    x: wp.pos.x + 4,
+                    y: wp.pos.y.saturating_sub(2),
                 },
                 now,
             );
@@ -760,10 +763,15 @@ fn paint_wandering_cat(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack, now: S
     } else {
         (0.0, true)
     };
-    let left_x = layout.lounge_band.width * 12 / 100;
-    let right_x = layout.lounge_band.width * 88 / 100;
+    // Cat now paces the full-width corridor instead of the old lounge_band.
+    let corridor = match layout.corridor {
+        Some(c) => c,
+        None => return,
+    };
+    let left_x = corridor.x + corridor.width * 8 / 100;
+    let right_x = corridor.x + corridor.width * 92 / 100;
     let cx = left_x + ((right_x - left_x) as f32 * t) as u16;
-    let cy = layout.lounge_band.y + layout.lounge_band.height * 92 / 100;
+    let cy = corridor.y + corridor.height / 2;
     let frame_idx = (elapsed_ms / 220) as usize % anim.frames.len();
     let Some(frame) = anim.frames.get(frame_idx) else {
         return;
@@ -849,16 +857,6 @@ fn with_breath(anchor: Point, agent_id: ascii_agents_core::AgentId, now: SystemT
     }
 }
 
-/// Anchor for the seated-on-couch pose. Sits the character on the couch
-/// surface (couch is ~5px tall) so the body overlaps the cushion. Sprite is
-/// 8 wide → centered on the waypoint by offsetting x by 4.
-fn couch_seat_anchor(wp: Point) -> Point {
-    Point {
-        x: wp.x.saturating_sub(4),
-        y: wp.y.saturating_sub(4),
-    }
-}
-
 /// Anchor for a back-view sitter on a mirror_vertical'd couch. Couch back
 /// is now at the BOTTOM of the sprite, so the character's body sits
 /// ENTIRELY ABOVE the couch back (head 7 px above couch center, body
@@ -908,6 +906,7 @@ fn walking_position(from: Point, to: Point, t_x1000: u16) -> Point {
 /// Paint a character at an arbitrary anchor with per-agent recolor. `flip_x`
 /// mirrors the sprite horizontally — used to make walkers face the direction
 /// they're moving.
+#[allow(clippy::too_many_arguments)]
 fn paint_character_at(
     buf: &mut RgbBuffer,
     anim_name: &'static str,
@@ -1041,23 +1040,6 @@ fn paint_corridor_runner(buf: &mut RgbBuffer, rect: crate::tui::layout::Bounds) 
                 RUNNER_BASE
             };
             buf.put(x, y, color);
-        }
-    }
-}
-
-/// Decorative lounge rug under the couch. Warm rust-red with a slightly
-/// lighter fringe so it reads as a real textile, not just a flat tile.
-fn paint_lounge_rug(buf: &mut RgbBuffer, cx: u16, cy: u16, half_w: u16, half_h: u16) {
-    const RUG_BASE: Rgb = Rgb(122, 56, 48);
-    const RUG_FRINGE: Rgb = Rgb(168, 92, 76);
-    let min_x = cx.saturating_sub(half_w);
-    let max_x = (cx + half_w).min(buf.width);
-    let min_y = cy.saturating_sub(half_h);
-    let max_y = (cy + half_h).min(buf.height);
-    for y in min_y..max_y {
-        for x in min_x..max_x {
-            let on_border = x == min_x || x + 1 == max_x || y == min_y || y + 1 == max_y;
-            buf.put(x, y, if on_border { RUG_FRINGE } else { RUG_BASE });
         }
     }
 }
@@ -1364,6 +1346,7 @@ fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
 //   * `flush_to_terminal` — ratatui half-block compression + label overlay
 //     + bulletin notice + footer. Terminal-specific, runs inside
 //     `term.draw`.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_scene<B: Backend>(
     term: &mut Terminal<B>,
     scene: &SceneState,
@@ -1431,6 +1414,7 @@ fn paint_footer(f: &mut ratatui::Frame<'_>, full_rect: Rect) {
 /// is what any future non-terminal renderer (web canvas, PNG export, GIF
 /// capture) would call. Lives behind the `Renderer` trait in core if you
 /// want to swap impls; the binary uses this concrete function directly.
+#[allow(clippy::too_many_arguments)]
 pub fn render_to_rgb_buffer(
     scene: &SceneState,
     layout: &Layout,
@@ -1470,9 +1454,28 @@ pub fn render_to_rgb_buffer(
             pool_strength,
         );
     }
-    let lounge_y = layout.lounge_band.y + layout.lounge_band.height / 2;
-    paint_ceiling_pool(buf, buf_w * 28 / 100, lounge_y, 12, 6, pool_strength);
-    paint_ceiling_pool(buf, buf_w * 62 / 100, lounge_y, 12, 6, pool_strength);
+    // Two ceiling fluorescents over the pantry and a third over the
+    // corridor so the floor is lit consistently with the lounge_band gone.
+    if let Some(pr) = layout.pantry_room {
+        paint_ceiling_pool(
+            buf,
+            pr.x + pr.width / 2,
+            pr.y + pr.height / 2,
+            12,
+            6,
+            pool_strength,
+        );
+    }
+    if let Some(corridor) = layout.corridor {
+        paint_ceiling_pool(
+            buf,
+            corridor.x + corridor.width / 2,
+            corridor.y + corridor.height / 2,
+            14,
+            5,
+            pool_strength,
+        );
+    }
     if let Some(lamp) = layout.floor_lamp {
         paint_floor_lamp_halo(buf, lamp.x, lamp.y, look.darkness * 0.55);
     }
@@ -1544,7 +1547,7 @@ pub fn render_to_rgb_buffer(
         paint_pantry_chair(buf, chair.x, chair.y);
     }
 
-    paint_wall_decor(buf, &layout, pack);
+    paint_wall_decor(buf, layout, pack);
     if let Some(door_pos) = layout.door {
         if let Some(frame) = pack.animation("door").and_then(|a| a.frames.first()) {
             blit_frame(frame, door_pos.x, door_pos.y, buf);
@@ -1555,7 +1558,7 @@ pub fn render_to_rgb_buffer(
         let mat_y = 15;
         paint_entry_mat(buf, mat_x, mat_y, 10, 2);
     }
-    paint_lounge_decor(buf, &layout, pack, now);
+    paint_lounge_decor(buf, layout, pack, now);
 
     // Shadow pass — soft floor shadows under desks + lounge furniture
     // so nothing floats. Painted AFTER decor (so they don't get
@@ -1612,7 +1615,7 @@ pub fn render_to_rgb_buffer(
         }
         // Waypoint visitors (Couch / Coffee / Pantry) — block the
         // standing area so a passing walker routes around them.
-        let Some(pose) = pose::derive(agent, now, &layout) else {
+        let Some(pose) = pose::derive(agent, now, layout) else {
             continue;
         };
         if let Pose::AtWaypoint { wp, .. } = pose {
@@ -1690,7 +1693,7 @@ pub fn render_to_rgb_buffer(
         let Some(desk) = layout.home_desks.get(agent.desk_index).copied() else {
             continue;
         };
-        let Some(p) = pose::derive_with_routing(agent, now, &layout, router, overlay) else {
+        let Some(p) = pose::derive_with_routing(agent, now, layout, router, overlay) else {
             continue;
         };
         match p {
@@ -1724,11 +1727,11 @@ pub fn render_to_rgb_buffer(
                         crate::tui::layout::WaypointKind::Couch => {
                             ("back_couch", back_couch_anchor(wp_obj.pos))
                         }
-                        crate::tui::layout::WaypointKind::Coffee => {
-                            ("holding_coffee", waypoint_anchor(wp_obj.pos))
-                        }
+                        // Pantry visitors hold a coffee — the pantry sprite
+                        // has the coffee machine on its counter and emits
+                        // steam, so the visit doubles as "coffee break".
                         crate::tui::layout::WaypointKind::Pantry => {
-                            ("standing", waypoint_anchor(wp_obj.pos))
+                            ("holding_coffee", waypoint_anchor(wp_obj.pos))
                         }
                     };
                     let anchor = with_breath(

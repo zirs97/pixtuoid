@@ -443,7 +443,7 @@ fn rename_for_unknown_agent_is_noop() {
         SystemTime::now(),
         Transport::Jsonl,
     );
-    assert!(scene.agents.get(&id).is_none());
+    assert!(!scene.agents.contains_key(&id));
 }
 
 #[test]

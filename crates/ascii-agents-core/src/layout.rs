@@ -25,12 +25,16 @@ pub struct Point {
     pub y: u16,
 }
 
-/// Kind of a lounge waypoint — determines what pose an Idle agent strikes
-/// when they arrive there. Plants are pure decor, not waypoints.
+/// Wander destinations the Idle state machine can pick. Each kind controls
+/// the pose + sprite an arriving agent takes. Plants/lamps are decor, not
+/// waypoints. Coffee folded into Pantry — the pantry sprite already has
+/// a coffee machine on its counter, so visiting the pantry covers both
+/// "kitchen" and "coffee break".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WaypointKind {
+    /// Top-of-cubicle viewing couch facing the city windows.
     Couch,
-    Coffee,
+    /// Pantry counter — kitchen + coffee.
     Pantry,
 }
 
@@ -66,8 +70,10 @@ pub struct SceneLayout {
     pub buf_w: u16,
     pub buf_h: u16,
     pub cubicle_band: Bounds,
+    /// Horizontal corridor at the bottom of the cubicle area — the "main
+    /// aisle" connecting door / meeting / pantry. Used by the cat
+    /// wanderer and as a fallback location for overflow floor seats.
     pub walkway: Bounds,
-    pub lounge_band: Bounds,
     pub home_desks: Vec<Point>,
     pub waypoints: Vec<Waypoint>,
     pub plants: Vec<(PlantKind, Point)>,
@@ -93,12 +99,15 @@ pub struct SceneLayout {
 /// furniture rather than scraping along its edge.
 pub const OBSTACLE_PAD_PX: u16 = 2;
 
-pub const WAYPOINT_COUNT: usize = 3;
+pub const WAYPOINT_COUNT: usize = 2;
 pub const DESK_W: u16 = 12;
 pub const DESK_H: u16 = 6;
 /// Hard cap on how many cubicles get painted regardless of how high
-/// `max_desks` is set. Past this count, agents overflow to floor seats.
-pub const MAX_VISIBLE_DESKS: usize = 8;
+/// `max_desks` is set. Bumped from 8 → 16 after the lounge_band quadrant
+/// was retired and the cubicle band absorbed its vertical space — more
+/// rows fit, so more agents can have their own desk before falling back
+/// to overflow seating.
+pub const MAX_VISIBLE_DESKS: usize = 16;
 pub const DESK_GAP_X: u16 = 11;
 pub const DESK_GAP_Y: u16 = 14;
 pub const MIN_TOP_MARGIN: u16 = 20;
@@ -133,9 +142,13 @@ impl SceneLayout {
 
         let right_x = mid_x + 2;
         let right_w = buf_w.saturating_sub(right_x);
-        let cubicle_h = usable_h * 68 / 100;
+        // Cubicle band now fills the full right column except for a thin
+        // walkway strip near the bottom. The old lounge_band was removed —
+        // its decor (lamp, plants, cat, overflow seats) was redistributed
+        // into the cubicles + corridor + pantry; merging the Coffee
+        // waypoint into Pantry covered both wander destinations cleanly.
         let walkway_h = usable_h * 6 / 100;
-        let lounge_h = usable_h - cubicle_h - walkway_h;
+        let cubicle_h = usable_h - walkway_h;
         let cubicle_band = Bounds {
             x: right_x,
             y: top_margin,
@@ -147,12 +160,6 @@ impl SceneLayout {
             y: top_margin + cubicle_h,
             width: right_w,
             height: walkway_h,
-        };
-        let lounge_band = Bounds {
-            x: right_x,
-            y: top_margin + cubicle_h + walkway_h,
-            width: right_w,
-            height: lounge_h,
         };
 
         let col_w = DESK_W + DESK_GAP_X;
@@ -229,23 +236,17 @@ impl SceneLayout {
             Point { x: mid_x, y: h_y },
         ));
 
+        // Two waypoints now: viewing couch (top of cubicle band, against
+        // the city windows) and pantry (bottom-left, doubles as coffee).
         let couch_y = top_margin + 7;
-        let mut waypoints: Vec<Waypoint> = vec![
-            Waypoint {
-                pos: Point {
-                    x: lounge_band.x + lounge_band.width * 35 / 100,
-                    y: couch_y,
-                },
-                kind: WaypointKind::Couch,
+        let couch_x = cubicle_band.x + cubicle_band.width * 35 / 100;
+        let mut waypoints: Vec<Waypoint> = vec![Waypoint {
+            pos: Point {
+                x: couch_x,
+                y: couch_y,
             },
-            Waypoint {
-                pos: Point {
-                    x: lounge_band.x + lounge_band.width * 85 / 100,
-                    y: lounge_band.y + lounge_band.height * 60 / 100,
-                },
-                kind: WaypointKind::Coffee,
-            },
-        ];
+            kind: WaypointKind::Couch,
+        }];
         if let Some(pr) = pantry_room {
             waypoints.push(Waypoint {
                 pos: Point {
@@ -256,33 +257,38 @@ impl SceneLayout {
             });
         }
 
+        // Plants scatter through cubicle aisles, the meeting room corner,
+        // and the pantry. No lounge band any more — these are pure decor
+        // accents that break up the cubicle blocks.
         let plants: Vec<(PlantKind, Point)> = vec![
+            // Cubicle area: a plant beside the viewing couch + one near
+            // the corridor at each side.
             (
                 PlantKind::Tall,
                 Point {
-                    x: lounge_band.x + lounge_band.width * 10 / 100,
-                    y: lounge_band.y + lounge_band.height * 30 / 100,
+                    x: couch_x.saturating_sub(28),
+                    y: couch_y + 1,
                 },
             ),
             (
                 PlantKind::Flower,
                 Point {
-                    x: lounge_band.x + lounge_band.width * 55 / 100,
-                    y: lounge_band.y + lounge_band.height * 25 / 100,
+                    x: cubicle_band.x + 4,
+                    y: walkway.y.saturating_sub(4),
                 },
             ),
             (
                 PlantKind::Succulent,
                 Point {
-                    x: lounge_band.x + lounge_band.width * 95 / 100,
-                    y: lounge_band.y + lounge_band.height * 90 / 100,
+                    x: cubicle_band.x + cubicle_band.width.saturating_sub(4),
+                    y: walkway.y.saturating_sub(4),
                 },
             ),
             (
                 PlantKind::Ficus,
                 Point {
-                    x: lounge_band.x + lounge_band.width * 70 / 100,
-                    y: lounge_band.y + lounge_band.height * 90 / 100,
+                    x: cubicle_band.x + cubicle_band.width.saturating_sub(6),
+                    y: cubicle_band.y + 4,
                 },
             ),
         ]
@@ -316,9 +322,11 @@ impl SceneLayout {
         }))
         .collect();
 
+        // Floor lamp now sits right next to the viewing couch so its halo
+        // bathes the seating area at night.
         let floor_lamp = Some(Point {
-            x: lounge_band.x + lounge_band.width * 48 / 100,
-            y: lounge_band.y + 7,
+            x: couch_x + 9,
+            y: couch_y + 2,
         });
 
         let door = if buf_w >= 12 {
@@ -376,13 +384,16 @@ impl SceneLayout {
                 });
             }
         }
+        // Remaining overflow falls along the walkway/corridor edges —
+        // sitters working on the floor in the main aisle. Spread across
+        // the corridor width so they don't pile up.
         let remaining = overflow_count.saturating_sub(floor_seats.len());
         for slot in 0..remaining {
-            let c = (slot as u16) % 3;
-            let r = (slot as u16) / 3;
+            let c = (slot as u16) % 4;
+            let along_x = cubicle_band.x + cubicle_band.width * (10 + c * 25) / 100;
             floor_seats.push(Point {
-                x: lounge_band.x + lounge_band.width * (15 + c * 30) / 100,
-                y: lounge_band.y + 4 + r * 12,
+                x: along_x,
+                y: walkway.y + walkway.height / 2,
             });
         }
 
@@ -437,7 +448,6 @@ impl SceneLayout {
             buf_h,
             cubicle_band,
             walkway,
-            lounge_band,
             home_desks,
             waypoints,
             plants,
@@ -565,7 +575,6 @@ fn build_walkable_mask(
     for wp in waypoints {
         let (w, h) = match wp.kind {
             WaypointKind::Couch => (14, 6),
-            WaypointKind::Coffee => (10, 5),
             WaypointKind::Pantry => (14, 7),
         };
         mask.mark_blocked(
@@ -607,11 +616,11 @@ mod tests {
     fn compute_zones_are_ordered_top_to_bottom_and_nonoverlapping() {
         let l = SceneLayout::compute(120, 80, 6).expect("fits");
         assert!(l.cubicle_band.y < l.walkway.y);
-        assert!(l.walkway.y < l.lounge_band.y);
         let c_bot = l.cubicle_band.y + l.cubicle_band.height;
-        let w_bot = l.walkway.y + l.walkway.height;
         assert!(c_bot <= l.walkway.y, "cubicle overlaps walkway");
-        assert!(w_bot <= l.lounge_band.y, "walkway overlaps lounge");
+        // Walkway runs to the baseboard now that lounge_band is gone.
+        let w_bot = l.walkway.y + l.walkway.height;
+        assert!(w_bot <= l.buf_h);
     }
 
     #[test]
@@ -632,7 +641,6 @@ mod tests {
         let kinds: std::collections::HashSet<_> = l.waypoints.iter().map(|w| w.kind).collect();
         assert!(kinds.contains(&WaypointKind::Couch));
         assert!(kinds.contains(&WaypointKind::Pantry));
-        assert!(kinds.contains(&WaypointKind::Coffee));
         for w in &l.waypoints {
             match w.kind {
                 WaypointKind::Pantry => {
@@ -643,10 +651,6 @@ mod tests {
                 WaypointKind::Couch => {
                     assert!(w.pos.y >= l.top_margin);
                     assert!(w.pos.y < l.cubicle_band.y + DESK_GAP_Y);
-                }
-                WaypointKind::Coffee => {
-                    assert!(w.pos.y >= l.lounge_band.y);
-                    assert!(w.pos.y < l.lounge_band.y + l.lounge_band.height);
                 }
             }
         }
