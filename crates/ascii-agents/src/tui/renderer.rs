@@ -572,7 +572,7 @@ fn octant_offset(turn: f32) -> (i32, i32) {
     }
 }
 
-fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
+fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack, now: SystemTime) {
     use crate::tui::layout::WaypointKind;
 
     // Decorative rug under each Couch waypoint — defines the seating zone,
@@ -585,7 +585,7 @@ fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
     }
 
     // Waypoint furniture (the wander destinations) painted centered on each
-    // waypoint position.
+    // waypoint position. Coffee station also emits animated steam.
     for wp in &layout.waypoints {
         let anim_name = match wp.kind {
             WaypointKind::Couch => "couch",
@@ -596,6 +596,9 @@ fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
             let cx = wp.pos.x.saturating_sub(f.width / 2);
             let cy = wp.pos.y.saturating_sub(f.height / 2);
             blit_frame(f, cx, cy, buf);
+        }
+        if wp.kind == WaypointKind::Coffee {
+            paint_coffee_steam(buf, Point { x: wp.pos.x, y: wp.pos.y.saturating_sub(4) }, now);
         }
     }
 
@@ -873,6 +876,91 @@ fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16, now: SystemT
     put(buf, scan_col, 2, SCANLINE);
 }
 
+// --- Particles ------------------------------------------------------------
+
+/// Animated `z` rising above a sleeping character's head. Cycles ~2.4s
+/// (rise 12 px then disappear). Per-agent phase offset so a row of
+/// sleepers doesn't pulse in lockstep.
+fn paint_sleep_z(
+    buf: &mut RgbBuffer,
+    head_anchor: Point,
+    now: SystemTime,
+    seed: u64,
+) {
+    const Z_COLOR: Rgb = Rgb(110, 110, 140);
+    const CYCLE_MS: u64 = 2400;
+    let elapsed_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let phase_ms = elapsed_ms.wrapping_add(seed % CYCLE_MS) % CYCLE_MS;
+    if phase_ms >= CYCLE_MS - 400 {
+        return; // fade-out gap
+    }
+    let rise = (phase_ms / 180) as u16;
+    let z_x = head_anchor.x + 5;
+    let z_y = head_anchor.y.saturating_sub(rise + 3);
+    let pixels: &[(u16, u16)] = &[(0, 0), (1, 0), (1, 1), (0, 2), (1, 2)];
+    for (dx, dy) in pixels {
+        let px = z_x + dx;
+        let py = z_y + dy;
+        if px < buf.width && py < buf.height {
+            buf.put(px, py, Z_COLOR);
+        }
+    }
+}
+
+/// Three staggered grey puffs rising from a point — coffee steam.
+fn paint_coffee_steam(buf: &mut RgbBuffer, base: Point, now: SystemTime) {
+    const STEAM: Rgb = Rgb(190, 190, 210);
+    let elapsed_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    for offset in 0..3u64 {
+        let phase = (elapsed_ms + offset * 600) % 1800;
+        let rise = (phase / 140) as u16;
+        let alpha = 1.0 - phase as f32 / 1800.0;
+        if alpha < 0.15 {
+            continue;
+        }
+        let wiggle = if (phase / 200) % 2 == 0 { 0 } else { 1 };
+        let px = base.x + wiggle;
+        let py = base.y.saturating_sub(rise + 2);
+        if px < buf.width && py < buf.height {
+            let cur = buf.get(px, py);
+            buf.put(
+                px,
+                py,
+                Rgb(
+                    blend(cur.0, STEAM.0, alpha * 0.55),
+                    blend(cur.1, STEAM.1, alpha * 0.55),
+                    blend(cur.2, STEAM.2, alpha * 0.55),
+                ),
+            );
+        }
+    }
+}
+
+/// Small dust puff at the trailing foot of a walking character.
+fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, frame_idx: usize) {
+    const DUST: Rgb = Rgb(150, 120, 85);
+    let foot_y = walker_anchor.y + 12;
+    let foot_x = walker_anchor.x + if frame_idx == 0 { 6 } else { 1 };
+    if foot_x < buf.width && foot_y < buf.height {
+        let cur = buf.get(foot_x, foot_y);
+        buf.put(
+            foot_x,
+            foot_y,
+            Rgb(
+                blend(cur.0, DUST.0, 0.45),
+                blend(cur.1, DUST.1, 0.45),
+                blend(cur.2, DUST.2, 0.45),
+            ),
+        );
+    }
+}
+
 // --- Speech bubble overlay (kept from the prior renderer) -----------------
 fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
     const BUBBLE_FG: Rgb = Rgb(240, 200, 80);
@@ -988,7 +1076,7 @@ pub fn draw_scene<B: Backend>(
         let clock_x = buf_w / 2 - 2;
         paint_clock(buf, clock_x, 1, now);
         paint_wall_decor(buf, &layout, pack);
-        paint_lounge_decor(buf, &layout, pack);
+        paint_lounge_decor(buf, &layout, pack, now);
 
         // Shadow pass — soft floor shadows under desks + lounge furniture
         // so nothing floats. Painted AFTER decor (so they don't get
@@ -1035,8 +1123,8 @@ pub fn draw_scene<B: Backend>(
                 Pose::SeatedIdle => {
                     let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
                     paint_chair_behind(buf, anchor, agent, pack);
-                    // Idle = nobody home, sprite uses closed-eye dashes.
                     paint_character_at(buf, "seated_sleeping", 0, anchor, agent, pack, false);
+                    paint_sleep_z(buf, anchor, now, agent.agent_id.raw());
                 }
                 Pose::SeatedTyping { frame } => {
                     let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
@@ -1057,7 +1145,6 @@ pub fn draw_scene<B: Backend>(
                         let dx = waypoint_rank_offset_x(kind, rank);
                         let (anim_name, anchor_base) = match kind {
                             crate::tui::layout::WaypointKind::Couch => {
-                                // Couches are for napping — sleeping sprite.
                                 ("sitting_couch_sleeping", couch_seat_anchor(wp_obj.pos))
                             }
                             crate::tui::layout::WaypointKind::Coffee => {
@@ -1076,6 +1163,9 @@ pub fn draw_scene<B: Backend>(
                             now,
                         );
                         paint_character_at(buf, anim_name, 0, anchor, agent, pack, false);
+                        if matches!(kind, crate::tui::layout::WaypointKind::Couch) {
+                            paint_sleep_z(buf, anchor, now, agent.agent_id.raw());
+                        }
                     }
                 }
                 Pose::AimlessAt { dest } => {
@@ -1085,7 +1175,9 @@ pub fn draw_scene<B: Backend>(
                 Pose::Walking { from, to, t_x1000, frame } => {
                     let pos = walking_position(from, to, t_x1000);
                     let flip = to.x < from.x;
-                    paint_character_at(buf, "walking", frame, walking_anchor(pos), agent, pack, flip);
+                    let walker_anchor = walking_anchor(pos);
+                    paint_walking_dust(buf, walker_anchor, frame);
+                    paint_character_at(buf, "walking", frame, walker_anchor, agent, pack, flip);
                 }
             }
         }
