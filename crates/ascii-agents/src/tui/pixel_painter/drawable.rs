@@ -22,11 +22,11 @@ use ascii_agents_core::sprite::format::Pack;
 use ascii_agents_core::sprite::{Rgb, RgbBuffer};
 use ascii_agents_core::AgentSlot;
 
-use super::{
-    paint_chair_behind, paint_character_at, paint_coffee_steam, paint_coffee_table,
-    paint_pantry_chair, paint_pantry_table, paint_screen_glow, paint_sleep_z, paint_waiting_bubble,
+use super::effects::{
+    paint_chair_behind, paint_coffee_steam, paint_screen_glow, paint_sleep_z, paint_waiting_bubble,
     paint_walking_dust,
 };
+use super::{paint_character_at, paint_coffee_table, paint_pantry_chair, paint_pantry_table};
 use crate::tui::frame_cache::FrameCache;
 use crate::tui::layout::{Layout, Point, DESK_H, DESK_W};
 
