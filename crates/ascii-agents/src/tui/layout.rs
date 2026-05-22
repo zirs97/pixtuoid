@@ -19,7 +19,7 @@ pub struct Point {
 pub enum WaypointKind {
     Couch,
     Coffee,
-    WaterCooler,
+    Pantry,
 }
 
 /// Wall-mounted / wall-leaning furniture, painted as decor in the top wall
@@ -161,7 +161,7 @@ impl Layout {
             // Pantry (formerly "water cooler") leans against the lounge's
             // back wall — top of the band — so the fridge+counter+coffee
             // strip reads as a kitchenette.
-            (WaypointKind::WaterCooler, 55, 25),  // center-back
+            (WaypointKind::Pantry, 55, 25),  // center-back
             (WaypointKind::Coffee,      88, 60),  // right
         ];
         let waypoints: Vec<Waypoint> = wp_layout
@@ -273,7 +273,7 @@ mod tests {
         let kinds: std::collections::HashSet<_> =
             l.waypoints.iter().map(|w| w.kind).collect();
         assert!(kinds.contains(&WaypointKind::Couch));
-        assert!(kinds.contains(&WaypointKind::WaterCooler));
+        assert!(kinds.contains(&WaypointKind::Pantry));
         assert!(kinds.contains(&WaypointKind::Coffee));
         for w in &l.waypoints {
             assert!(w.pos.y >= l.lounge_band.y);

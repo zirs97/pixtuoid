@@ -651,7 +651,7 @@ fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack, now: Sy
         let anim_name = match wp.kind {
             WaypointKind::Couch => "couch",
             WaypointKind::Coffee => "coffee",
-            WaypointKind::WaterCooler => "water_cooler",
+            WaypointKind::Pantry => "pantry",
         };
         if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
             let cx = wp.pos.x.saturating_sub(f.width / 2);
@@ -1216,7 +1216,7 @@ pub fn draw_scene<B: Backend>(
                             crate::tui::layout::WaypointKind::Coffee => {
                                 ("holding_coffee", waypoint_anchor(wp_obj.pos))
                             }
-                            crate::tui::layout::WaypointKind::WaterCooler => {
+                            crate::tui::layout::WaypointKind::Pantry => {
                                 ("standing", waypoint_anchor(wp_obj.pos))
                             }
                         };

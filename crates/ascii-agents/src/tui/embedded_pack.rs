@@ -25,7 +25,7 @@ pub fn load_default_pack() -> Result<Pack> {
     let sleeping_seat= include_str!("../../../../assets/sprites/default/seated_sleeping.sprite");
     let sleeping_cch = include_str!("../../../../assets/sprites/default/sitting_couch_sleeping.sprite");
     let holding      = include_str!("../../../../assets/sprites/default/holding_coffee.sprite");
-    let water_cooler = include_str!("../../../../assets/sprites/default/water_cooler.sprite");
+    let pantry       = include_str!("../../../../assets/sprites/default/pantry.sprite");
     let whiteboard   = include_str!("../../../../assets/sprites/default/whiteboard.sprite");
     let bookshelf    = include_str!("../../../../assets/sprites/default/bookshelf.sprite");
 
@@ -52,7 +52,7 @@ pub fn load_default_pack() -> Result<Pack> {
             ("seated_sleeping.sprite", sleeping_seat),
             ("sitting_couch_sleeping.sprite", sleeping_cch),
             ("holding_coffee.sprite", holding),
-            ("water_cooler.sprite", water_cooler),
+            ("pantry.sprite", pantry),
             ("whiteboard.sprite", whiteboard),
             ("bookshelf.sprite", bookshelf),
         ],
