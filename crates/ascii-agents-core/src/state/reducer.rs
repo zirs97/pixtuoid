@@ -128,6 +128,13 @@ impl Reducer {
                     return;
                 }
                 let Some(desk_index) = scene.next_free_desk() else {
+                    tracing::warn!(
+                        ?agent_id,
+                        cwd = %cwd.display(),
+                        session_id = %session_id,
+                        max_desks = scene.max_desks,
+                        "dropped SessionStart — all desks occupied; bump --max-desks"
+                    );
                     return;
                 };
                 self.next_label_n += 1;

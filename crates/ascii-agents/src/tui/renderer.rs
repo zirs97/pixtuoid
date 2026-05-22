@@ -127,7 +127,10 @@ fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) -> Frame {
 
 // --- Floor / walls / decor -----------------------------------------------
 fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16) {
-    const PLANK_H: u16 = 6;
+    // Smaller planks (4 px tall × 10 px wide) read as tile/parquet rather
+    // than the previous oversized 6×16 boards that dominated the scene.
+    const PLANK_H: u16 = 4;
+    const PLANK_W: u32 = 10;
     const TOP_WALL_H: u16 = 14;
     const BASEBOARD_H: u16 = 3;
     const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
@@ -136,10 +139,10 @@ fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16) {
 
     for y in 0..buf_h {
         let band = y / PLANK_H;
-        let seam_offset = (band as u32 * 13) % 16;
+        let seam_offset = (band as u32 * 7) % PLANK_W;
         for x in 0..buf_w {
             let in_seam = y % PLANK_H == PLANK_H - 1
-                || ((x as u32).wrapping_add(seam_offset)) % 16 == 0;
+                || ((x as u32).wrapping_add(seam_offset)) % PLANK_W == 0;
             let color = if in_seam {
                 PLANK_LINE
             } else if band % 2 == 0 {
