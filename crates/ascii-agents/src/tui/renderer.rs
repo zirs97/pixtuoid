@@ -143,11 +143,16 @@ fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) -> Frame {
 }
 
 // --- Floor / walls / decor -----------------------------------------------
-fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16, now: SystemTime) {
+fn paint_floor_and_walls(
+    buf: &mut RgbBuffer,
+    buf_w: u16,
+    buf_h: u16,
+    now: SystemTime,
+    look: &TimeOfDayLook,
+) {
     const TOP_WALL_H: u16 = 14;
     const BASEBOARD_H: u16 = 3;
     const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
-    let look = time_of_day_look(now);
 
     // Carpet: warm tan/grey base with deterministic light/dark flecks.
     // No seams, no grid — softer than the previous plank pattern.
@@ -1146,13 +1151,16 @@ pub fn draw_scene<B: Backend>(
             return;
         };
 
-        paint_floor_and_walls(buf, buf_w, buf_h, now);
+        // Compute time-of-day once per frame and pass to every paint
+        // helper that depends on it. Avoids recomputing the chrono local
+        // hour for each window + ceiling pool + lamp halo.
+        let look = time_of_day_look(now);
+        paint_floor_and_walls(buf, buf_w, buf_h, now, &look);
 
         // Artificial light pass — at night the floor dims toward navy and
         // ceiling fluorescents + the floor lamp halo paint the visible
         // bright spots. During the day the dim is near-zero and the pools
         // are subtle ambient highlights.
-        let look = time_of_day_look(now);
         dim_floor_overlay(buf, 14, buf_h, look.darkness * 0.45);
         let pool_strength = 0.15 + 0.30 * look.darkness;
         for desk in &layout.home_desks {

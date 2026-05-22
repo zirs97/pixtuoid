@@ -108,6 +108,17 @@ pub enum Pose {
 pub const ENTRY_ANIMATION_MS: u64 = 4000;
 
 /// Returns `None` if the slot's desk_index is out of range for `layout`.
+///
+/// Priority chain (first match wins, walks down):
+///   1. **Exit override** — slot has `exiting_at` set → Walking to door.
+///      Once the exit window passes, returns `None` (slot will be GC'd).
+///   2. **Entry override** — `now - created_at < ENTRY_ANIMATION_MS` →
+///      Walking from door to desk. Plays for the first 4 s of the slot's
+///      life regardless of state changes.
+///   3. **State-driven pose** — Active → SeatedTyping, Waiting →
+///      StandingAtDesk, Idle → idle_pose (which itself decides between
+///      SeatedIdle / Walking / AtWaypoint / AimlessAt based on the
+///      wander state machine).
 pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose> {
     let desk = *layout.home_desks.get(slot.desk_index)?;
 
