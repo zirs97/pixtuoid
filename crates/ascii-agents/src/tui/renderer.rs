@@ -425,6 +425,27 @@ fn waypoint_anchor(wp: Point) -> Point {
     }
 }
 
+/// One-pixel vertical bob on a ~2.8 s cycle with a per-agent phase offset,
+/// so static (seated / standing) characters look alive instead of frozen.
+/// Walking + waypoint-trip poses already animate, so we skip those.
+fn breath_offset_y(agent_id: ascii_agents_core::AgentId, now: SystemTime) -> u16 {
+    let elapsed_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    const CYCLE_MS: u64 = 2800;
+    let offset_ms = agent_id.raw() % CYCLE_MS;
+    let phase = elapsed_ms.wrapping_add(offset_ms) % CYCLE_MS;
+    if phase < CYCLE_MS / 2 { 0 } else { 1 }
+}
+
+fn with_breath(anchor: Point, agent_id: ascii_agents_core::AgentId, now: SystemTime) -> Point {
+    Point {
+        x: anchor.x,
+        y: anchor.y.saturating_sub(breath_offset_y(agent_id, now)),
+    }
+}
+
 /// Anchor for the seated-on-couch pose. Sits the character on the couch
 /// surface (couch is ~5px tall) so the body overlaps the cushion. Sprite is
 /// 8 wide → centered on the waypoint by offsetting x by 4.
@@ -626,13 +647,15 @@ pub fn draw_scene<B: Backend>(
             let Some(p) = pose::derive(agent, now, &layout) else { continue };
             match p {
                 Pose::SeatedIdle => {
-                    paint_character_at(buf, "seated", 0, seated_anchor(desk), agent, pack, false);
+                    let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
+                    paint_character_at(buf, "seated", 0, anchor, agent, pack, false);
                 }
                 Pose::SeatedTyping { frame } => {
-                    paint_character_at(buf, "typing", frame, seated_anchor(desk), agent, pack, false);
+                    let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
+                    paint_character_at(buf, "typing", frame, anchor, agent, pack, false);
                 }
                 Pose::StandingAtDesk => {
-                    let anchor = standing_at_desk_anchor(desk);
+                    let anchor = with_breath(standing_at_desk_anchor(desk), agent.agent_id, now);
                     paint_character_at(buf, "standing", 0, anchor, agent, pack, false);
                     if matches!(agent.state, ActivityState::Waiting { .. }) {
                         paint_waiting_bubble(buf, anchor);
@@ -654,15 +677,20 @@ pub fn draw_scene<B: Backend>(
                                 ("standing", waypoint_anchor(wp_obj.pos))
                             }
                         };
-                        let anchor = Point {
-                            x: anchor_base.x.saturating_add_signed(dx),
-                            y: anchor_base.y,
-                        };
+                        let anchor = with_breath(
+                            Point {
+                                x: anchor_base.x.saturating_add_signed(dx),
+                                y: anchor_base.y,
+                            },
+                            agent.agent_id,
+                            now,
+                        );
                         paint_character_at(buf, anim_name, 0, anchor, agent, pack, false);
                     }
                 }
                 Pose::AimlessAt { dest } => {
-                    paint_character_at(buf, "standing", 0, waypoint_anchor(dest), agent, pack, false);
+                    let anchor = with_breath(waypoint_anchor(dest), agent.agent_id, now);
+                    paint_character_at(buf, "standing", 0, anchor, agent, pack, false);
                 }
                 Pose::Walking { from, to, t_x1000, frame } => {
                     let pos = walking_position(from, to, t_x1000);
