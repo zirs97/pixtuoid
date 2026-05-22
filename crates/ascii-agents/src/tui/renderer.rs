@@ -648,7 +648,8 @@ pub fn draw_scene<B: Backend>(
             match p {
                 Pose::SeatedIdle => {
                     let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
-                    paint_character_at(buf, "seated", 0, anchor, agent, pack, false);
+                    // Idle = nobody home, sprite uses closed-eye dashes.
+                    paint_character_at(buf, "seated_sleeping", 0, anchor, agent, pack, false);
                 }
                 Pose::SeatedTyping { frame } => {
                     let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
@@ -668,7 +669,8 @@ pub fn draw_scene<B: Backend>(
                         let dx = waypoint_rank_offset_x(kind, rank);
                         let (anim_name, anchor_base) = match kind {
                             crate::tui::layout::WaypointKind::Couch => {
-                                ("sitting_couch", couch_seat_anchor(wp_obj.pos))
+                                // Couches are for napping — sleeping sprite.
+                                ("sitting_couch_sleeping", couch_seat_anchor(wp_obj.pos))
                             }
                             crate::tui::layout::WaypointKind::Coffee => {
                                 ("holding_coffee", waypoint_anchor(wp_obj.pos))
