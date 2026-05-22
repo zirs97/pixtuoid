@@ -96,9 +96,22 @@ fn agent_palette(base: &Palette, agent: &AgentSlot) -> Palette {
     let shirt = shirts[seed % shirts.len()];
     let hair = HAIR_PRESETS[(seed / 7) % HAIR_PRESETS.len()];
     let skin = SKIN_PRESETS[(seed / 13) % SKIN_PRESETS.len()];
+    // Active = monitor is lit, light reflects on the user's face. Tint the
+    // skin slightly toward the glow color so the eye reads "the monitor is
+    // actually lighting them up", not just "there's a green dot below".
+    let final_skin = if matches!(agent.state, ActivityState::Active { .. }) {
+        const GLOW_TINT: Rgb = Rgb(140, 240, 170);
+        Rgb(
+            blend(skin.0, GLOW_TINT.0, 0.18),
+            blend(skin.1, GLOW_TINT.1, 0.18),
+            blend(skin.2, GLOW_TINT.2, 0.18),
+        )
+    } else {
+        skin
+    };
     base.with_override('B', Some(shirt))
         .with_override('H', Some(hair))
-        .with_override('S', Some(skin))
+        .with_override('S', Some(final_skin))
 }
 
 fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) -> Frame {
