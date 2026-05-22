@@ -1,6 +1,5 @@
-# 14x8 freestanding whiteboard. Big white surface (w) with three lines of
-# marker squiggle (q) so it reads as "someone wrote on it" from across the
-# screen.
+# 14x11 portable whiteboard on a stand with two wheels at the bottom.
+# Frame `n`, board surface `w` (off-white), marker squiggle `q`, wheels `M`.
 @frame 0
 n n n n n n n n n n n n n n
 n w w w w w w w w w w w w n
@@ -10,3 +9,6 @@ n w q q w q q q w q q w w n
 n w w w w w w w w w w w w n
 n w q q w q w q q w q w w n
 n n n n n n n n n n n n n n
+. . n . . . . . . . . n . .
+. . n . . . . . . . . n . .
+. . M . . . . . . . . M . .

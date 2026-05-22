@@ -154,9 +154,15 @@ impl Layout {
         // the wall sprite, so its top rows overlap the wall band (which is
         // 0..14 px). Painted AFTER the wall so it sits in front of the
         // wall trim.
+        // Bookshelf stays leaning against the back wall — wall-mounted by
+        // nature. Whiteboard is a portable on-wheels stand: position it in
+        // the walkway band so it reads as "rolled out for standup".
         let wall_decor = vec![
             (WallDecor::Bookshelf, Point { x: buf_w * 18 / 100, y: 6 }),
-            (WallDecor::Whiteboard, Point { x: buf_w * 60 / 100, y: 8 }),
+            (WallDecor::Whiteboard, Point {
+                x: buf_w * 80 / 100,
+                y: walkway.y.saturating_sub(4),
+            }),
         ];
 
         Some(Self {
@@ -223,16 +229,19 @@ mod tests {
     }
 
     #[test]
-    fn compute_places_bookshelf_and_whiteboard_on_wall() {
+    fn compute_places_bookshelf_on_wall_and_whiteboard_in_walkway() {
         let l = Layout::compute(120, 96, 1).expect("fits");
-        let kinds: std::collections::HashSet<_> =
-            l.wall_decor.iter().map(|(k, _)| *k).collect();
-        assert!(kinds.contains(&WallDecor::Bookshelf));
-        assert!(kinds.contains(&WallDecor::Whiteboard));
-        // Wall decor sits above the cubicle band (against the back wall).
-        for (_, pos) in &l.wall_decor {
-            assert!(pos.y < l.cubicle_band.y, "wall decor below cubicles: {pos:?}");
-        }
+        let bookshelf = l.wall_decor.iter().find(|(k, _)| *k == WallDecor::Bookshelf);
+        let whiteboard = l.wall_decor.iter().find(|(k, _)| *k == WallDecor::Whiteboard);
+        assert!(bookshelf.is_some(), "missing bookshelf");
+        assert!(whiteboard.is_some(), "missing whiteboard");
+        // Bookshelf leans against the back wall, above the cubicle band.
+        assert!(bookshelf.unwrap().1.y < l.cubicle_band.y, "bookshelf below cubicles");
+        // Whiteboard is freestanding/portable, lives near the walkway band.
+        assert!(
+            whiteboard.unwrap().1.y > l.cubicle_band.y,
+            "whiteboard should be below cubicle band"
+        );
     }
 
     #[test]
