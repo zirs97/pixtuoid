@@ -14,7 +14,8 @@ use ascii_agents_core::sprite::blit::blit_frame;
 use ascii_agents_core::sprite::format::Pack;
 use ascii_agents_core::sprite::{Frame, Palette, Pixel, Rgb, RgbBuffer};
 use ascii_agents_core::state::ActivityState;
-use ascii_agents_core::{AgentSlot, SceneState};
+use ascii_agents_core::{AgentId, AgentSlot, SceneState};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -77,13 +78,20 @@ const SKIN_PRESETS: &[Rgb] = &[
 pub fn setup_terminal() -> Result<Term> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    // EnableMouseCapture turns on the terminal's mouse-event reporting.
+    // Modern terminals emit MouseEventKind::Moved on cursor motion (no
+    // button required), which is how we drive the hover tooltip.
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     Ok(Terminal::new(CrosstermBackend::new(out))?)
 }
 
 pub fn teardown_terminal(term: &mut Term) -> Result<()> {
     disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        term.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     term.show_cursor()?;
     Ok(())
 }
@@ -1355,6 +1363,7 @@ pub fn draw_scene<B: Backend>(
     cache: &mut FrameCache,
     router: &mut dyn Router,
     overlay: &mut OccupancyOverlay,
+    mouse_pos: Option<(u16, u16)>,
 ) -> Result<()> {
     let term_size = term.size()?;
     let full_rect = Rect {
@@ -1391,12 +1400,22 @@ pub fn draw_scene<B: Backend>(
     // Pure pixel pass — no ratatui types touched.
     render_to_rgb_buffer(scene, &layout, pack, now, buf, cache, router, overlay);
 
+    // Hit-test the cursor against each agent's current sprite footprint
+    // so the tooltip + focus ring know who's under the pointer. Cell-
+    // accurate (one terminal cell = 2 vertical pixels in the half-block
+    // buffer).
+    let hovered =
+        mouse_pos.and_then(|(mx, my)| hit_test_agent(scene, &layout, now, router, overlay, mx, my));
+
     // Terminal-flush pass — half-block + widgets, inside ratatui's draw.
     term.draw(|f| {
         paint_footer(f, full_rect);
         flush_buffer_to_term(f, buf, scene_rect);
-        paint_label_widgets(f, scene, &layout, now, router, overlay, scene_rect);
+        paint_label_widgets(f, scene, &layout, now, router, overlay, scene_rect, hovered);
         paint_bulletin_notice(f, scene, &layout, scene_rect);
+        if let (Some(agent_id), Some((mx, my))) = (hovered, mouse_pos) {
+            paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect);
+        }
     })?;
     Ok(())
 }
@@ -1887,6 +1906,10 @@ fn flush_buffer_to_term(f: &mut ratatui::Frame<'_>, buf: &RgbBuffer, scene_rect:
 /// Labels above each character — uses `character_anchor` to follow the
 /// agent along its current path, color-codes by activity, falls back to
 /// disambiguating session-id suffix only when multiple agents share a label.
+///
+/// `hovered` highlights one agent's label: bright white + bold + leading
+/// ▸ marker so the focused character is easy to pick out of a crowd.
+#[allow(clippy::too_many_arguments)]
 fn paint_label_widgets(
     f: &mut ratatui::Frame<'_>,
     scene: &SceneState,
@@ -1895,6 +1918,7 @@ fn paint_label_widgets(
     router: &mut dyn Router,
     overlay: &OccupancyOverlay,
     scene_rect: Rect,
+    hovered: Option<AgentId>,
 ) {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     let mut label_counts: HashMap<&str, usize> = HashMap::new();
@@ -1915,7 +1939,10 @@ fn paint_label_widgets(
             std::borrow::Cow::Borrowed(&*agent.label)
         };
         let display = truncate_label(&raw, (DESK_W + 4) as usize);
-        let label_color = if agent.exiting_at.is_some() {
+        let is_hovered = hovered == Some(agent.agent_id);
+        let label_color = if is_hovered {
+            Color::Rgb(255, 255, 255)
+        } else if agent.exiting_at.is_some() {
             Color::Rgb(100, 110, 130)
         } else {
             match &agent.state {
@@ -1924,10 +1951,16 @@ fn paint_label_widgets(
                 ActivityState::Idle => Color::Rgb(160, 160, 160),
             }
         };
-        let para = Paragraph::new(Span::styled(
-            display.into_owned(),
-            Style::default().fg(label_color),
-        ));
+        let text = if is_hovered {
+            format!("▸{}", display)
+        } else {
+            display.into_owned()
+        };
+        let mut style = Style::default().fg(label_color);
+        if is_hovered {
+            style = style.add_modifier(ratatui::style::Modifier::BOLD);
+        }
+        let para = Paragraph::new(Span::styled(text, style));
         if let Some(r) = clip_widget_rect(
             Rect {
                 x: lx,
@@ -1940,6 +1973,141 @@ fn paint_label_widgets(
             f.render_widget(para, r);
         }
     }
+}
+
+/// Hit-test the mouse cursor against each agent's current sprite footprint.
+/// Returns the agent under `(mx, my)` (in terminal cell coordinates), or
+/// `None` if no agent occupies that cell.
+///
+/// The character sprite is 8×12 pixels, which in cell space is 8 cells
+/// wide × 6 cells tall (one cell = 2 vertical pixels). We test against
+/// that exact bounding box anchored on the agent's `character_anchor`.
+fn hit_test_agent(
+    scene: &SceneState,
+    layout: &Layout,
+    now: SystemTime,
+    router: &mut dyn Router,
+    overlay: &OccupancyOverlay,
+    mx: u16,
+    my: u16,
+) -> Option<AgentId> {
+    // Width-in-cells (sprite is 8 px wide; we don't divide x by 2 because
+    // each pixel column is one cell column in the half-block grid).
+    const SPRITE_W_CELLS: u16 = 8;
+    // Height-in-cells: sprite is 12 px tall = 6 cells.
+    const SPRITE_H_CELLS: u16 = 6;
+    for agent in scene.agents.values() {
+        let Some(anchor) = character_anchor(agent, layout, now, router, overlay) else {
+            continue;
+        };
+        let cell_x = anchor.x;
+        let cell_y = anchor.y / 2;
+        if mx >= cell_x
+            && mx < cell_x.saturating_add(SPRITE_W_CELLS)
+            && my >= cell_y
+            && my < cell_y.saturating_add(SPRITE_H_CELLS)
+        {
+            return Some(agent.agent_id);
+        }
+    }
+    None
+}
+
+/// Floating detail panel painted near the cursor when an agent is hovered.
+/// Shows the label, source, state, current tool detail, cwd, and session
+/// id. Positioned to avoid the cursor itself and the screen edges.
+fn paint_hover_tooltip(
+    f: &mut ratatui::Frame<'_>,
+    scene: &SceneState,
+    agent_id: AgentId,
+    mx: u16,
+    my: u16,
+    scene_rect: Rect,
+) {
+    let Some(agent) = scene.agents.get(&agent_id) else {
+        return;
+    };
+
+    // Build the tooltip lines.
+    let (state_label, state_detail, state_color) = match &agent.state {
+        ActivityState::Idle => ("Idle", String::new(), Color::Rgb(160, 160, 160)),
+        ActivityState::Active { detail, .. } => (
+            "Active",
+            detail.as_deref().unwrap_or("").to_string(),
+            Color::Rgb(140, 240, 170),
+        ),
+        ActivityState::Waiting { reason } => {
+            ("Waiting", reason.to_string(), Color::Rgb(240, 200, 80))
+        }
+    };
+    let cwd_short = agent
+        .cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("(unknown)");
+    let session_short = if agent.session_id.len() >= 8 {
+        &agent.session_id[..8]
+    } else {
+        &agent.session_id
+    };
+
+    let mut lines: Vec<ratatui::text::Line> = Vec::new();
+    lines.push(ratatui::text::Line::from(Span::styled(
+        format!(" {} ", agent.label),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )));
+    lines.push(ratatui::text::Line::from(vec![
+        Span::raw(" ●  "),
+        Span::styled(state_label, Style::default().fg(state_color)),
+    ]));
+    if !state_detail.is_empty() {
+        // Truncate long tool detail (e.g. full file paths) to keep tooltip narrow.
+        let trimmed: String = state_detail.chars().take(34).collect();
+        lines.push(ratatui::text::Line::from(Span::styled(
+            format!("    {}", trimmed),
+            Style::default().fg(Color::Rgb(200, 200, 210)),
+        )));
+    }
+    lines.push(ratatui::text::Line::from(Span::styled(
+        format!(" 📁 {}", cwd_short),
+        Style::default().fg(Color::Rgb(180, 180, 180)),
+    )));
+    lines.push(ratatui::text::Line::from(Span::styled(
+        format!(" ⌗ {} · {}", session_short, agent.source),
+        Style::default().fg(Color::Rgb(140, 140, 150)),
+    )));
+
+    let lines_h = lines.len() as u16;
+    let max_w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(20) + 2;
+    let tip_w = max_w.min(scene_rect.width).max(18);
+    let tip_h = lines_h;
+
+    // Place the tooltip to the RIGHT and BELOW the cursor when there's
+    // room; otherwise flip to the other side so it stays on-screen.
+    let mut tx = mx.saturating_add(2);
+    if tx.saturating_add(tip_w) > scene_rect.x + scene_rect.width {
+        tx = mx.saturating_sub(tip_w + 1);
+    }
+    let mut ty = my.saturating_add(1);
+    if ty.saturating_add(tip_h) > scene_rect.y + scene_rect.height {
+        ty = my.saturating_sub(tip_h).max(scene_rect.y);
+    }
+    let rect = Rect {
+        x: tx,
+        y: ty,
+        width: tip_w,
+        height: tip_h,
+    };
+    let Some(clipped) = clip_widget_rect(rect, scene_rect) else {
+        return;
+    };
+
+    let para =
+        Paragraph::new(lines).style(Style::default().bg(Color::Rgb(20, 22, 30)).fg(Color::White));
+    f.render_widget(ratatui::widgets::Clear, clipped);
+    f.render_widget(para, clipped);
 }
 
 /// Live agent count painted as a sticky on the bulletin board sprite.

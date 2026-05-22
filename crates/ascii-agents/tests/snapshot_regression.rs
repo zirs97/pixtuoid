@@ -87,6 +87,7 @@ fn render_pixel_hash(now: SystemTime) -> u64 {
         &mut cache,
         &mut router,
         &mut overlay,
+        None,
     )
     .expect("render");
 
@@ -153,6 +154,7 @@ fn render_changes_when_an_agent_state_changes() {
         &mut cache,
         &mut router,
         &mut overlay,
+        None,
     )
     .expect("render");
     let mut hasher = DefaultHasher::new();

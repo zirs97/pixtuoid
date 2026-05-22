@@ -91,6 +91,7 @@ fn main() -> Result<()> {
         &mut cache,
         &mut router,
         &mut overlay,
+        None,
     )?;
 
     if args.debug_walkable {

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use ascii_agents_core::sprite::{Rgb, RgbBuffer};
 use ascii_agents_core::walkable::OccupancyOverlay;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 
 use pathfind::{AStarRouter, Router};
 use renderer::{draw_scene, setup_terminal, teardown_terminal};
@@ -29,6 +29,9 @@ pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
     // visible-desk threshold). Dynamic occupancy churn is handled inside
     // the router via overlay signature.
     let mut last_layout_sig: Option<(u16, u16, usize)> = None;
+    // Mouse cell coordinates of the most recent move event. `None` when the
+    // pointer is outside the terminal or before any mouse event has fired.
+    let mut mouse_pos: Option<(u16, u16)> = None;
 
     let tick = Duration::from_millis(33); // ~30 fps
     let result: Result<()> = (async {
@@ -54,18 +57,43 @@ pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
                 &mut frame_cache,
                 &mut router,
                 &mut overlay,
+                mouse_pos,
             )?;
 
             let start = Instant::now();
-            if event::poll(tick)? {
-                if let Event::Key(k) = event::read()? {
-                    match (k.code, k.modifiers) {
+            // Drain every event that arrived during this tick. Mouse moves
+            // can fire 50-200/s on a fast cursor — we want the latest
+            // position before the next frame, not just the first one.
+            let mut polled = event::poll(tick)?;
+            let mut quit = false;
+            while polled {
+                match event::read()? {
+                    Event::Key(k) => match (k.code, k.modifiers) {
                         (KeyCode::Char('q'), _)
                         | (KeyCode::Esc, _)
-                        | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            quit = true;
+                        }
                         _ => {}
+                    },
+                    Event::Mouse(m) => {
+                        // Track move + drag positions; ignore scroll/button
+                        // press events for now (no other interaction yet).
+                        if matches!(
+                            m.kind,
+                            MouseEventKind::Moved
+                                | MouseEventKind::Drag(_)
+                                | MouseEventKind::Down(_)
+                        ) {
+                            mouse_pos = Some((m.column, m.row));
+                        }
                     }
+                    _ => {}
                 }
+                polled = event::poll(Duration::from_millis(0))?;
+            }
+            if quit {
+                break;
             }
             let elapsed = start.elapsed();
             if let Some(rem) = tick.checked_sub(elapsed) {
