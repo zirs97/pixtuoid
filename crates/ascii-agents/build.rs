@@ -13,8 +13,7 @@
 use std::path::Path;
 
 fn main() {
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set");
     let asset_dir = Path::new(&manifest_dir).join("../../assets/sprites/default");
 
     println!("cargo:rerun-if-changed={}", asset_dir.display());

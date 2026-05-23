@@ -139,18 +139,8 @@ pub(super) fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, fram
 pub(super) fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
     const FG: Rgb = Rgb(255, 215, 70);
     const GLYPH: &[&[u8]] = &[
-        b".YYYY.",
-        b".YYYY.",
-        b"....YY",
-        b"....YY",
-        b".YYYY.",
-        b".YYYY.",
-        b".YY...",
-        b".YY...",
-        b"......",
-        b"......",
-        b".YY...",
-        b".YY...",
+        b".YYYY.", b".YYYY.", b"....YY", b"....YY", b".YYYY.", b".YYYY.", b".YY...", b".YY...",
+        b"......", b"......", b".YY...", b".YY...",
     ];
     let bx = anchor.x;
     // Snap to even buffer row so the glyph's paired rows line up with

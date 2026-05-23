@@ -327,8 +327,7 @@ impl SceneLayout {
         // Partial pod ROW at the BOTTOM edge — same idea but vertical.
         // Adds POD_SIDE × pod_cols extra desks (+ the partial column's
         // single desk if it also fits).
-        let main_pod_used_h =
-            INTER_POD_AISLE_Y / 2 + couch_to_desk_extra + pod_rows * pod_stride_y;
+        let main_pod_used_h = INTER_POD_AISLE_Y / 2 + couch_to_desk_extra + pod_rows * pod_stride_y;
         let residual_h = cubicle_h.saturating_sub(main_pod_used_h);
         let partial_row_at_bottom = residual_h >= DESK_H + INTER_POD_AISLE_Y / 2;
         if partial_row_at_bottom {
@@ -565,7 +564,13 @@ impl SceneLayout {
                 Vec::new()
             } else {
                 vec![
-                    (PlantKind::Tall, Point { x: mr.x + 5, y: mr.y + 6 }),
+                    (
+                        PlantKind::Tall,
+                        Point {
+                            x: mr.x + 5,
+                            y: mr.y + 6,
+                        },
+                    ),
                     (
                         PlantKind::Flower,
                         Point {
@@ -672,9 +677,7 @@ impl SceneLayout {
             (
                 WallDecor::MeetingScreen,
                 Point {
-                    x: meeting_room
-                        .map(|mr| mr.x + mr.width / 2 - 7)
-                        .unwrap_or(0),
+                    x: meeting_room.map(|mr| mr.x + mr.width / 2 - 7).unwrap_or(0),
                     y: top_margin.saturating_sub(6),
                 },
             ),
