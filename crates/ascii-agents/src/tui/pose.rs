@@ -16,7 +16,7 @@ use ascii_agents_core::state::{ActivityState, AgentSlot};
 use ascii_agents_core::walkable::OccupancyOverlay;
 use ascii_agents_core::AgentId;
 
-use crate::tui::layout::{Layout, Point, WaypointKind};
+use crate::tui::layout::{Bounds, Layout, Point, WaypointKind};
 use crate::tui::pathfind::Router;
 
 /// Base cycle length. Each agent's actual cycle = base + per-agent jitter.
@@ -405,6 +405,70 @@ fn octile_distance(a: Point, b: Point) -> u32 {
     14 * dx.min(dy) + 10 * (dx.max(dy) - dx.min(dy))
 }
 
+/// Pick an aimless wander destination using weighted zones. Each zone
+/// gets a "vibe weight" — window-viewing strip + pantry are highest
+/// because that's where people naturally drift during breaks; corridor
+/// and cubicle aisles are incidental; meeting room is rare. After
+/// picking a zone (weighted random), rejection-sample 32 points
+/// within the zone for a walkable pixel. Falls back to a randomised
+/// point along the corridor if every probe fails.
+fn pick_aimless_dest(layout: &Layout, seed: u64) -> Point {
+    // Build the zone list. Use small rectangles for "window strip"
+    // (top of cubicle band, where viewing-the-city makes sense) and
+    // larger bounding boxes for the rooms / corridor. Zones can
+    // overlap — the walkable mask filters out non-walkable picks
+    // either way.
+    let window_strip = Bounds {
+        x: layout.cubicle_band.x,
+        y: layout.top_margin + 1,
+        width: layout.cubicle_band.width,
+        height: 10,
+    };
+    let zones: [(Bounds, u16); 5] = [
+        // Stretch + look-at-the-view at the top of the cubicle band.
+        (window_strip, 30),
+        // Pantry interior — snack break, coffee, chat.
+        (layout.pantry_room.unwrap_or(window_strip), 25),
+        // Main corridor — incidental traffic.
+        (layout.corridor.unwrap_or(layout.walkway), 20),
+        // Cubicle band (pod aisles) — within own area, stretching.
+        (layout.cubicle_band, 15),
+        // Meeting room — occasional drift-in.
+        (layout.meeting_room.unwrap_or(window_strip), 10),
+    ];
+    let total: u16 = zones.iter().map(|(_, w)| *w).sum();
+    let mut roll = ((seed >> 32) as u16) % total.max(1);
+    let zone = zones
+        .iter()
+        .find_map(|(b, w)| {
+            if roll < *w {
+                Some(b)
+            } else {
+                roll -= w;
+                None
+            }
+        })
+        .unwrap_or(&zones[0].0);
+    for i in 0..32u64 {
+        let h = seed
+            .wrapping_add(i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+            .wrapping_mul(0xc6a4_a793_5bd1_e995);
+        let x = zone.x + (h as u16) % zone.width.max(1);
+        let y = zone.y + ((h >> 16) as u16) % zone.height.max(1);
+        if layout.is_walkable(x, y) {
+            return Point { x, y };
+        }
+    }
+    // Fallback — randomised point along the corridor's x-range so
+    // multiple fallback agents spread out instead of clustering.
+    let c = layout.corridor.unwrap_or(layout.walkway);
+    let x_jitter = (seed as u16) % c.width.max(1);
+    Point {
+        x: c.x + x_jitter,
+        y: c.y + c.height / 2,
+    }
+}
+
 fn idle_pose(slot: &AgentSlot, desk: Point, layout: &Layout, elapsed_ms: u64) -> Pose {
     let cycle_ms = cycle_ms_for(slot.agent_id);
     let cycle_n = elapsed_ms / cycle_ms;
@@ -425,40 +489,17 @@ fn idle_pose(slot: &AgentSlot, desk: Point, layout: &Layout, elapsed_ms: u64) ->
 
     // Destination: lounge waypoint OR aimless point.
     let (dest, at_dest_pose): (Point, Pose) = if aimless {
-        // Aimless: ANY walkable pixel in the office is fair game —
-        // meeting room interior, pantry, cubicle aisles, the corridor,
-        // anywhere a character could stand. Rejection-sample up to
-        // 16 hashed (x, y) pairs against the walkability mask; pick
-        // the first walkable one. Falls back to the corridor center
-        // if every probe lands on furniture (vanishingly rare).
-        //
-        // Sampling bounds avoid the top wall band (y < top_margin) and
-        // the baseboard (last 3 rows). Deterministic per (agent, cycle).
+        // Weighted-zone aimless wander. Instead of uniformly sampling
+        // anywhere in the buffer (which clusters at the fallback
+        // because most cubicle pixels are obstacles), pick a ZONE by
+        // weight first — window-viewing strip, pantry, corridor,
+        // meeting room — then rejection-sample within that zone.
+        // Weights tune the "vibe" of where agents drift: window
+        // strip and pantry get the highest weight so the office
+        // feels alive (people stretching at windows, grabbing
+        // coffee), corridor/cubicle/meeting are more incidental.
         let seed = slot.agent_id.raw() ^ cycle_n.wrapping_mul(0xd1b5_4a32_d192_ed03);
-        let y_lo = layout.top_margin;
-        let y_hi = layout.buf_h.saturating_sub(3);
-        let y_range = y_hi.saturating_sub(y_lo).max(1);
-        let mut found: Option<Point> = None;
-        for i in 0..16u64 {
-            let h = seed
-                .wrapping_add(i.wrapping_mul(0x9e37_79b9_7f4a_7c15))
-                .wrapping_mul(0xc6a4_a793_5bd1_e995);
-            let x = (h as u16) % layout.buf_w.max(1);
-            let y = y_lo + ((h >> 16) as u16) % y_range;
-            if layout.is_walkable(x, y) {
-                found = Some(Point { x, y });
-                break;
-            }
-        }
-        let p = found.unwrap_or_else(|| {
-            // Vanishingly rare fallback — the corridor center is always
-            // walkable by construction.
-            let c = layout.corridor.unwrap_or(layout.walkway);
-            Point {
-                x: c.x + c.width / 2,
-                y: c.y + c.height / 2,
-            }
-        });
+        let p = pick_aimless_dest(layout, seed);
         (p, Pose::AimlessAt { dest: p })
     } else {
         let wp_idx = waypoint_index_for_cycle(slot.agent_id, cycle_n, layout.waypoints.len());

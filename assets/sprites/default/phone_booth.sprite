@@ -1,0 +1,17 @@
+# 6x12 single-occupancy phone booth — tall narrow box with glass walls,
+# a yellow "in-use" indicator at the top, dark wood threshold at the
+# bottom. Lives in the aisle between desk pods; agents wander to it
+# for "private calls" (visible as standing-at-the-door pose).
+@frame 0
+. n n n n .
+n M M M M n
+n M y y M n
+n M K K M n
+n M K K M n
+n M K K M n
+n M K K M n
+n M K K M n
+n M K K M n
+n M K K M n
+n M D D M n
+. n n n n .

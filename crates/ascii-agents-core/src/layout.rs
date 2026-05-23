@@ -36,6 +36,11 @@ pub enum WaypointKind {
     Couch,
     /// Pantry counter — kitchen + coffee.
     Pantry,
+    /// Aisle phone booth — agent stands at the door (private call).
+    PhoneBooth,
+    /// Aisle standing desk — agent stands at the desk (alternate
+    /// workstation). Random which exact StandingDesk slot is used.
+    StandingDesk,
 }
 
 /// Wall-mounted / wall-leaning furniture, painted as decor in the top wall
@@ -59,6 +64,47 @@ pub enum PlantKind {
     Succulent,
 }
 
+/// Decor placed in the aisles BETWEEN 2×2 desk pods. Picked at random
+/// (deterministic hash of pod index) so each office layout is varied
+/// but stable across renders. Each variant maps to a distinct sprite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PodDecor {
+    PlantTall,
+    Whiteboard,
+    Tv,
+    PhoneBooth,
+    StandingDesk,
+}
+
+impl PodDecor {
+    /// The randomly-picked pool. Whiteboard (14 wide) fits in the
+    /// 22-px aisle with ~3 px of walking clearance after the 1-px
+    /// obstacle pad — same rolling-whiteboard sprite as the wall
+    /// mount, just placed in an aisle slot.
+    pub const ALL: &'static [PodDecor] = &[
+        PodDecor::PlantTall,
+        PodDecor::Whiteboard,
+        PodDecor::Tv,
+        PodDecor::PhoneBooth,
+        PodDecor::StandingDesk,
+    ];
+
+    /// Width / height in buffer pixels — used for both rendering offset
+    /// (centred placement) and walkable-mask obstacle dimensions. Sprite
+    /// sizes are fixed: PlantTall=4×9, Whiteboard=14×11 (wall-mount
+    /// only, not in the aisle pool), Tv=10×10, PhoneBooth=6×12,
+    /// StandingDesk=8×8.
+    pub fn size(self) -> (u16, u16) {
+        match self {
+            PodDecor::PlantTall => (4, 9),
+            PodDecor::Whiteboard => (14, 11),
+            PodDecor::Tv => (10, 10),
+            PodDecor::PhoneBooth => (6, 12),
+            PodDecor::StandingDesk => (8, 8),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Waypoint {
     pub pos: Point,
@@ -78,6 +124,10 @@ pub struct SceneLayout {
     pub waypoints: Vec<Waypoint>,
     pub plants: Vec<(PlantKind, Point)>,
     pub wall_decor: Vec<(WallDecor, Point)>,
+    /// Decor items placed in the aisles between 2×2 desk pods. Each
+    /// (kind, centre-position) tuple paints its sprite centred on the
+    /// point and marks it as an obstacle in the walkable mask.
+    pub pod_decor: Vec<(PodDecor, Point)>,
     pub floor_lamp: Option<Point>,
     pub door: Option<Point>,
     pub door_threshold: Option<Point>,
@@ -111,6 +161,21 @@ pub const MAX_VISIBLE_DESKS: usize = 16;
 pub const DESK_GAP_X: u16 = 11;
 pub const DESK_GAP_Y: u16 = 14;
 pub const MIN_TOP_MARGIN: u16 = 20;
+
+/// Number of desks per side in a pod (`POD_SIDE * POD_SIDE` total).
+pub const POD_SIDE: u16 = 2;
+/// Gap between two desks inside the same pod — big enough that each
+/// desk reads as its own workstation (chair + monitor + space), not
+/// a merged blob. 12 px ≈ a full desk width of empty floor between
+/// pod-mates.
+pub const INTRA_POD_GAP_X: u16 = 12;
+pub const INTRA_POD_GAP_Y: u16 = 12;
+/// Gap between adjacent pods — comfortably wider than the intra-pod
+/// gap so the pod boundary is visually obvious. 28 px also fits the
+/// rolling whiteboard (14 wide) with ~7 px of walking clearance on
+/// each side after the 1-px obstacle pad.
+pub const INTER_POD_AISLE_X: u16 = 28;
+pub const INTER_POD_AISLE_Y: u16 = 28;
 
 impl SceneLayout {
     /// Returns `None` if the buffer is too small for even one cubicle and the
@@ -168,27 +233,103 @@ impl SceneLayout {
             height: walkway_h,
         };
 
-        let col_w = DESK_W + DESK_GAP_X;
-        let row_h = DESK_H + DESK_GAP_Y;
-        let cols = ((right_w.saturating_sub(DESK_GAP_X)) / col_w).max(1);
+        // 2×2 desk pods. Within a pod desks are tight (small intra-gap);
+        // between pods we leave a wide aisle for decor + walkers. This
+        // breaks the previously-uniform desk grid into team-like
+        // clusters and frees up `pod_decor` slots in the aisles.
+        let pod_w = POD_SIDE * DESK_W + (POD_SIDE - 1) * INTRA_POD_GAP_X;
+        let pod_h = POD_SIDE * DESK_H + (POD_SIDE - 1) * INTRA_POD_GAP_Y;
+        let pod_stride_x = pod_w + INTER_POD_AISLE_X;
+        let pod_stride_y = pod_h + INTER_POD_AISLE_Y;
         // Extra padding between the viewing couch (top of cubicle area)
-        // and the first row of desks. Scales with buf_h so taller
-        // terminals get more breathing room — about 1 extra row of
-        // pixels per 20 px of buffer height above 60. At buf_h=70 this
-        // is ~0 (no change from old layout); at buf_h=200 it adds 7 px.
+        // and the first row of pods. Scales with buf_h so taller
+        // terminals get more breathing room.
         let couch_to_desk_extra = buf_h.saturating_sub(60) / 20;
-        let rows_available = cubicle_h.saturating_sub(couch_to_desk_extra);
-        let rows = (rows_available / row_h).max(1);
-        let max_grid = (cols * rows) as usize;
-        let n = num_agents.min(max_grid).min(MAX_VISIBLE_DESKS);
+        let pod_cols = ((right_w.saturating_sub(INTER_POD_AISLE_X / 2)) / pod_stride_x).max(1);
+        let pod_rows = ((cubicle_h.saturating_sub(couch_to_desk_extra) + INTER_POD_AISLE_Y)
+            / pod_stride_y)
+            .max(1);
+        let max_pods = MAX_VISIBLE_DESKS as u16 / (POD_SIDE * POD_SIDE);
+        let total_pods = (pod_cols * pod_rows).min(max_pods);
+        // Cap pod_cols/pod_rows so we don't generate decor for unused
+        // pods. Keep row-major fill: trim from the bottom-right.
+        let pod_rows = total_pods.div_ceil(pod_cols).min(pod_rows);
+        let n = num_agents.min(MAX_VISIBLE_DESKS);
         let mut home_desks = Vec::with_capacity(n);
-        for i in 0..n {
-            let r = (i as u16) / cols;
-            let c = (i as u16) % cols;
-            home_desks.push(Point {
-                x: right_x + DESK_GAP_X + c * col_w,
-                y: cubicle_band.y + DESK_GAP_Y + couch_to_desk_extra + r * row_h,
-            });
+        'outer: for pod_r in 0..pod_rows {
+            for pod_c in 0..pod_cols {
+                let pod_origin_x = right_x + INTER_POD_AISLE_X / 2 + pod_c * pod_stride_x;
+                let pod_origin_y = cubicle_band.y
+                    + INTER_POD_AISLE_Y / 2
+                    + couch_to_desk_extra
+                    + pod_r * pod_stride_y;
+                for r in 0..POD_SIDE {
+                    for c in 0..POD_SIDE {
+                        if home_desks.len() >= n {
+                            break 'outer;
+                        }
+                        home_desks.push(Point {
+                            x: pod_origin_x + c * (DESK_W + INTRA_POD_GAP_X),
+                            y: pod_origin_y + r * (DESK_H + INTRA_POD_GAP_Y),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Decor in the aisles BETWEEN pods. For each pod_cols × pod_rows
+        // grid we get `(pod_rows-1) * pod_cols` horizontal-aisle slots
+        // and `pod_rows * (pod_cols-1)` vertical-aisle slots. Each slot
+        // picks one item from `PodDecor::ALL` via a deterministic hash
+        // so the office layout looks varied but stable across renders.
+        let mut pod_decor: Vec<(PodDecor, Point)> = Vec::new();
+        let pick_decor = |slot_seed: u64| -> PodDecor {
+            let n = PodDecor::ALL.len() as u64;
+            PodDecor::ALL[(slot_seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) % n) as usize]
+        };
+        // Vertical-aisle slots (between column pod_c and pod_c+1, one
+        // per pod row).
+        for pod_r in 0..pod_rows {
+            for pod_c in 0..pod_cols.saturating_sub(1) {
+                let pod_origin_x = right_x + INTER_POD_AISLE_X / 2 + pod_c * pod_stride_x;
+                let pod_origin_y = cubicle_band.y
+                    + INTER_POD_AISLE_Y / 2
+                    + couch_to_desk_extra
+                    + pod_r * pod_stride_y;
+                // Aisle centre = right edge of pod + half-aisle.
+                let aisle_cx = pod_origin_x + pod_w + INTER_POD_AISLE_X / 2;
+                let aisle_cy = pod_origin_y + pod_h / 2;
+                let seed = (pod_r as u64) * 31 + (pod_c as u64) * 17 + 1;
+                pod_decor.push((
+                    pick_decor(seed),
+                    Point {
+                        x: aisle_cx,
+                        y: aisle_cy,
+                    },
+                ));
+            }
+        }
+        // Horizontal-aisle slots (between row pod_r and pod_r+1, one
+        // per pod column).
+        for pod_r in 0..pod_rows.saturating_sub(1) {
+            for pod_c in 0..pod_cols {
+                let pod_origin_x = right_x + INTER_POD_AISLE_X / 2 + pod_c * pod_stride_x;
+                let pod_origin_y = cubicle_band.y
+                    + INTER_POD_AISLE_Y / 2
+                    + couch_to_desk_extra
+                    + pod_r * pod_stride_y;
+                // Aisle centre = bottom edge of pod + half-aisle.
+                let aisle_cx = pod_origin_x + pod_w / 2;
+                let aisle_cy = pod_origin_y + pod_h + INTER_POD_AISLE_Y / 2;
+                let seed = (pod_r as u64) * 41 + (pod_c as u64) * 23 + 2;
+                pod_decor.push((
+                    pick_decor(seed),
+                    Point {
+                        x: aisle_cx,
+                        y: aisle_cy,
+                    },
+                ));
+            }
         }
 
         let meeting_sofas = if let Some(mr) = meeting_room {
@@ -285,6 +426,23 @@ impl SceneLayout {
                 kind: WaypointKind::Pantry,
             });
         }
+        // Interactive pod-aisle decor → also waypoints. PhoneBooth and
+        // StandingDesk are workstation-like destinations agents can
+        // wander to during Idle cycles. Plant/Whiteboard/TV are pure
+        // decor (already obstacles via pod_decor).
+        for (kind, pos) in &pod_decor {
+            let wp_kind = match kind {
+                PodDecor::PhoneBooth => Some(WaypointKind::PhoneBooth),
+                PodDecor::StandingDesk => Some(WaypointKind::StandingDesk),
+                _ => None,
+            };
+            if let Some(wp_kind) = wp_kind {
+                waypoints.push(Waypoint {
+                    pos: *pos,
+                    kind: wp_kind,
+                });
+            }
+        }
 
         // Plants scatter through the cubicle corridor edges + pantry.
         // No plants in the cubicle TOP strip — that area is too narrow
@@ -344,7 +502,10 @@ impl SceneLayout {
         let door = if buf_w >= ELEVATOR_W + 4 && window_bottom_y + 1 >= ELEVATOR_H {
             Some(Point {
                 x: buf_w.saturating_sub(ELEVATOR_W + 2),
-                y: window_bottom_y + 1 - ELEVATOR_H,
+                // +2 nudge: drops the elevator bottom 2 px below the
+                // window line so it visually rests against the floor
+                // instead of floating mid-wall.
+                y: window_bottom_y + 1 - ELEVATOR_H + 2,
             })
         } else {
             None
@@ -468,6 +629,7 @@ impl SceneLayout {
             &plants,
             floor_lamp,
             &wall_decor,
+            &pod_decor,
             &room_walls,
         );
 
@@ -480,6 +642,7 @@ impl SceneLayout {
             waypoints,
             plants,
             wall_decor,
+            pod_decor,
             floor_lamp,
             door,
             door_threshold,
@@ -517,6 +680,7 @@ fn build_walkable_mask(
     plants: &[(PlantKind, Point)],
     floor_lamp: Option<Point>,
     wall_decor: &[(WallDecor, Point)],
+    pod_decor: &[(PodDecor, Point)],
     room_walls: &[(Point, Point)],
 ) -> WalkableMask {
     let mut mask = WalkableMask::new_open(buf_w, buf_h);
@@ -605,6 +769,8 @@ fn build_walkable_mask(
         let (w, h) = match wp.kind {
             WaypointKind::Couch => (14, 6),
             WaypointKind::Pantry => (20, 8),
+            WaypointKind::PhoneBooth => (6, 12),
+            WaypointKind::StandingDesk => (8, 8),
         };
         // Pad=1 (not OBSTACLE_PAD_PX=2) — waypoint furniture paints in
         // Pass 1.5 (after characters) so a visitor's body is occluded
@@ -631,6 +797,23 @@ fn build_walkable_mask(
         if matches!(kind, WallDecor::Whiteboard) {
             mask.mark_blocked(pos.x, pos.y, 14, 11, OBSTACLE_PAD_PX);
         }
+    }
+
+    // Pod-aisle decor is centred at `pos`. All variants are obstacles.
+    // PhoneBooth + StandingDesk are also waypoints — those entries
+    // appear above in `waypoints` and double-block the same area;
+    // mark_blocked is idempotent. Use pad=1 (not OBSTACLE_PAD_PX=2)
+    // because aisles are tight (14×16) and an extra pixel of pad on
+    // each side disconnects the routing grid through the aisle.
+    for (kind, pos) in pod_decor {
+        let (w, h) = kind.size();
+        mask.mark_blocked(
+            pos.x.saturating_sub(w / 2),
+            pos.y.saturating_sub(h / 2),
+            w,
+            h,
+            1,
+        );
     }
 
     mask
@@ -670,7 +853,10 @@ mod tests {
     #[test]
     fn compute_places_all_waypoint_kinds() {
         let l = SceneLayout::compute(120, 96, 1).expect("fits");
-        assert_eq!(l.waypoints.len(), WAYPOINT_COUNT);
+        // Couch + Pantry are unconditional; PhoneBooth / StandingDesk
+        // may appear depending on the random pod_decor pick — so just
+        // require the unconditional pair and let the rest vary.
+        assert!(l.waypoints.len() >= 2);
         let kinds: std::collections::HashSet<_> = l.waypoints.iter().map(|w| w.kind).collect();
         assert!(kinds.contains(&WaypointKind::Couch));
         assert!(kinds.contains(&WaypointKind::Pantry));
@@ -684,6 +870,14 @@ mod tests {
                 WaypointKind::Couch => {
                     assert!(w.pos.y >= l.top_margin);
                     assert!(w.pos.y < l.cubicle_band.y + DESK_GAP_Y);
+                }
+                // PhoneBooth + StandingDesk waypoints come from
+                // pod_decor slots in the cubicle band. They're
+                // valid anywhere inside the cubicle band — the
+                // tighter check just confirms they're south of the
+                // top wall.
+                WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {
+                    assert!(w.pos.y >= l.top_margin);
                 }
             }
         }

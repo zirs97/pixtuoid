@@ -4,7 +4,7 @@
 //! computation, walkability mask, and primitive geometry.
 
 pub use ascii_agents_core::layout::{
-    Bounds, PlantKind, Point, SceneLayout, WallDecor, Waypoint, WaypointKind, DESK_GAP_X,
+    Bounds, PlantKind, PodDecor, Point, SceneLayout, WallDecor, Waypoint, WaypointKind, DESK_GAP_X,
     DESK_GAP_Y, DESK_H, DESK_W, MAX_VISIBLE_DESKS, MIN_TOP_MARGIN, OBSTACLE_PAD_PX, WAYPOINT_COUNT,
 };
 

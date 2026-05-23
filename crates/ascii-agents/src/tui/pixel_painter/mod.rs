@@ -35,7 +35,7 @@ use anchors::{
     waypoint_anchor, waypoint_rank_offset_x, with_breath,
 };
 use background::{
-    dim_floor_overlay, paint_ceiling_pool, paint_clock, paint_corridor_runner, paint_entry_mat,
+    dim_floor_overlay, paint_ceiling_pool, paint_clock, paint_corridor_runner,
     paint_floor_and_walls, paint_floor_lamp_halo, paint_shadow, time_of_day_look,
 };
 use drawable::{cat_position, paint_drawable, Drawable, DrawableKind};
@@ -368,52 +368,17 @@ pub fn render_to_rgb_buffer(
         }
     }
 
-    // Meeting room: two sofas facing each other across a small table.
-    // Top sofa renders normally (back at top, sitter faces down). Bottom
-    // sofa vertical-mirror so its back is at the bottom — sitter faces
-    // up, toward the table.
-    if let Some(couch_anim) = pack.animation("couch").and_then(|a| a.frames.first()) {
-        for (i, sofa) in layout.meeting_sofas.iter().enumerate() {
-            let sx = sofa.x.saturating_sub(couch_anim.width / 2);
-            let sy = sofa.y.saturating_sub(couch_anim.height / 2);
-            if i == 0 {
-                blit_frame(couch_anim, sx, sy, buf);
-            } else {
-                let flipped = couch_anim.mirror_vertical();
-                blit_frame(&flipped, sx, sy, buf);
-            }
-        }
-    }
-    if let Some(table) = layout.meeting_table {
-        // Wider, deeper than the lounge coffee table — reads as a
-        // proper conference table sitting between the two facing
-        // sofas, not a side table.
-        paint_coffee_table(buf, table.x, table.y, 11, 5);
-    }
-
-    // Pantry bistro table + stools — defines the pantry as a "eat
-    // lunch + chat" zone, not just a counter.
-    if let Some(table) = layout.pantry_table {
-        paint_pantry_table(buf, table.x, table.y);
-    }
-    for chair in &layout.pantry_chairs {
-        paint_pantry_chair(buf, chair.x, chair.y);
-    }
-
-    // Entry mat on the floor just inside the door — defines the arrival
-    // zone and breaks up the empty wood strip there. The door SPRITE
-    // itself is now a y-sorted Drawable (so a walker passing south of
-    // the doorway can occlude it correctly); only the floor mat stays in
-    // the background pass. Y is anchored to the wall-band bottom + 3
-    // (3 px south of the door's bottom edge, which sits at top_margin+2)
-    // so the mat tracks the top wall on tall terminals — the previous
-    // `let mat_y = 15` was an absolute pixel position that got buried
-    // inside the wall band on anything taller than the minimum buffer.
-    if let Some(door_pos) = layout.door {
-        let mat_x = door_pos.x.saturating_sub(2);
-        let mat_y = layout.top_margin + 3;
-        paint_entry_mat(buf, mat_x, mat_y, 10, 2);
-    }
+    // Meeting sofas + table, pantry table + chairs are all painted by
+    // the y-sorted Drawable pass below (MeetingSofa / MeetingTable /
+    // PantryTable / PantryChair variants). They used to be painted
+    // here in the background pass too — leftover from before the
+    // y-sort refactor; the duplicate paints were dead pixels
+    // overwritten 50 lines later. Removed.
+    //
+    // Entry mat was also painted here (a small blue rug just south of
+    // the door). The old wooden-door era used it to define the arrival
+    // zone, but the elevator already defines that visually + the blue
+    // rectangle looked out of place under the elevator.
 
     // Shadow pass — soft floor shadows under desks + lounge furniture
     // so nothing floats. Painted BEFORE the y-sorted entity pass so
@@ -543,7 +508,10 @@ pub fn render_to_rgb_buffer(
     }
 
     // Waypoint furniture — couch (14×5) and pantry counter (20×8),
-    // both centered on the waypoint position.
+    // both centered on the waypoint position. PhoneBooth and
+    // StandingDesk waypoints are visually rendered via the
+    // `pod_decor` drawables below (they ARE the decor); they don't
+    // get a duplicate Drawable here.
     for wp in &layout.waypoints {
         use crate::tui::layout::WaypointKind;
         match wp.kind {
@@ -555,7 +523,23 @@ pub fn render_to_rgb_buffer(
                 anchor_y: wp.pos.y + 4,
                 kind: DrawableKind::WaypointPantry { pos: wp.pos },
             }),
+            WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {}
         }
+    }
+
+    // Pod-aisle decor (plant / whiteboard / TV / phone booth /
+    // standing desk). All centered at `pos`; anchor at the bottom of
+    // the sprite footprint so y-sort places them correctly against
+    // walkers and characters in the aisles.
+    for (kind, pos) in &layout.pod_decor {
+        let (_, h) = kind.size();
+        drawables.push(Drawable {
+            anchor_y: pos.y + h / 2,
+            kind: DrawableKind::PodDecorItem {
+                kind: *kind,
+                pos: *pos,
+            },
+        });
     }
 
     // Plants — height varies by sprite, anchor = pos.y + h/2 (center
@@ -779,12 +763,18 @@ pub fn render_to_rgb_buffer(
                     let rank = *wp_rank.entry(wp).or_insert(0);
                     wp_rank.insert(wp, rank + 1);
                     let dx = waypoint_rank_offset_x(kind, rank);
+                    use crate::tui::layout::WaypointKind;
                     let (anim_name, anchor_base, sprite_h) = match kind {
-                        crate::tui::layout::WaypointKind::Couch => {
-                            ("back_couch", back_couch_anchor(wp_obj.pos), 9u16)
-                        }
-                        crate::tui::layout::WaypointKind::Pantry => {
+                        WaypointKind::Couch => ("back_couch", back_couch_anchor(wp_obj.pos), 9u16),
+                        WaypointKind::Pantry => {
                             ("holding_coffee", waypoint_anchor(wp_obj.pos), 12u16)
+                        }
+                        // PhoneBooth + StandingDesk → agent just stands at the
+                        // decor. waypoint_anchor positions them directly above
+                        // the decor centre (sprite footprint sits just north
+                        // of the decor's centre, head visible above).
+                        WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {
+                            ("standing", waypoint_anchor(wp_obj.pos), 12u16)
                         }
                     };
                     let anchor = with_breath(

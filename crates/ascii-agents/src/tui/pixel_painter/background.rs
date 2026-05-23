@@ -560,25 +560,6 @@ pub(super) fn paint_corridor_runner(buf: &mut RgbBuffer, rect: crate::tui::layou
     }
 }
 
-/// Small entry mat painted on the floor just inside the office door —
-/// defines the arrival zone and breaks up the otherwise-empty wood strip
-/// next to the door.
-pub(super) fn paint_entry_mat(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16) {
-    const MAT_BASE: Rgb = Rgb(60, 90, 130);
-    const MAT_BORDER: Rgb = Rgb(40, 64, 96);
-    for dy in 0..h {
-        for dx in 0..w {
-            let px = x + dx;
-            let py = y + dy;
-            if px >= buf.width || py >= buf.height {
-                continue;
-            }
-            let on_border = dy == 0 || dy + 1 == h || dx == 0 || dx + 1 == w;
-            buf.put(px, py, if on_border { MAT_BORDER } else { MAT_BASE });
-        }
-    }
-}
-
 /// Elliptical drop-shadow blended toward black at the floor level.
 /// Grounds floating sprites so they look like they're standing/sitting
 /// on the floor instead of hovering in mid-air. `strength` 0..1 controls

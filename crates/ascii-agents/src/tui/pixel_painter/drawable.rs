@@ -85,6 +85,14 @@ pub(super) enum DrawableKind<'a> {
         kind: crate::tui::layout::PlantKind,
         pos: Point,
     },
+    /// Aisle decor item between desk pods (plant / whiteboard / TV /
+    /// phone booth / standing desk). All are obstacles in the
+    /// walkable mask; phone booth + standing desk additionally exist
+    /// as waypoints so agents can wander to them.
+    PodDecorItem {
+        kind: crate::tui::layout::PodDecor,
+        pos: Point,
+    },
     FloorLamp {
         pos: Point,
     },
@@ -272,6 +280,21 @@ pub(super) fn paint_drawable(
                 PlantKind::Tall => "plant_tall",
                 PlantKind::Flower => "plant_flower",
                 PlantKind::Succulent => "plant_succulent",
+            };
+            if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
+                let px = pos.x.saturating_sub(f.width / 2);
+                let py = pos.y.saturating_sub(f.height / 2);
+                blit_frame(f, px, py, buf);
+            }
+        }
+        DrawableKind::PodDecorItem { kind, pos } => {
+            use crate::tui::layout::PodDecor;
+            let anim_name = match kind {
+                PodDecor::PlantTall => "plant_tall",
+                PodDecor::Whiteboard => "whiteboard",
+                PodDecor::Tv => "tv_stand",
+                PodDecor::PhoneBooth => "phone_booth",
+                PodDecor::StandingDesk => "standing_desk",
             };
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 let px = pos.x.saturating_sub(f.width / 2);

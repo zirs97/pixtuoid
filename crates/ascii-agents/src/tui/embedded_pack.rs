@@ -95,6 +95,9 @@ fn load_embedded_pack() -> Result<Pack> {
     let pantry = include_str!("../../../../assets/sprites/default/pantry.sprite");
     let whiteboard = include_str!("../../../../assets/sprites/default/whiteboard.sprite");
     let bookshelf = include_str!("../../../../assets/sprites/default/bookshelf.sprite");
+    let tv_stand = include_str!("../../../../assets/sprites/default/tv_stand.sprite");
+    let phone_booth = include_str!("../../../../assets/sprites/default/phone_booth.sprite");
+    let standing_desk = include_str!("../../../../assets/sprites/default/standing_desk.sprite");
 
     load_pack_from_strings(
         pack_toml,
@@ -134,6 +137,9 @@ fn load_embedded_pack() -> Result<Pack> {
             ("pantry.sprite", pantry),
             ("whiteboard.sprite", whiteboard),
             ("bookshelf.sprite", bookshelf),
+            ("tv_stand.sprite", tv_stand),
+            ("phone_booth.sprite", phone_booth),
+            ("standing_desk.sprite", standing_desk),
         ],
     )
 }
