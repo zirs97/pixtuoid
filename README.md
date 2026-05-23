@@ -23,6 +23,36 @@ A terminal-native, multi-agent pixel-art visualizer for AI coding agents. Each r
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install IvanWng97/ascii-agents/ascii-agents
+```
+
+### Debian / Ubuntu
+
+Download the `.deb` packages from the [latest release](https://github.com/IvanWng97/ascii-agents/releases/latest):
+
+```bash
+curl -LO https://github.com/IvanWng97/ascii-agents/releases/latest/download/ascii-agents_0.1.0-1_amd64.deb
+curl -LO https://github.com/IvanWng97/ascii-agents/releases/latest/download/ascii-agents-hook_0.1.0-1_amd64.deb
+sudo dpkg -i ascii-agents_0.1.0-1_amd64.deb ascii-agents-hook_0.1.0-1_amd64.deb
+```
+
+### Pre-built binaries
+
+Download the tarball for your platform from [GitHub Releases](https://github.com/IvanWng97/ascii-agents/releases/latest), extract, and add both binaries to your `$PATH`:
+
+| Platform | Tarball |
+|---|---|
+| macOS (Apple Silicon) | `ascii-agents-v*-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `ascii-agents-v*-x86_64-apple-darwin.tar.gz` |
+| Linux (x86_64, glibc) | `ascii-agents-v*-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (x86_64, musl) | `ascii-agents-v*-x86_64-unknown-linux-musl.tar.gz` |
+| Linux (ARM64) | `ascii-agents-v*-aarch64-unknown-linux-gnu.tar.gz` |
+
+### From source
+
 Requires Rust 1.78+ (`brew install rust` on macOS).
 
 ```bash
@@ -31,9 +61,9 @@ cd ascii-agents
 cargo build --release
 ```
 
-This produces two binaries:
-- `target/release/ascii-agents` — the TUI
-- `target/release/ascii-agents-hook` — the tiny shim CC invokes from its hooks
+This produces two binaries in `target/release/`:
+- `ascii-agents` — the TUI
+- `ascii-agents-hook` — the tiny shim CC invokes from its hooks
 
 ## Quick start
 
@@ -42,11 +72,10 @@ In one terminal:
 ```bash
 # Wire Claude Code's hooks to our shim (writes to ~/.claude/settings.json
 # atomically, with a one-time backup, and preserves a stow symlink if you use one).
-./target/release/ascii-agents install-hooks \
-    --hook-path "$(pwd)/target/release/ascii-agents-hook"
+ascii-agents install-hooks
 
 # Start the TUI.
-./target/release/ascii-agents
+ascii-agents
 ```
 
 In another terminal:
@@ -65,13 +94,13 @@ Hooks stay installed across TUI sessions — you only run `install-hooks` once. 
 Only run `uninstall-hooks` if you want to **permanently remove** the integration from `~/.claude/settings.json`:
 
 ```bash
-./target/release/ascii-agents uninstall-hooks
+ascii-agents uninstall-hooks
 ```
 
 ### Headless / scripting
 
 ```bash
-./target/release/ascii-agents run --headless \
+ascii-agents run --headless \
     --projects-root ~/.claude/projects --max-desks 12
 ```
 

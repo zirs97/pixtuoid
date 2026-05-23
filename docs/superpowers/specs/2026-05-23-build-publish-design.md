@@ -226,53 +226,7 @@ line in favor of tag-inferred versioning).
 
 ---
 
-## 5. `install.sh` — Shell Installer
-
-Lives at repo root. Also downloadable from the latest release.
-
-### Behavior
-
-1. Detect OS: `uname -s` → `Darwin` or `Linux`.
-2. Detect arch: `uname -m` → `arm64`/`aarch64` or `x86_64`.
-3. Map to Rust target triple.
-4. Fetch the latest release tag from the GitHub API
-   (`https://api.github.com/repos/IvanWng97/ascii-agents/releases/latest`).
-5. Download the matching tarball.
-6. Download `sha256sums.txt`, verify the tarball's checksum.
-7. Extract to a temp dir.
-8. Install both binaries to `${INSTALL_DIR:-$HOME/.local/bin}`.
-   - If `$HOME/.local/bin` is not on `$PATH`, print a warning with the
-     appropriate `export PATH` line.
-   - If `--global` is passed and the user has write access to
-     `/usr/local/bin`, install there instead.
-9. Print post-install instructions:
-   ```
-   ascii-agents installed successfully!
-   Run: ascii-agents install-hooks
-   Then: ascii-agents run
-   ```
-
-### Environment variables
-
-| Variable       | Default           | Purpose                    |
-|----------------|-------------------|----------------------------|
-| `INSTALL_DIR`  | `$HOME/.local/bin`| Override install location  |
-| `VERSION`      | (latest)          | Pin a specific version     |
-
-### Error handling
-
-- Fail with a clear message if OS/arch is unsupported.
-- Fail if `curl`/`wget` is not available.
-- Fail if checksum verification fails.
-- Never silently continue on error (`set -euo pipefail`).
-
-### Shell compatibility
-
-Target POSIX sh — no bashisms. `shellcheck` clean before merge.
-
----
-
-## 6. Cargo.toml Metadata
+## 5. Cargo.toml Metadata
 
 Fill in missing fields across all three crates:
 
@@ -293,7 +247,7 @@ Per-crate descriptions:
 
 ---
 
-## 7. Version Bumping
+## 6. Version Bumping
 
 Manual. The release flow is:
 
@@ -308,7 +262,7 @@ adds complexity for marginal benefit at this stage.
 
 ---
 
-## 8. Existing CI (`ci.yml`) Changes
+## 7. Existing CI (`ci.yml`) Changes
 
 None. The existing CI workflow (fmt + clippy + test on ubuntu-latest)
 continues to run on every push/PR. The release workflow is additive and
@@ -316,13 +270,12 @@ only triggers on tags.
 
 ---
 
-## 9. Files to Create / Modify
+## 8. Files to Create / Modify
 
 | File                              | Action  | Purpose                          |
 |-----------------------------------|---------|----------------------------------|
 | `.github/workflows/release.yml`  | Create  | Release workflow                 |
 | `cliff.toml`                     | Create  | git-cliff changelog config       |
-| `install.sh`                     | Create  | Shell installer                  |
 | `Cargo.toml`                     | Modify  | Add metadata fields              |
 | `crates/*/Cargo.toml`            | Modify  | Add per-crate descriptions       |
 
