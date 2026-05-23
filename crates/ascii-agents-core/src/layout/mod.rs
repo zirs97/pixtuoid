@@ -340,17 +340,17 @@ impl SceneLayout {
             }
         }
 
+        const SOFA_H: u16 = 7;
         let meeting_sofas = if let Some(mr) = meeting_room {
             let cx = mr.x + mr.width / 2;
+            let south_y =
+                (mr.y + mr.height * 80 / 100).min(mr.y + mr.height.saturating_sub(SOFA_H));
             vec![
                 Point {
                     x: cx,
                     y: mr.y + mr.height * 30 / 100,
                 },
-                Point {
-                    x: cx,
-                    y: mr.y + mr.height * 80 / 100,
-                },
+                Point { x: cx, y: south_y },
             ]
         } else {
             vec![]
@@ -430,14 +430,21 @@ impl SceneLayout {
             _ => (20, 8),
         };
         if let Some(pr) = pantry_room {
-            // For the large counter: x centered, y at 65% so the sprite
-            // sits well below the meeting-room/pantry doorway. For the
-            // small fallback: keep the original 60% x / 60% y placement
-            // so the existing connectivity holds at narrow buffer sizes.
+            // Clamp x so the counter fits within pantry_room. Without this
+            // the counter (32px or 20px wide) extends past the east wall
+            // into the cubicle band at small buffer widths.
+            let half_cw = pantry_counter_size.0 / 2;
+            let max_cx = pr.x + pr.width.saturating_sub(half_cw + 1);
             let (wx, wy) = if pantry_counter_size.0 >= 32 {
-                (pr.x + pr.width / 2, pr.y + pr.height * 65 / 100)
+                (
+                    (pr.x + pr.width / 2).min(max_cx),
+                    pr.y + pr.height * 65 / 100,
+                )
             } else {
-                (pr.x + pr.width * 60 / 100, pr.y + pr.height * 60 / 100)
+                (
+                    (pr.x + pr.width * 60 / 100).min(max_cx),
+                    pr.y + pr.height * 60 / 100,
+                )
             };
             waypoints.push(Waypoint {
                 pos: Point { x: wx, y: wy },
