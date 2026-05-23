@@ -75,6 +75,8 @@ fn load_embedded_pack() -> Result<Pack> {
     let floor_lamp = include_str!("../../../../assets/sprites/default/floor_lamp.sprite");
     let trash_bin = include_str!("../../../../assets/sprites/default/trash_bin.sprite");
     let door = include_str!("../../../../assets/sprites/default/door.sprite");
+    let door_half = include_str!("../../../../assets/sprites/default/door_half.sprite");
+    let door_open = include_str!("../../../../assets/sprites/default/door_open.sprite");
     let bulletin = include_str!("../../../../assets/sprites/default/bulletin_board.sprite");
     let exit_sign = include_str!("../../../../assets/sprites/default/exit_sign.sprite");
     let filing = include_str!("../../../../assets/sprites/default/filing_cabinet.sprite");
@@ -113,6 +115,8 @@ fn load_embedded_pack() -> Result<Pack> {
             ("floor_lamp.sprite", floor_lamp),
             ("trash_bin.sprite", trash_bin),
             ("door.sprite", door),
+            ("door_half.sprite", door_half),
+            ("door_open.sprite", door_open),
             ("bulletin_board.sprite", bulletin),
             ("exit_sign.sprite", exit_sign),
             ("filing_cabinet.sprite", filing),

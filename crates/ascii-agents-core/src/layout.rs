@@ -329,17 +329,33 @@ impl SceneLayout {
             y: couch_y + 2,
         });
 
-        let door = if buf_w >= 12 {
+        // Elevator door — 16×14 sprite mounted in the back wall, slotted
+        // into the rightmost window position and BOTTOM-aligned with the
+        // floor-to-ceiling windows so both sit on the same wall plane.
+        // Windows span y=1 to y=top_wall_h-3 inside the wall band; the
+        // elevator's bottom row lands at that same y. (`top_wall_h =
+        // top_margin - 4` per the renderer's pre-pass; replicated here
+        // so the layout owns the geometry.) Requires ≥ 20 px of width
+        // to even fit the sprite + margin.
+        const ELEVATOR_W: u16 = 16;
+        const ELEVATOR_H: u16 = 14;
+        let top_wall_h = top_margin.saturating_sub(4);
+        let window_bottom_y = top_wall_h.saturating_sub(3); // matches paint_floor_and_walls' window_h
+        let door = if buf_w >= ELEVATOR_W + 4 && window_bottom_y + 1 >= ELEVATOR_H {
             Some(Point {
-                x: buf_w.saturating_sub(10),
-                y: top_margin.saturating_sub(10),
+                x: buf_w.saturating_sub(ELEVATOR_W + 2),
+                y: window_bottom_y + 1 - ELEVATOR_H,
             })
         } else {
             None
         };
+        // Spawn point on the floor right outside the elevator's centre:
+        // characters walk from here to their desk. Y is 4 px south of
+        // the wall edge so the character clears the elevator threshold
+        // before pathing.
         let door_threshold = door.map(|d| Point {
-            x: d.x.saturating_add(2),
-            y: top_margin + 6,
+            x: d.x + ELEVATOR_W / 2,
+            y: top_margin + 4,
         });
 
         // Wall decor anchored to the BOTTOM of the wall band so the sprites

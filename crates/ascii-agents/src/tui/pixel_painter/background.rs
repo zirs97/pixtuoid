@@ -29,6 +29,7 @@ pub(super) fn paint_floor_and_walls(
     now: SystemTime,
     look: &TimeOfDayLook,
     top_wall_h: u16,
+    skip_window_x_range: Option<(u16, u16)>,
 ) {
     const BASEBOARD_H: u16 = 3;
     const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
@@ -65,26 +66,33 @@ pub(super) fn paint_floor_and_walls(
     let mut x = 3u16;
     let mut idx: u32 = 0;
     while x + WINDOW_W + 2 <= buf_w {
-        paint_floor_to_ceiling_window(
-            buf,
-            x,
-            window_y,
-            WINDOW_W,
-            window_h,
-            WINDOW_FRAME,
-            look,
-            idx as u16,
-            now,
-        );
-        if look.spill_strength > 0.0 {
-            paint_window_light_spill(
+        // Skip any window whose x-range overlaps the elevator door —
+        // the elevator sits in the wall and would otherwise show the
+        // window's glass + skyline behind its frame.
+        let overlaps_door =
+            skip_window_x_range.is_some_and(|(dx0, dx1)| x < dx1 && x + WINDOW_W > dx0);
+        if !overlaps_door {
+            paint_floor_to_ceiling_window(
                 buf,
                 x,
+                window_y,
                 WINDOW_W,
-                top_wall_h,
-                look.spill_strength,
-                look.spill_slant,
+                window_h,
+                WINDOW_FRAME,
+                look,
+                idx as u16,
+                now,
             );
+            if look.spill_strength > 0.0 {
+                paint_window_light_spill(
+                    buf,
+                    x,
+                    WINDOW_W,
+                    top_wall_h,
+                    look.spill_strength,
+                    look.spill_slant,
+                );
+            }
         }
         x += WINDOW_W + WINDOW_GAP;
         idx += 1;

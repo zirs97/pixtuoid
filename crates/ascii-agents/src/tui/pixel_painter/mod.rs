@@ -152,6 +152,65 @@ pub(super) fn paint_pantry_chair(buf: &mut RgbBuffer, cx: u16, cy: u16) {
 /// `derive_with_routing` so labels track agents along their A* path
 /// instead of jumping the straight-line midpoint.
 #[allow(clippy::too_many_arguments)]
+/// How long the elevator's open/close transition takes. Used as both
+/// the opening ramp at the START of an agent's entry/exit window and
+/// the closing ramp at the END. 200 ms feels snappy without being
+/// abrupt — the half-open frame is visible for ~70 ms each way.
+const DOOR_TRANSITION_MS: u64 = 200;
+
+/// Compute the elevator door frame (0=closed, 1=half, 2=open) from
+/// the agents currently in flight. Stateless: each agent contributes
+/// a per-frame value based on how far through their entry/exit window
+/// they are; we take the MAX across all agents so the door is at
+/// least as open as the most-in-progress agent needs.
+fn compute_door_frame_idx(agents: &[AgentSlot], now: SystemTime) -> usize {
+    fn frame_for_progress(elapsed_ms: u64, total_ms: u64) -> usize {
+        // 0..200ms: opening (0 → 1 → 2)
+        if elapsed_ms < DOOR_TRANSITION_MS {
+            if elapsed_ms < DOOR_TRANSITION_MS / 2 {
+                1
+            } else {
+                2
+            }
+        } else if elapsed_ms + DOOR_TRANSITION_MS > total_ms {
+            // last 200ms: closing (2 → 1 → 0)
+            let remaining = total_ms.saturating_sub(elapsed_ms);
+            if remaining < DOOR_TRANSITION_MS / 2 {
+                0
+            } else {
+                1
+            }
+        } else {
+            // middle: fully open
+            2
+        }
+    }
+    let mut max_frame: usize = 0;
+    for a in agents {
+        if a.exiting_at.is_none() {
+            if let Ok(d) = now.duration_since(a.created_at) {
+                let ms = d.as_millis() as u64;
+                if ms < pose::ENTRY_ANIMATION_MS {
+                    max_frame = max_frame.max(frame_for_progress(ms, pose::ENTRY_ANIMATION_MS));
+                }
+            }
+        }
+        if let Some(exit_at) = a.exiting_at {
+            if let Ok(d) = now.duration_since(exit_at) {
+                let ms = d.as_millis() as u64;
+                // Use the same window the reducer uses to GC exiting
+                // slots so the door closes right as the agent's slot
+                // disappears.
+                const EXIT_WINDOW_MS: u64 = 4500;
+                if ms < EXIT_WINDOW_MS {
+                    max_frame = max_frame.max(frame_for_progress(ms, EXIT_WINDOW_MS));
+                }
+            }
+        }
+    }
+    max_frame
+}
+
 pub(super) fn character_anchor(
     agent: &AgentSlot,
     layout: &Layout,
@@ -224,7 +283,11 @@ pub fn render_to_rgb_buffer(
     // Wall band height tracks layout.top_margin (which is buf_h/4 with
     // a floor) — leaves a 4-px buffer between wall trim and cubicles.
     let top_wall_h = layout.top_margin.saturating_sub(4);
-    paint_floor_and_walls(buf, buf_w, buf_h, now, &look, top_wall_h);
+    // The elevator door replaces the rightmost window — pass its x-range
+    // so `paint_floor_and_walls` skips drawing a window that would
+    // otherwise bleed through behind the elevator frame.
+    let door_x_range = layout.door.map(|d| (d.x, d.x + 16));
+    paint_floor_and_walls(buf, buf_w, buf_h, now, &look, top_wall_h, door_x_range);
 
     // Artificial light pass — at night the floor dims toward navy and
     // ceiling fluorescents + the floor lamp halo paint the visible
@@ -522,11 +585,21 @@ pub fn render_to_rgb_buffer(
         });
     }
 
-    // Door (6×12, top-left anchored).
+    // Elevator door (16×14, top-left anchored). Frame is computed
+    // stateless from agents in their entry/exit window: door opens
+    // (0→1→2) over the first DOOR_TRANSITION_MS of the agent's
+    // transit, holds open (2) in the middle, then closes (2→1→0)
+    // over the final DOOR_TRANSITION_MS. With multiple agents in
+    // flight we take the MAX frame so the door is at least as open
+    // as the most-in-progress agent needs.
     if let Some(door_pos) = layout.door {
+        let frame_idx = compute_door_frame_idx(&agents, now);
         drawables.push(Drawable {
-            anchor_y: door_pos.y + 12,
-            kind: DrawableKind::Door { pos: door_pos },
+            anchor_y: door_pos.y + 14,
+            kind: DrawableKind::Door {
+                pos: door_pos,
+                frame_idx,
+            },
         });
     }
 

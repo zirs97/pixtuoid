@@ -90,6 +90,12 @@ pub(super) enum DrawableKind<'a> {
     },
     Door {
         pos: Point,
+        /// Frame index into the `door` animation. 0 = closed,
+        /// 1 = half-open, 2 = fully open. Computed stateless from
+        /// agents' entry/exit windows in the orchestrator so the door
+        /// transitions smoothly closed → half → open at the start of a
+        /// transit and back open → half → closed at the end.
+        frame_idx: usize,
     },
     WallDecor {
         kind: crate::tui::layout::WallDecor,
@@ -280,8 +286,11 @@ pub(super) fn paint_drawable(
                 blit_frame(f, px, py, buf);
             }
         }
-        DrawableKind::Door { pos } => {
-            if let Some(f) = pack.animation("door").and_then(|a| a.frames.first()) {
+        DrawableKind::Door { pos, frame_idx } => {
+            if let Some(f) = pack
+                .animation("door")
+                .and_then(|a| a.frames.get(*frame_idx).or_else(|| a.frames.first()))
+            {
                 blit_frame(f, pos.x, pos.y, buf);
             }
         }
