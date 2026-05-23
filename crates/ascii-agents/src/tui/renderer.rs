@@ -347,7 +347,7 @@ fn paint_label_widgets(
         let text = if is_hovered {
             format!("▸{}", display)
         } else {
-            display.into_owned()
+            format!("●{}", display)
         };
         let mut style = Style::default().fg(label_color);
         if is_hovered {

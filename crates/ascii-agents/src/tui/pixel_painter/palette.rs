@@ -133,20 +133,20 @@ const SKIN_PRESETS: &[Rgb] = &[
     Rgb(0xc8, 0x9a, 0x64), // warm tan
 ];
 
-/// Build the per-agent palette. `face_lit` is true only when the agent
-/// is in a pose where a lit monitor is reflecting on their face —
-/// currently SeatedTyping (the only Active-at-desk pose). In that case
-/// the skin tints 18% toward GLOW_TINT (warm-green monitor light) so
-/// the eye reads "the monitor is lighting them up". For every other
-/// pose (Idle, Standing, Walking, AtWaypoint, AimlessAt, overflow),
-/// skin stays at its natural tone — avoids the previous bug where
-/// every Active agent looked perpetually green-skinned, because the
-/// debounce keeps state == Active even for agents wandering away from
-/// their desk.
-pub(super) fn agent_palette(base: &Palette, agent: &AgentSlot, face_lit: bool) -> Palette {
+/// Build the per-agent palette. `glow_tint` carries the monitor-glow
+/// color when the agent is seated at a lit screen (SeatedTyping). The
+/// skin blends 18% toward that tint so the eye reads "the monitor is
+/// lighting them up." `None` means no glow — skin stays natural.
+///
+/// The color varies by tool type so scanning a row of typing agents
+/// gives an at-a-glance read of what they're working on:
+///   green  = generic / default
+///   blue   = Edit / Write
+///   cyan   = Read
+///   orange = Bash
+///   purple = Agent / Task
+pub(super) fn agent_palette(base: &Palette, agent: &AgentSlot, glow_tint: Option<Rgb>) -> Palette {
     let seed = agent.agent_id.raw() as usize;
-    // Personality nudges aesthetic choice: extroverted (high trip_chance)
-    // agents pick from the warm outfit pool, homebodies from cool.
     let p = pose::personality_for(agent.agent_id);
     let outfits = if p.trip_chance_pct >= 30 {
         OUTFITS_WARM
@@ -156,12 +156,11 @@ pub(super) fn agent_palette(base: &Palette, agent: &AgentSlot, face_lit: bool) -
     let outfit = outfits[seed % outfits.len()];
     let hair = HAIR_PRESETS[(seed / 7) % HAIR_PRESETS.len()];
     let skin = SKIN_PRESETS[(seed / 13) % SKIN_PRESETS.len()];
-    let final_skin = if face_lit {
-        const GLOW_TINT: Rgb = Rgb(140, 240, 170);
+    let final_skin = if let Some(tint) = glow_tint {
         Rgb(
-            blend(skin.0, GLOW_TINT.0, 0.18),
-            blend(skin.1, GLOW_TINT.1, 0.18),
-            blend(skin.2, GLOW_TINT.2, 0.18),
+            blend(skin.0, tint.0, 0.18),
+            blend(skin.1, tint.1, 0.18),
+            blend(skin.2, tint.2, 0.18),
         )
     } else {
         skin
@@ -170,6 +169,27 @@ pub(super) fn agent_palette(base: &Palette, agent: &AgentSlot, face_lit: bool) -
         .with_override('H', Some(hair))
         .with_override('S', Some(final_skin))
         .with_override('P', Some(outfit.pants))
+}
+
+/// Map an agent's active tool detail to a monitor glow color.
+/// Returns `None` for non-Active states (no glow).
+pub(super) fn tool_glow_tint(agent: &AgentSlot) -> Option<Rgb> {
+    use ascii_agents_core::state::ActivityState;
+    let detail = match &agent.state {
+        ActivityState::Active { detail, .. } => detail.as_deref(),
+        _ => return None,
+    };
+    let token = detail
+        .and_then(|d| d.split(|c: char| !c.is_alphanumeric()).next())
+        .unwrap_or("");
+    Some(match token {
+        "Edit" | "Write" | "MultiEdit" => Rgb(100, 160, 255),
+        "Read" => Rgb(80, 220, 240),
+        "Bash" => Rgb(240, 170, 80),
+        "Agent" | "Task" | "Delegating" => Rgb(200, 140, 255),
+        "Grep" | "Glob" => Rgb(180, 220, 120),
+        _ => Rgb(140, 240, 170),
+    })
 }
 
 pub(super) fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) -> Frame {

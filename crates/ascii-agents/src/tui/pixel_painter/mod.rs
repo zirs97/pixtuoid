@@ -43,9 +43,9 @@ use palette::{agent_palette, recolor_frame};
 
 /// Paint a character at an arbitrary anchor with per-agent recolor. `flip_x`
 /// mirrors the sprite horizontally — used to make walkers face the direction
-/// they're moving. `face_lit` should be set only when the character is at a
-/// lit monitor (currently SeatedTyping); tints the skin toward the monitor
-/// glow color so the eye reads "the monitor is lighting their face".
+/// they're moving. `glow_tint` should carry the tool-derived monitor color
+/// when the character is at a lit screen (SeatedTyping); tints the skin
+/// toward that color so the eye reads "the monitor is lighting their face."
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_character_at(
     buf: &mut RgbBuffer,
@@ -55,7 +55,7 @@ pub(super) fn paint_character_at(
     agent: &AgentSlot,
     pack: &Pack,
     flip_x: bool,
-    face_lit: bool,
+    glow_tint: Option<Rgb>,
     cache: &mut FrameCache,
 ) {
     let Some(anim) = pack.animation(anim_name) else {
@@ -69,9 +69,9 @@ pub(super) fn paint_character_at(
         anim_name,
         frame_idx,
         flip_x,
-        face_lit,
+        glow_tint,
         || {
-            let pal = agent_palette(&pack.palette, agent, face_lit);
+            let pal = agent_palette(&pack.palette, agent, glow_tint);
             let recolored = recolor_frame(frame, &pal, &pack.palette);
             if flip_x {
                 recolored.mirror_horizontal()
@@ -809,7 +809,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx,
                         anchor,
                         flip_x: false,
-                        face_lit: false,
+                        glow_tint: None,
                         sleep_z_seed: None,
                         waiting_bubble: false,
                         walking_dust_frame: None,
@@ -842,7 +842,7 @@ pub fn render_to_rgb_buffer(
                     frame_idx,
                     anchor,
                     flip_x: false,
-                    face_lit: false,
+                    glow_tint: None,
                     sleep_z_seed: None,
                     waiting_bubble: false,
                     walking_dust_frame: None,
@@ -868,7 +868,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: 0,
                         anchor,
                         flip_x: false,
-                        face_lit: false,
+                        glow_tint: None,
                         sleep_z_seed: Some(agent.agent_id.raw()),
                         waiting_bubble: false,
                         walking_dust_frame: None,
@@ -885,10 +885,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: frame,
                         anchor,
                         flip_x: false,
-                        // SeatedTyping == Active state at desk → screen
-                        // glow is painting on the monitor → reflect that
-                        // glow on the agent's skin too.
-                        face_lit: true,
+                        glow_tint: palette::tool_glow_tint(agent),
                         sleep_z_seed: None,
                         waiting_bubble: false,
                         walking_dust_frame: None,
@@ -906,7 +903,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: 0,
                         anchor,
                         flip_x: false,
-                        face_lit: false,
+                        glow_tint: None,
                         sleep_z_seed: None,
                         waiting_bubble: is_waiting,
                         walking_dust_frame: None,
@@ -948,7 +945,7 @@ pub fn render_to_rgb_buffer(
                             frame_idx: 0,
                             anchor,
                             flip_x: false,
-                            face_lit: false,
+                            glow_tint: None,
                             sleep_z_seed: None,
                             waiting_bubble: false,
                             walking_dust_frame: None,
@@ -966,7 +963,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: 0,
                         anchor,
                         flip_x: false,
-                        face_lit: false,
+                        glow_tint: None,
                         sleep_z_seed: None,
                         waiting_bubble: false,
                         walking_dust_frame: None,
@@ -996,7 +993,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: frame,
                         anchor: walker_anchor,
                         flip_x: flip,
-                        face_lit: false,
+                        glow_tint: None,
                         sleep_z_seed: None,
                         waiting_bubble: false,
                         walking_dust_frame: Some(frame),
@@ -1054,8 +1051,8 @@ mod tests {
     fn agent_palette_is_deterministic_per_id() {
         let id = ascii_agents_core::AgentId::from_transcript_path("/a.jsonl");
         let base = base_palette();
-        let a = agent_palette(&base, &make_slot(id, ActivityState::Idle), false);
-        let b = agent_palette(&base, &make_slot(id, ActivityState::Idle), false);
+        let a = agent_palette(&base, &make_slot(id, ActivityState::Idle), None);
+        let b = agent_palette(&base, &make_slot(id, ActivityState::Idle), None);
         assert_eq!(a.get('B'), b.get('B'));
         assert_eq!(a.get('H'), b.get('H'));
         assert_eq!(a.get('S'), b.get('S'));
@@ -1065,7 +1062,7 @@ mod tests {
     fn agent_palette_overrides_only_bhs_keys() {
         let id = ascii_agents_core::AgentId::from_transcript_path("/a.jsonl");
         let base = base_palette();
-        let p = agent_palette(&base, &make_slot(id, ActivityState::Idle), false);
+        let p = agent_palette(&base, &make_slot(id, ActivityState::Idle), None);
         // X is not a recolor target — must pass through unchanged.
         assert_eq!(p.get('X'), Some(Some(Rgb(99, 99, 99))));
         // B/H/S must be replaced — the base RGBs (10/20/30 etc.) are
@@ -1076,29 +1073,68 @@ mod tests {
     }
 
     #[test]
-    fn agent_palette_face_lit_tints_skin_toward_glow() {
-        // Skin only tints toward green when `face_lit=true` — the
-        // SeatedTyping (Active at desk) pose sets this so the monitor
-        // light reads on the face. All other poses pass false, so
-        // wandering / idle agents stay naturally skin-toned.
+    fn agent_palette_glow_tint_shifts_skin_toward_given_color() {
         let id = ascii_agents_core::AgentId::from_transcript_path("/a.jsonl");
         let base = base_palette();
         let slot = make_slot(id, ActivityState::Idle);
-        let unlit = agent_palette(&base, &slot, false);
-        let lit = agent_palette(&base, &slot, true);
-        // Shirt / hair / pants are state-independent of face_lit.
-        assert_eq!(unlit.get('B'), lit.get('B'));
-        assert_eq!(unlit.get('H'), lit.get('H'));
-        assert_eq!(unlit.get('P'), lit.get('P'));
-        // Skin differs: lit tints toward green-ish GLOW_TINT(140,240,170).
-        let (Some(Some(Rgb(_, ug, _))), Some(Some(Rgb(_, lg, _)))) = (unlit.get('S'), lit.get('S'))
+        let unlit = agent_palette(&base, &slot, None);
+        let green_glow = agent_palette(&base, &slot, Some(Rgb(140, 240, 170)));
+        let blue_glow = agent_palette(&base, &slot, Some(Rgb(100, 160, 255)));
+        // Shirt / hair / pants are unaffected by glow.
+        assert_eq!(unlit.get('B'), green_glow.get('B'));
+        assert_eq!(unlit.get('H'), green_glow.get('H'));
+        assert_eq!(unlit.get('P'), green_glow.get('P'));
+        // Green glow pushes skin's green channel up.
+        let (Some(Some(Rgb(_, ug, _))), Some(Some(Rgb(_, gg, _)))) =
+            (unlit.get('S'), green_glow.get('S'))
         else {
             panic!("S key missing")
         };
         assert!(
-            lg > ug,
-            "face-lit skin green channel should exceed unlit (lit={lg}, unlit={ug})"
+            gg > ug,
+            "green glow should push skin green (lit={gg}, unlit={ug})"
         );
+        // Blue glow pushes skin's blue channel up.
+        let (Some(Some(Rgb(_, _, ub))), Some(Some(Rgb(_, _, bb)))) =
+            (unlit.get('S'), blue_glow.get('S'))
+        else {
+            panic!("S key missing")
+        };
+        assert!(
+            bb > ub,
+            "blue glow should push skin blue (lit={bb}, unlit={ub})"
+        );
+    }
+
+    #[test]
+    fn tool_glow_tint_maps_known_tools() {
+        use ascii_agents_core::source::Activity;
+        let id = ascii_agents_core::AgentId::from_transcript_path("/t.jsonl");
+        let edit_slot = make_slot(
+            id,
+            ActivityState::Active {
+                activity: Activity::Typing,
+                tool_use_id: None,
+                detail: Some(Arc::from("Edit src/main.rs")),
+            },
+        );
+        let bash_slot = make_slot(
+            id,
+            ActivityState::Active {
+                activity: Activity::Typing,
+                tool_use_id: None,
+                detail: Some(Arc::from("Bash: ls")),
+            },
+        );
+        let idle_slot = make_slot(id, ActivityState::Idle);
+        let edit_tint = palette::tool_glow_tint(&edit_slot);
+        let bash_tint = palette::tool_glow_tint(&bash_slot);
+        let idle_tint = palette::tool_glow_tint(&idle_slot);
+        assert!(edit_tint.is_some(), "Edit should produce glow");
+        assert!(bash_tint.is_some(), "Bash should produce glow");
+        assert_eq!(idle_tint, None, "Idle should produce no glow");
+        // Edit and Bash should be different colors.
+        assert_ne!(edit_tint, bash_tint, "Edit and Bash should differ");
     }
 
     #[test]

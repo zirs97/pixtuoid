@@ -54,10 +54,10 @@ pub(super) enum DrawableKind<'a> {
         frame_idx: usize,
         anchor: Point,
         flip_x: bool,
-        /// True when the character is at a lit monitor (currently only
-        /// the SeatedTyping pose). Skin tints toward green to read as
-        /// "monitor light on the face". Off for every other pose.
-        face_lit: bool,
+        /// Tool-derived monitor glow color. `Some(color)` tints the
+        /// skin toward that color so scanning a row of typing agents
+        /// shows tool type at a glance. `None` for non-desk poses.
+        glow_tint: Option<Rgb>,
         sleep_z_seed: Option<u64>,
         waiting_bubble: bool,
         walking_dust_frame: Option<usize>,
@@ -231,7 +231,7 @@ pub(super) fn paint_drawable(
             frame_idx,
             anchor,
             flip_x,
-            face_lit,
+            glow_tint,
             sleep_z_seed,
             waiting_bubble,
             walking_dust_frame,
@@ -240,7 +240,7 @@ pub(super) fn paint_drawable(
                 paint_walking_dust(buf, *anchor, *dust_frame);
             }
             paint_character_at(
-                buf, anim_name, *frame_idx, *anchor, agent, pack, *flip_x, *face_lit, cache,
+                buf, anim_name, *frame_idx, *anchor, agent, pack, *flip_x, *glow_tint, cache,
             );
             if let Some(seed) = sleep_z_seed {
                 paint_sleep_z(buf, *anchor, now, *seed);
