@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 serde_json = { workspace = true }
 anyhow     = { workspace = true }
+libc       = "0.2"
 
 [package.metadata.deb]
 section = "utils"

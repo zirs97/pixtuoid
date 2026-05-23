@@ -15,10 +15,22 @@ pub struct ClaudeCodeSource {
 }
 
 impl ClaudeCodeSource {
+    pub fn default_socket_path() -> PathBuf {
+        if let Ok(p) = std::env::var("ASCII_AGENTS_SOCKET") {
+            return PathBuf::from(p);
+        }
+        if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+            return PathBuf::from(format!("{dir}/ascii-agents.sock"));
+        }
+        // Safety: getuid is always safe on Unix.
+        let uid = unsafe { libc::getuid() };
+        PathBuf::from(format!("/tmp/ascii-agents-{uid}.sock"))
+    }
+
     pub fn default_paths() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         Self {
-            socket_path: PathBuf::from("/tmp/ascii-agents.sock"),
+            socket_path: Self::default_socket_path(),
             projects_root: PathBuf::from(format!("{home}/.claude/projects")),
         }
     }

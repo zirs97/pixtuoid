@@ -64,9 +64,10 @@ fn main() -> Result<()> {
         Cmd::Run {
             socket,
             projects_root,
+            pack_dir,
             max_desks,
             headless,
-        } => runtime::run(socket, projects_root, max_desks, headless),
+        } => runtime::run(socket, projects_root, pack_dir, max_desks, headless),
         Cmd::InstallHooks {
             hook_path,
             settings,

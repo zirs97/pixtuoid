@@ -22,18 +22,22 @@ pub type SceneRx = watch::Receiver<Arc<SceneState>>;
 pub fn run(
     socket: Option<PathBuf>,
     projects_root: Option<PathBuf>,
+    pack_dir: Option<PathBuf>,
     max_desks: usize,
     headless: bool,
 ) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(async move { run_async(socket, projects_root, max_desks, headless).await })
+    rt.block_on(async move {
+        run_async(socket, projects_root, pack_dir, max_desks, headless).await
+    })
 }
 
 async fn run_async(
     socket: Option<PathBuf>,
     projects_root: Option<PathBuf>,
+    pack_dir: Option<PathBuf>,
     max_desks: usize,
     headless: bool,
 ) -> Result<()> {
@@ -55,7 +59,7 @@ async fn run_async(
     if headless {
         headless_loop(scene_rx).await
     } else {
-        crate::tui::run_tui(scene_rx).await
+        crate::tui::run_tui(scene_rx, pack_dir).await
     }
 }
 

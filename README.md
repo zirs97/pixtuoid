@@ -83,7 +83,7 @@ Prints a one-line summary every time the scene changes. Useful for CI and observ
 CC tool call ──► CC fires hook ──► ascii-agents-hook (shim)
                                          │ JSON over Unix socket
                                          ▼
-                                  /tmp/ascii-agents.sock
+                                  $XDG_RUNTIME_DIR/ascii-agents.sock
                                          │
                        HookSocketListener ─────► ┐
                                                  │ (Transport, AgentEvent)

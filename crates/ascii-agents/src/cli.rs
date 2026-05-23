@@ -24,6 +24,8 @@ pub enum Cmd {
         socket: Option<PathBuf>,
         #[arg(long)]
         projects_root: Option<PathBuf>,
+        #[arg(long)]
+        pack_dir: Option<PathBuf>,
         /// Cap on simultaneously-tracked sessions. Bumped from 8 to 16 so
         /// the initial-seed pass (1-hour window of recent CC transcripts)
         /// doesn't fill every slot before the user's live session is even
@@ -55,6 +57,7 @@ impl Cli {
         let cmd = self.cmd.unwrap_or(Cmd::Run {
             socket: None,
             projects_root: None,
+            pack_dir: None,
             max_desks: 16,
             headless: false,
         });

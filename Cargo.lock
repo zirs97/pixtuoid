@@ -127,6 +127,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "filetime",
+ "libc",
  "notify",
  "serde",
  "serde_json",
@@ -142,6 +143,7 @@ name = "ascii-agents-hook"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "serde_json",
 ]
 

@@ -7,9 +7,20 @@ use serde_json::Value;
 
 const WRITE_TIMEOUT: Duration = Duration::from_millis(200);
 
+fn default_socket_path() -> String {
+    if let Ok(p) = std::env::var("ASCII_AGENTS_SOCKET") {
+        return p;
+    }
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return format!("{dir}/ascii-agents.sock");
+    }
+    // Safety: getuid is always safe on Unix.
+    let uid = unsafe { libc::getuid() };
+    format!("/tmp/ascii-agents-{uid}.sock")
+}
+
 fn main() -> Result<()> {
-    let socket = std::env::var("ASCII_AGENTS_SOCKET")
-        .unwrap_or_else(|_| "/tmp/ascii-agents.sock".to_string());
+    let socket = default_socket_path();
 
     let mut buf = String::new();
     std::io::stdin()

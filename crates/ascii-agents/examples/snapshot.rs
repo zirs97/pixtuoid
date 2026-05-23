@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
-use ascii_agents::tui::embedded_pack::load_default_pack;
+use ascii_agents::tui::embedded_pack::load_sprite_pack;
 use ascii_agents::tui::frame_cache::FrameCache;
 use ascii_agents::tui::renderer::draw_scene;
 use ascii_agents_core::source::jsonl::JsonlWatcher;
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     let backend = TestBackend::new(cols, rows);
     let mut term = Terminal::new(backend)?;
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
-    let pack = load_default_pack()?;
+    let pack = load_sprite_pack(None)?;
     let mut cache = FrameCache::new();
     let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
     let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();

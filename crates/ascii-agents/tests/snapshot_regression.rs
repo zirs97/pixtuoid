@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use ascii_agents::tui::embedded_pack::load_default_pack;
+use ascii_agents::tui::embedded_pack::load_sprite_pack;
 use ascii_agents::tui::frame_cache::FrameCache;
 use ascii_agents::tui::renderer::draw_scene;
 use ascii_agents_core::source::Activity;
@@ -75,7 +75,7 @@ fn render_pixel_hash(now: SystemTime) -> u64 {
     let backend = TestBackend::new(96, 36);
     let mut term = Terminal::new(backend).expect("terminal");
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
-    let pack = load_default_pack().expect("pack");
+    let pack = load_sprite_pack(None).expect("pack");
     let mut cache = FrameCache::new();
     let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
     let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();
@@ -141,7 +141,7 @@ fn render_produces_distinct_wall_band_and_floor_regions() {
     let backend = TestBackend::new(96, 36);
     let mut term = Terminal::new(backend).expect("terminal");
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
-    let pack = load_default_pack().expect("pack");
+    let pack = load_sprite_pack(None).expect("pack");
     let mut cache = FrameCache::new();
     let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
     let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();
@@ -221,7 +221,7 @@ fn render_changes_when_an_agent_state_changes() {
     let backend = TestBackend::new(96, 36);
     let mut term = Terminal::new(backend).expect("terminal");
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
-    let pack = load_default_pack().expect("pack");
+    let pack = load_sprite_pack(None).expect("pack");
     let mut cache = FrameCache::new();
     let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
     let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();

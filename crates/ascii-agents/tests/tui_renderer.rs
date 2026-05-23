@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use ascii_agents::tui::embedded_pack::load_default_pack;
+use ascii_agents::tui::embedded_pack::load_sprite_pack;
 use ascii_agents::tui::tui_renderer::TuiRenderer;
 use ascii_agents_core::source::Activity;
 use ascii_agents_core::state::ActivityState;
@@ -43,7 +43,7 @@ fn tui_renderer_render_paints_a_full_frame() {
     let backend = TestBackend::new(96, 36);
     let terminal = Terminal::new(backend).expect("terminal");
     let mut renderer = TuiRenderer::new(terminal);
-    let pack = load_default_pack().expect("pack");
+    let pack = load_sprite_pack(None).expect("pack");
 
     renderer
         .render(&scene, &pack, now)
