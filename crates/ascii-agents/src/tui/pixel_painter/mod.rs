@@ -375,7 +375,7 @@ pub fn render_to_rgb_buffer(
     // Compute time-of-day once per frame and pass to every paint
     // helper that depends on it. Avoids recomputing the chrono local
     // hour for each window + ceiling pool + lamp halo.
-    let look = time_of_day_look(now);
+    let look = time_of_day_look(now, theme);
     // Wall band height tracks layout.top_margin (which is buf_h/4 with
     // a floor) — leaves a 4-px buffer between wall trim and cubicles.
     let top_wall_h = layout.top_margin.saturating_sub(4);
@@ -400,7 +400,7 @@ pub fn render_to_rgb_buffer(
     // are subtle ambient highlights. The wall-clock-based darkness
     // already handles "after hours" cleanly — an activity-based boost
     // flickers because Active flips on/off per tool call.
-    dim_floor_overlay(buf, top_wall_h, buf_h, look.darkness * 0.45);
+    dim_floor_overlay(buf, top_wall_h, buf_h, look.darkness * 0.45, theme);
     let pool_strength = 0.15 + 0.30 * look.darkness;
     for desk in &layout.home_desks {
         paint_ceiling_pool(
@@ -410,6 +410,7 @@ pub fn render_to_rgb_buffer(
             10,
             5,
             pool_strength,
+            theme,
         );
     }
     // Two ceiling fluorescents over the pantry and a third over the
@@ -422,6 +423,7 @@ pub fn render_to_rgb_buffer(
             12,
             6,
             pool_strength,
+            theme,
         );
     }
     if let Some(corridor) = layout.corridor {
@@ -432,10 +434,11 @@ pub fn render_to_rgb_buffer(
             14,
             5,
             pool_strength,
+            theme,
         );
     }
     if let Some(lamp) = layout.floor_lamp {
-        paint_floor_lamp_halo(buf, lamp.x, lamp.y, look.darkness * 0.55);
+        paint_floor_lamp_halo(buf, lamp.x, lamp.y, look.darkness * 0.55, theme);
     }
 
     // Neon sign panel in the wall band — dark bg with glow border.
@@ -452,7 +455,7 @@ pub fn render_to_rgb_buffer(
     // Corridor runner — painted over the floor but BEFORE walls/decor
     // so walls cleanly overlap it where they cross.
     if let Some(corridor) = layout.corridor {
-        paint_corridor_runner(buf, corridor);
+        paint_corridor_runner(buf, corridor, theme);
     }
     // Room dividers. Stardew-style fake-3D perspective:
     //   • horizontal walls (E-W) show the wall face — 4 px tall with
@@ -521,16 +524,17 @@ pub fn render_to_rgb_buffer(
             DESK_W / 2 + 1,
             3,
             shadow_strength,
+            theme,
         );
     }
     for wp in &layout.waypoints {
-        paint_shadow(buf, wp.pos.x, wp.pos.y + 2, 7, 2, shadow_strength);
+        paint_shadow(buf, wp.pos.x, wp.pos.y + 2, 7, 2, shadow_strength, theme);
     }
     for (_, p) in &layout.plants {
-        paint_shadow(buf, p.x, p.y + 3, 3, 1, shadow_strength);
+        paint_shadow(buf, p.x, p.y + 3, 3, 1, shadow_strength, theme);
     }
     if let Some(lamp) = layout.floor_lamp {
-        paint_shadow(buf, lamp.x, lamp.y + 5, 2, 1, shadow_strength);
+        paint_shadow(buf, lamp.x, lamp.y + 5, 2, 1, shadow_strength, theme);
     }
 
     // Build per-frame occupancy from STATIONARY agent positions only.

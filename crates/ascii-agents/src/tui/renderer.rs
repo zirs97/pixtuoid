@@ -34,9 +34,9 @@ use crate::tui::pathfind::Router;
 use crate::tui::pixel_painter::{character_anchor, render_to_rgb_buffer};
 use crate::tui::pose;
 
-/// Wall band background — used to fall back to a sensible color when the
-/// terminal is too small to render the full scene.
-const BG: Rgb = Rgb(28, 32, 40);
+fn to_color(c: Rgb) -> Color {
+    Color::Rgb(c.0, c.1, c.2)
+}
 
 /// Persistent scrolling ticker queue. Messages append to the end and scroll
 /// off the left naturally — like a news crawl. The queue rebuilds only when
@@ -206,7 +206,7 @@ pub fn draw_scene<B: Backend>(
 
     let buf_w = scene_rect.width;
     let buf_h = scene_rect.height * 2;
-    buf.ensure_size(buf_w, buf_h, BG);
+    buf.ensure_size(buf_w, buf_h, crate::tui::theme::NORMAL.surface.bg_fallback);
     let Some(layout) = Layout::compute(buf_w, buf_h, scene.max_desks) else {
         term.draw(|f| paint_footer(f, scene, full_rect))?;
         return Ok(());
