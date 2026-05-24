@@ -147,6 +147,9 @@ async fn listener_handles_concurrent_connections() {
             break;
         }
     }
-    assert_eq!(count, 5, "all 5 concurrent connections should produce events");
+    assert_eq!(
+        count, 5,
+        "all 5 concurrent connections should produce events"
+    );
     handle.abort();
 }
