@@ -198,9 +198,9 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          cargo publish -p ascii-agents-core
-          cargo publish -p ascii-agents-hook
-          cargo publish -p ascii-agents
+          for crate in ascii-agents-core ascii-agents-hook ascii-agents; do
+            cargo publish -p "$crate" || echo "::warning::$crate already published, skipping"
+          done
 
   homebrew:
     name: update homebrew tap
