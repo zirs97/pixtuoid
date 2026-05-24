@@ -46,9 +46,8 @@ pub(super) enum DrawableKind<'a> {
         desk: Point,
         is_last_col: bool,
         has_cabinet: bool,
-        /// Per-tool monitor glow color when the occupant is Active.
-        /// `None` = screen stays dark (idle/empty desk).
         screen_glow: Option<Rgb>,
+        session_age_secs: u64,
     },
     Character {
         agent: &'a AgentSlot,
@@ -145,6 +144,7 @@ pub(super) fn cat_position(
     layout: &Layout,
     pack: &Pack,
     now: SystemTime,
+    idle_desk_xs: &[u16],
 ) -> Option<(Point, bool, usize)> {
     let anim = pack.animation("cat_walk")?;
     if anim.frames.is_empty() {
@@ -157,21 +157,37 @@ pub(super) fn cat_position(
     const CYCLE_MS: u64 = 30_000;
     let phase = elapsed_ms % CYCLE_MS;
     let frac = phase as f32 / CYCLE_MS as f32;
-    let (t, flip) = if frac < 0.4 {
-        (frac / 0.4, false)
+    let (t, flip, paused) = if frac < 0.4 {
+        (frac / 0.4, false, false)
     } else if frac < 0.5 {
-        (1.0, false)
+        (1.0, false, true)
     } else if frac < 0.9 {
-        (1.0 - (frac - 0.5) / 0.4, true)
+        (1.0 - (frac - 0.5) / 0.4, true, false)
     } else {
-        (0.0, true)
+        (0.0, true, true)
     };
     let corridor = layout.corridor?;
     let left_x = corridor.x + corridor.width * 8 / 100;
     let right_x = corridor.x + corridor.width * 92 / 100;
-    let cx = left_x + ((right_x - left_x) as f32 * t) as u16;
+    let mut cx = left_x + ((right_x - left_x) as f32 * t) as u16;
     let cy = corridor.y + corridor.height / 2;
-    let frame_idx = (elapsed_ms / 220) as usize % anim.frames.len();
+
+    // Pause near idle agents: if the cat is walking and passes within
+    // 6px of an idle agent's desk, snap to that x and show frame 0 (sitting).
+    if !paused && !idle_desk_xs.is_empty() {
+        for &dx in idle_desk_xs {
+            if cx.abs_diff(dx + 4) < 6 {
+                cx = dx + 4;
+                return Some((Point { x: cx, y: cy }, flip, 0));
+            }
+        }
+    }
+
+    let frame_idx = if paused {
+        0
+    } else {
+        (elapsed_ms / 220) as usize % anim.frames.len()
+    };
     Some((Point { x: cx, y: cy }, flip, frame_idx))
 }
 
@@ -190,6 +206,7 @@ pub(super) fn paint_drawable(
             is_last_col,
             has_cabinet,
             screen_glow,
+            session_age_secs,
         } => {
             const DIVIDER: Rgb = Rgb(72, 82, 104);
             if !is_last_col {
@@ -223,6 +240,7 @@ pub(super) fn paint_drawable(
                     blit_frame(bin, bin_x, bin_y, buf);
                 }
             }
+            paint_desk_personalization(buf, *desk, *session_age_secs);
             if let Some(tint) = screen_glow {
                 paint_screen_glow(buf, desk.x, desk.y, now, *tint);
             }
@@ -398,5 +416,45 @@ pub(super) fn paint_drawable(
             let py = pos.y.saturating_sub(final_frame.height / 2);
             blit_frame(&final_frame, px, py, buf);
         }
+    }
+}
+
+fn paint_desk_personalization(buf: &mut RgbBuffer, desk: Point, age_secs: u64) {
+    if age_secs == 0 {
+        return;
+    }
+    let put = |buf: &mut RgbBuffer, x: u16, y: u16, c: Rgb| {
+        if x < buf.width && y < buf.height {
+            buf.put(x, y, c);
+        }
+    };
+    // Coffee cup after 10 minutes
+    if age_secs >= 600 {
+        let cx = desk.x + 2;
+        let cy = desk.y + 2;
+        put(buf, cx, cy, Rgb(200, 190, 170));
+        put(buf, cx + 1, cy, Rgb(200, 190, 170));
+        put(buf, cx, cy + 1, Rgb(180, 160, 130));
+        put(buf, cx + 1, cy + 1, Rgb(180, 160, 130));
+    }
+    // Small desk plant after 30 minutes
+    if age_secs >= 1800 {
+        let px = desk.x + DESK_W - 2;
+        let py = desk.y + 1;
+        put(buf, px, py, Rgb(80, 160, 80));
+        put(buf, px + 1, py, Rgb(60, 140, 60));
+        put(buf, px, py + 1, Rgb(100, 180, 100));
+        put(buf, px + 1, py + 1, Rgb(80, 160, 80));
+        put(buf, px, py + 2, Rgb(140, 100, 70));
+        put(buf, px + 1, py + 2, Rgb(140, 100, 70));
+    }
+    // Photo frame after 1 hour
+    if age_secs >= 3600 {
+        let fx = desk.x + 1;
+        let fy = desk.y;
+        put(buf, fx, fy, Rgb(120, 100, 80));
+        put(buf, fx + 1, fy, Rgb(120, 100, 80));
+        put(buf, fx, fy + 1, Rgb(160, 200, 230));
+        put(buf, fx + 1, fy + 1, Rgb(160, 200, 230));
     }
 }

@@ -10,7 +10,7 @@
 //! uses for label placement and mouse hit-testing.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use ascii_agents_core::sprite::blit::blit_frame;
 use ascii_agents_core::sprite::format::Pack;
@@ -545,14 +545,16 @@ pub fn render_to_rgb_buffer(
     for (i, &desk) in layout.home_desks.iter().enumerate() {
         let is_last_col =
             desk.x + DESK_W + 2 + DESK_W >= layout.cubicle_band.x + layout.cubicle_band.width;
-        let screen_glow = agents
+        let occupant = agents
             .iter()
-            .find(|a| {
-                a.desk_index == i
-                    && a.exiting_at.is_none()
-                    && matches!(a.state, ActivityState::Active { .. })
-            })
+            .find(|a| a.desk_index == i && a.exiting_at.is_none());
+        let screen_glow = occupant
+            .filter(|a| matches!(a.state, ActivityState::Active { .. }))
             .and_then(palette::tool_glow_tint);
+        let session_age_secs = occupant
+            .and_then(|a| now.duration_since(a.created_at).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         drawables.push(Drawable {
             anchor_y: desk.y + 8,
             kind: DrawableKind::DeskCubicle {
@@ -560,6 +562,7 @@ pub fn render_to_rgb_buffer(
                 is_last_col,
                 has_cabinet: i % 2 == 0,
                 screen_glow,
+                session_age_secs,
             },
         });
     }
@@ -747,8 +750,19 @@ pub fn render_to_rgb_buffer(
         });
     }
 
+    // Collect idle desk x-positions for cat interaction.
+    let idle_desk_xs: Vec<u16> = agents
+        .iter()
+        .filter(|a| {
+            matches!(a.state, ActivityState::Idle)
+                && a.desk_index < layout.home_desks.len()
+                && a.exiting_at.is_none()
+        })
+        .map(|a| layout.home_desks[a.desk_index].x)
+        .collect();
+
     // Wandering cat (6×4 centered).
-    if let Some((pos, flip, frame_idx)) = cat_position(layout, pack, now) {
+    if let Some((pos, flip, frame_idx)) = cat_position(layout, pack, now, &idle_desk_xs) {
         drawables.push(Drawable {
             anchor_y: pos.y + 2,
             kind: DrawableKind::Cat {
@@ -765,9 +779,80 @@ pub fn render_to_rgb_buffer(
     let mut wp_rank: HashMap<usize, usize> = HashMap::new();
     for agent in &agents {
         // Overflow seating — past cubicle capacity, agents take meeting-
-        // room sofas then floor seats. Entry/exit animations don't
-        // apply; they pop in/out.
+        // room sofas then floor seats. Short 2s entry/exit walk.
         if agent.desk_index >= layout.home_desks.len() {
+            const OVERFLOW_ANIM_MS: u64 = 2000;
+            let entry_elapsed = now
+                .duration_since(agent.created_at)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64;
+            let is_entering = entry_elapsed < OVERFLOW_ANIM_MS && agent.exiting_at.is_none();
+            let is_exiting = agent.exiting_at.is_some();
+            if is_entering || is_exiting {
+                if let Some(threshold) = layout.door_threshold {
+                    let target = if agent.desk_index - layout.home_desks.len()
+                        < layout.meeting_sofas.len()
+                    {
+                        let sofa = layout.meeting_sofas[agent.desk_index - layout.home_desks.len()];
+                        Point {
+                            x: sofa.x.saturating_sub(4),
+                            y: sofa.y.saturating_sub(2),
+                        }
+                    } else {
+                        let floor_idx =
+                            agent.desk_index - layout.home_desks.len() - layout.meeting_sofas.len();
+                        let seat = match layout.floor_seats.get(floor_idx).copied() {
+                            Some(s) => s,
+                            None => threshold,
+                        };
+                        Point {
+                            x: seat.x.saturating_sub(4),
+                            y: seat.y.saturating_sub(2),
+                        }
+                    };
+                    let (from, to, t) = if is_exiting {
+                        let exit_elapsed = agent
+                            .exiting_at
+                            .and_then(|e| now.duration_since(e).ok())
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        let t = (exit_elapsed as f32 / OVERFLOW_ANIM_MS as f32).min(1.0);
+                        (target, threshold, t)
+                    } else {
+                        let t = (entry_elapsed as f32 / OVERFLOW_ANIM_MS as f32).min(1.0);
+                        (threshold, target, t)
+                    };
+                    let x = from.x as f32 + (to.x as f32 - from.x as f32) * t;
+                    let y = from.y as f32 + (to.y as f32 - from.y as f32) * t;
+                    let anchor = Point {
+                        x: x as u16,
+                        y: y as u16,
+                    };
+                    let dy = to.y as i32 - from.y as i32;
+                    let dx = to.x as i32 - from.x as i32;
+                    let anim_name = if dy.abs() > dx.abs() && dy < 0 {
+                        "walking_back"
+                    } else {
+                        "walking"
+                    };
+                    let frame_idx = (entry_elapsed / 220) as usize % 2;
+                    drawables.push(Drawable {
+                        anchor_y: anchor.y + 12,
+                        kind: DrawableKind::Character {
+                            agent,
+                            anim_name,
+                            frame_idx,
+                            anchor,
+                            flip_x: dx < 0,
+                            glow_tint: None,
+                            sleep_z_seed: None,
+                            waiting_bubble: false,
+                            walking_dust_frame: Some(frame_idx),
+                        },
+                    });
+                    continue;
+                }
+            }
             let overflow_idx = agent.desk_index - layout.home_desks.len();
             let sofa_count = layout.meeting_sofas.len();
             // 400 ms screen-pulse period for active overflow agents.
