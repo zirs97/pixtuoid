@@ -86,9 +86,16 @@ pub(super) fn paint_character_at(
 /// Low coffee table in front of the lounge couch. Wood top with darker
 /// trim along the front edge so it reads as a real piece of furniture,
 /// not just a brown rectangle.
-pub(super) fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u16) {
-    const TOP: Rgb = Rgb(120, 80, 48);
-    const TRIM: Rgb = Rgb(72, 48, 26);
+pub(super) fn paint_coffee_table(
+    buf: &mut RgbBuffer,
+    cx: u16,
+    cy: u16,
+    w: u16,
+    h: u16,
+    theme: &crate::tui::theme::Theme,
+) {
+    let top = theme.furniture.wood_top;
+    let trim = theme.furniture.wood_trim;
     let min_x = cx.saturating_sub(w / 2);
     let max_x = (cx + w / 2 + (w & 1)).min(buf.width);
     let min_y = cy.saturating_sub(h / 2);
@@ -96,7 +103,7 @@ pub(super) fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, 
     for y in min_y..max_y {
         for x in min_x..max_x {
             let on_front = y + 1 == max_y;
-            buf.put(x, y, if on_front { TRIM } else { TOP });
+            buf.put(x, y, if on_front { trim } else { top });
         }
     }
 }
@@ -104,10 +111,17 @@ pub(super) fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, 
 /// Meeting-room area rug — warm Persian-tone rectangle painted under
 /// the coffee table. Border ring in a darker shade so the rug reads as
 /// having a fringe/binding rather than a flat blob. Centred on `cx,cy`.
-pub(super) fn paint_area_rug(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u16) {
-    const RUG_FIELD: Rgb = Rgb(140, 60, 50);
-    const RUG_TRIM: Rgb = Rgb(90, 40, 35);
-    const RUG_ACCENT: Rgb = Rgb(190, 130, 80);
+pub(super) fn paint_area_rug(
+    buf: &mut RgbBuffer,
+    cx: u16,
+    cy: u16,
+    w: u16,
+    h: u16,
+    theme: &crate::tui::theme::Theme,
+) {
+    let rug_field = theme.furniture.rug_field;
+    let rug_trim = theme.furniture.rug_trim;
+    let rug_accent = theme.furniture.rug_accent;
     let half_w = w as i32 / 2;
     let half_h = h as i32 / 2;
     for dy in 0..h as i32 {
@@ -120,11 +134,11 @@ pub(super) fn paint_area_rug(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u
             let on_border = dx == 0 || dx == w as i32 - 1 || dy == 0 || dy == h as i32 - 1;
             let on_inner_border = dx == 1 || dx == w as i32 - 2 || dy == 1 || dy == h as i32 - 2;
             let color = if on_border {
-                RUG_TRIM
+                rug_trim
             } else if on_inner_border {
-                RUG_ACCENT
+                rug_accent
             } else {
-                RUG_FIELD
+                rug_field
             };
             buf.put(px as u16, py as u16, color);
         }
@@ -135,11 +149,16 @@ pub(super) fn paint_area_rug(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u
 /// (opposite side from the floor lamp). Bumped from 5×3 to clear the
 /// skill's ~5-cell-wide subzone threshold. Carries a 3-cell magazine
 /// stack on top so the silhouette reads as "side table with a book".
-pub(super) fn paint_side_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
-    const TOP: Rgb = Rgb(132, 88, 52);
-    const TRIM: Rgb = Rgb(78, 52, 28);
-    const MAG: Rgb = Rgb(98, 122, 178);
-    const MAG_TRIM: Rgb = Rgb(50, 60, 92);
+pub(super) fn paint_side_table(
+    buf: &mut RgbBuffer,
+    cx: u16,
+    cy: u16,
+    theme: &crate::tui::theme::Theme,
+) {
+    let top = theme.furniture.wood_top;
+    let trim = theme.furniture.wood_trim;
+    let mag = theme.furniture.magazine;
+    let mag_trim = theme.furniture.magazine_trim;
     let w: i32 = 7;
     let h: i32 = 4;
     for dy in 0..h {
@@ -150,19 +169,16 @@ pub(super) fn paint_side_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
                 continue;
             }
             let on_bottom = dy == h - 1;
-            buf.put(px as u16, py as u16, if on_bottom { TRIM } else { TOP });
+            buf.put(px as u16, py as u16, if on_bottom { trim } else { top });
         }
     }
-    // Magazine stack on top — 3 cells wide × 2 tall, slightly inset from
-    // the table's top edge so it reads as "object placed on the table"
-    // not "edge of table."
     let mag_pixels: &[((i32, i32), Rgb)] = &[
-        ((-1, -1), MAG),
-        ((0, -1), MAG),
-        ((1, -1), MAG),
-        ((-1, 0), MAG_TRIM),
-        ((0, 0), MAG_TRIM),
-        ((1, 0), MAG_TRIM),
+        ((-1, -1), mag),
+        ((0, -1), mag),
+        ((1, -1), mag),
+        ((-1, 0), mag_trim),
+        ((0, 0), mag_trim),
+        ((1, 0), mag_trim),
     ];
     for ((dx, dy), c) in mag_pixels {
         let px = cx as i32 + dx;
@@ -176,9 +192,14 @@ pub(super) fn paint_side_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
 /// Pantry bistro table — round-ish wood top (rounded corners by skipping
 /// the 4 corner pixels) painted with the same warm wood palette as the
 /// coffee table so they read as the same furniture family.
-pub(super) fn paint_pantry_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
-    const TOP: Rgb = Rgb(132, 88, 52);
-    const TRIM: Rgb = Rgb(78, 52, 28);
+pub(super) fn paint_pantry_table(
+    buf: &mut RgbBuffer,
+    cx: u16,
+    cy: u16,
+    theme: &crate::tui::theme::Theme,
+) {
+    let top = theme.furniture.wood_top;
+    let trim = theme.furniture.wood_trim;
     let w: i32 = 7;
     let h: i32 = 4;
     for dy in 0..h {
@@ -193,18 +214,19 @@ pub(super) fn paint_pantry_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
                 continue;
             }
             let on_edge = dy == h - 1;
-            buf.put(px as u16, py as u16, if on_edge { TRIM } else { TOP });
+            buf.put(px as u16, py as u16, if on_edge { trim } else { top });
         }
     }
 }
 
-/// 2x2 stool — small dark wood square. Read as "stool around the bistro
-/// table" once placed next to `paint_pantry_table`. Different from the
-/// office chair (which is the agent's shirt color); these are unoccupied
-/// furniture so they stay neutral wood.
-pub(super) fn paint_pantry_chair(buf: &mut RgbBuffer, cx: u16, cy: u16) {
-    const SEAT: Rgb = Rgb(96, 68, 44);
-    const TRIM: Rgb = Rgb(60, 40, 22);
+pub(super) fn paint_pantry_chair(
+    buf: &mut RgbBuffer,
+    cx: u16,
+    cy: u16,
+    theme: &crate::tui::theme::Theme,
+) {
+    let seat = theme.furniture.chair_seat;
+    let trim = theme.furniture.chair_trim;
     let put = |buf: &mut RgbBuffer, dx: i32, dy: i32, c: Rgb| {
         let px = cx as i32 + dx;
         let py = cy as i32 + dy;
@@ -212,10 +234,10 @@ pub(super) fn paint_pantry_chair(buf: &mut RgbBuffer, cx: u16, cy: u16) {
             buf.put(px as u16, py as u16, c);
         }
     };
-    put(buf, -1, -1, SEAT);
-    put(buf, 0, -1, SEAT);
-    put(buf, -1, 0, TRIM);
-    put(buf, 0, 0, TRIM);
+    put(buf, -1, -1, seat);
+    put(buf, 0, -1, seat);
+    put(buf, -1, 0, trim);
+    put(buf, 0, 0, trim);
 }
 
 /// How long the elevator's open/close transition takes. Used as both
@@ -431,16 +453,16 @@ pub fn render_to_rgb_buffer(
     // Must match `WALL_THICK_V` / `WALL_THICK_H` in build_walkable_mask.
     const WALL_THICK_V_PX: u16 = 1;
     const WALL_THICK_H_PX: u16 = 4;
-    const WALL_BODY: Rgb = Rgb(72, 74, 90);
-    const WALL_TRIM_LIGHT: Rgb = Rgb(110, 112, 128);
-    const WALL_TRIM_DARK: Rgb = Rgb(40, 42, 54);
+    let wall_body = theme.office.room_wall_body;
+    let wall_trim_light = theme.office.room_wall_trim_light;
+    let wall_trim_dark = theme.office.room_wall_trim_dark;
     for (start, end) in &layout.room_walls {
         if start.x == end.x {
             for y in start.y..=end.y.min(buf_h - 1) {
                 for dx in 0..WALL_THICK_V_PX {
                     let x = start.x + dx;
                     if x < buf_w {
-                        buf.put(x, y, WALL_BODY);
+                        buf.put(x, y, wall_body);
                     }
                 }
             }
@@ -452,11 +474,11 @@ pub fn render_to_rgb_buffer(
                         continue;
                     }
                     let color = if dy == 0 {
-                        WALL_TRIM_LIGHT
+                        wall_trim_light
                     } else if dy == WALL_THICK_H_PX - 1 {
-                        WALL_TRIM_DARK
+                        wall_trim_dark
                     } else {
-                        WALL_BODY
+                        wall_body
                     };
                     buf.put(x, y, color);
                 }

@@ -271,13 +271,13 @@ pub(super) fn paint_drawable(
             screen_glow,
             session_age_secs,
         } => {
-            const DIVIDER: Rgb = Rgb(72, 82, 104);
+            let divider = theme.office.cubicle_divider;
             if !is_last_col {
                 let div_x = desk.x + DESK_W + 3;
                 for dy in 0..(DESK_H + 1) {
                     let py = desk.y.saturating_sub(1) + dy;
                     if div_x < buf.width && py < buf.height {
-                        buf.put(div_x, py, DIVIDER);
+                        buf.put(div_x, py, divider);
                     }
                 }
             }
@@ -303,7 +303,7 @@ pub(super) fn paint_drawable(
                     blit_frame(bin, bin_x, bin_y, buf);
                 }
             }
-            paint_desk_personalization(buf, *desk, *session_age_secs);
+            paint_desk_personalization(buf, *desk, *session_age_secs, theme);
             if let Some(tint) = screen_glow {
                 paint_screen_glow(buf, desk.x, desk.y, now, *tint, theme);
             }
@@ -389,19 +389,19 @@ pub(super) fn paint_drawable(
             }
         }
         DrawableKind::MeetingTable { pos } => {
-            paint_coffee_table(buf, pos.x, pos.y, 11, 5);
+            paint_coffee_table(buf, pos.x, pos.y, 11, 5, theme);
         }
         DrawableKind::AreaRug { pos, width, height } => {
-            paint_area_rug(buf, pos.x, pos.y, *width, *height);
+            paint_area_rug(buf, pos.x, pos.y, *width, *height, theme);
         }
         DrawableKind::LoungeSideTable { pos } => {
-            paint_side_table(buf, pos.x, pos.y);
+            paint_side_table(buf, pos.x, pos.y, theme);
         }
         DrawableKind::PantryTable { pos } => {
-            paint_pantry_table(buf, pos.x, pos.y);
+            paint_pantry_table(buf, pos.x, pos.y, theme);
         }
         DrawableKind::PantryChair { pos } => {
-            paint_pantry_chair(buf, pos.x, pos.y);
+            paint_pantry_chair(buf, pos.x, pos.y, theme);
         }
         DrawableKind::Plant { kind, pos } => {
             use crate::tui::layout::PlantKind;
@@ -487,7 +487,12 @@ pub(super) fn paint_drawable(
     }
 }
 
-fn paint_desk_personalization(buf: &mut RgbBuffer, desk: Point, age_secs: u64) {
+fn paint_desk_personalization(
+    buf: &mut RgbBuffer,
+    desk: Point,
+    age_secs: u64,
+    theme: &crate::tui::theme::Theme,
+) {
     if age_secs == 0 {
         return;
     }
@@ -496,33 +501,30 @@ fn paint_desk_personalization(buf: &mut RgbBuffer, desk: Point, age_secs: u64) {
             buf.put(x, y, c);
         }
     };
-    // Coffee cup after 10 minutes
     if age_secs >= 600 {
         let cx = desk.x + 2;
         let cy = desk.y + 2;
-        put(buf, cx, cy, Rgb(200, 190, 170));
-        put(buf, cx + 1, cy, Rgb(200, 190, 170));
-        put(buf, cx, cy + 1, Rgb(180, 160, 130));
-        put(buf, cx + 1, cy + 1, Rgb(180, 160, 130));
+        put(buf, cx, cy, theme.furniture.coffee_cup);
+        put(buf, cx + 1, cy, theme.furniture.coffee_cup);
+        put(buf, cx, cy + 1, theme.furniture.coffee_cup_shadow);
+        put(buf, cx + 1, cy + 1, theme.furniture.coffee_cup_shadow);
     }
-    // Small desk plant after 30 minutes
     if age_secs >= 1800 {
         let px = desk.x + DESK_W - 2;
         let py = desk.y + 1;
-        put(buf, px, py, Rgb(80, 160, 80));
-        put(buf, px + 1, py, Rgb(60, 140, 60));
-        put(buf, px, py + 1, Rgb(100, 180, 100));
-        put(buf, px + 1, py + 1, Rgb(80, 160, 80));
-        put(buf, px, py + 2, Rgb(140, 100, 70));
-        put(buf, px + 1, py + 2, Rgb(140, 100, 70));
+        put(buf, px, py, theme.furniture.desk_plant_light);
+        put(buf, px + 1, py, theme.furniture.desk_plant_dark);
+        put(buf, px, py + 1, theme.furniture.desk_plant_light);
+        put(buf, px + 1, py + 1, theme.furniture.desk_plant_light);
+        put(buf, px, py + 2, theme.furniture.desk_plant_pot);
+        put(buf, px + 1, py + 2, theme.furniture.desk_plant_pot);
     }
-    // Photo frame after 1 hour
     if age_secs >= 3600 {
         let fx = desk.x + 1;
         let fy = desk.y;
-        put(buf, fx, fy, Rgb(120, 100, 80));
-        put(buf, fx + 1, fy, Rgb(120, 100, 80));
-        put(buf, fx, fy + 1, Rgb(160, 200, 230));
-        put(buf, fx + 1, fy + 1, Rgb(160, 200, 230));
+        put(buf, fx, fy, theme.furniture.photo_frame);
+        put(buf, fx + 1, fy, theme.furniture.photo_frame);
+        put(buf, fx, fy + 1, theme.furniture.photo_bg);
+        put(buf, fx + 1, fy + 1, theme.furniture.photo_bg);
     }
 }
