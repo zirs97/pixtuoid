@@ -267,9 +267,10 @@ fn compute_door_frame_idx(agents: &[AgentSlot], now: SystemTime) -> usize {
                 // Use the same window the reducer uses to GC exiting
                 // slots so the door closes right as the agent's slot
                 // disappears.
-                const EXIT_WINDOW_MS: u64 = 4500;
-                if ms < EXIT_WINDOW_MS {
-                    max_frame = max_frame.max(frame_for_progress(ms, EXIT_WINDOW_MS));
+                let exit_window_ms =
+                    ascii_agents_core::state::reducer::EXIT_GRACE_WINDOW.as_millis() as u64;
+                if ms < exit_window_ms {
+                    max_frame = max_frame.max(frame_for_progress(ms, exit_window_ms));
                 }
             }
         }

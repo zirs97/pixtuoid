@@ -1,12 +1,17 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 use crate::source::decoder::decode_hook_payload;
 use crate::source::{TaggedSender, Transport};
+
+const MAX_CONCURRENT_CONNS: usize = 128;
+const CONN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct HookSocketListener {
     listener: UnixListener,
@@ -29,11 +34,16 @@ impl HookSocketListener {
     }
 
     pub async fn run(self, tx: TaggedSender) -> Result<()> {
+        let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNS));
         loop {
             match self.listener.accept().await {
                 Ok((stream, _addr)) => {
                     let tx = tx.clone();
-                    tokio::spawn(handle_conn(stream, tx));
+                    let permit = Arc::clone(&sem);
+                    tokio::spawn(async move {
+                        let _permit = permit.acquire().await;
+                        let _ = tokio::time::timeout(CONN_TIMEOUT, handle_conn(stream, tx)).await;
+                    });
                 }
                 Err(e) => {
                     warn!("hook socket accept error: {e}");

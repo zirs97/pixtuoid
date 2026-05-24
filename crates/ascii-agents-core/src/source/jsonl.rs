@@ -178,16 +178,7 @@ async fn walk_jsonl(
         return;
     }
 
-    // Streaming read: stat the file, take the cursor lock to learn how far
-    // we've already consumed, then seek and read ONLY the new bytes. Avoids
-    // re-reading megabytes for every notify event on a large transcript.
-    let file_len = match tokio::fs::metadata(path).await {
-        Ok(m) => m.len(),
-        Err(e) => {
-            warn!("stat {} failed: {e}", path.display());
-            return;
-        }
-    };
+    let file_len = meta.len();
 
     // Cap on how many unprocessed bytes we'll tolerate without a newline.
     // Protects against an attacker (or buggy writer) emitting a giant single

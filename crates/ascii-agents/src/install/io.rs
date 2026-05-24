@@ -94,14 +94,25 @@ pub fn backup_once(path: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(bak))
 }
 
-/// If `path` is a symlink, return what it points to; otherwise return `path` as-is.
-/// Critical for stow-managed `~/.claude/settings.json` — we must write through
-/// the symlink, not replace it.
+/// Follow symlink chain to the final target, even if that target doesn't exist
+/// yet (stow creates the link before the dotfiles repo is fully set up).
+/// `canonicalize` fails on a dangling symlink, so we walk `read_link` manually.
 fn resolve_symlink(path: &Path) -> PathBuf {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    let mut cur = path.to_path_buf();
+    for _ in 0..32 {
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => match std::fs::read_link(&cur) {
+                Ok(target) => {
+                    cur = if target.is_relative() {
+                        cur.parent().unwrap_or(Path::new(".")).join(&target)
+                    } else {
+                        target
+                    };
+                }
+                Err(_) => return cur,
+            },
+            _ => return cur,
         }
-        _ => path.to_path_buf(),
     }
+    cur
 }
