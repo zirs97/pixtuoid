@@ -110,12 +110,10 @@ pub struct UiColors {
     pub neon_ticker: Rgb,
 }
 
+pub static ALL_THEMES: &[&Theme] = &[&NORMAL, &CYBERPUNK];
+
 pub fn theme_by_name(name: &str) -> Option<&'static Theme> {
-    match name {
-        "normal" => Some(&NORMAL),
-        "cyberpunk" => Some(&CYBERPUNK),
-        _ => None,
-    }
+    ALL_THEMES.iter().find(|t| t.name == name).copied()
 }
 
 pub static NORMAL: Theme = Theme {

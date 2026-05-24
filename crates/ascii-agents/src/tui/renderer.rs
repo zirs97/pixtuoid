@@ -310,7 +310,7 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
         }
     }
 
-    const QUIT: &str = " [p]ause [+/-]desks [q]uit ";
+    const QUIT: &str = " [p]ause [t]heme [+/-]desks [q]uit ";
     let tools_str = {
         // Sort by count desc, then name asc for stable output. Top 4
         // keeps the line bounded — beyond that the listing crowds out
@@ -888,7 +888,7 @@ mod tests {
         s
     }
 
-    const QUIT_SUFFIX: &str = " [p]ause [+/-]desks [q]uit ";
+    const QUIT_SUFFIX: &str = " [p]ause [t]heme [+/-]desks [q]uit ";
 
     #[test]
     fn footer_zero_agents_shows_zero_count_and_quit() {
@@ -933,14 +933,14 @@ mod tests {
             waiting("b"),
             idle("c"),
         ]);
-        let line = build_status_summary(&s, 52);
+        let line = build_status_summary(&s, 60);
         assert!(
             line.contains("3a") && line.contains("1A"),
             "expected medium tier letters: {line:?}"
         );
         assert!(
             !line.contains("3 agents · "),
-            "full tier should not fit at width 52: {line:?}"
+            "full tier should not fit at width 60: {line:?}"
         );
         assert!(line.ends_with(QUIT_SUFFIX), "{line:?}");
     }
