@@ -367,7 +367,7 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
     }
 
     const QUIT: &str = " [p]ause [t]heme [+/-]desks [q]uit ";
-    const BMC: &str = "☕ Like this? Buy me a coffee";
+    const BMC: &str = "☕ Buy me a coffee";
     let tools_str = {
         // Sort by count desc, then name asc for stable output. Top 4
         // keeps the line bounded — beyond that the listing crowds out
