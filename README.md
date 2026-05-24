@@ -29,9 +29,11 @@
 
 ## Why?
 
-You spawned 6 Claude Code sessions. Three are doing god-knows-what. One has been "thinking" for 20 minutes. One finished an hour ago and you never noticed. The last one is waiting for permission you forgot to grant.
+Running multiple AI agents in the terminal is like managing a sweatshop you can't see. They type, they wait, they finish — and you have no idea who's doing what unless you scroll through logs like a bureaucrat.
 
-**ascii-agents** turns this chaos into a tiny pixel-art office you can actually look at. Your agents become little people — typing furiously at glowing screens, standing around with `?` bubbles when they need you, or passed out at their desks when they're done. An office cat wanders between desks judging everyone's productivity. It's absurd, it's delightful, and somehow it's the most effective multi-agent dashboard you've ever used.
+**ascii-agents** gives you the view from above. Your agents become tiny pixel-art workers trapped in an office — typing at desks that glow with the color of their current tool, standing up with `?` bubbles when they need your permission, dozing off at their desks when you forget about them. A cat roams between cubicles, completely indifferent to the work being done.
+
+It's a little bit *Black Mirror*, a little bit *The Sims*, and somehow the most intuitive multi-agent dashboard you'll ever use.
 
 ## Features
 
