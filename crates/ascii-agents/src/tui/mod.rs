@@ -133,7 +133,6 @@ pub async fn run_tui(
                         }
                         MouseEventKind::Down(MouseButton::Left) => {
                             renderer.set_mouse_pos(Some((m.column, m.row)));
-                            let term_h = renderer.terminal.size().map(|s| s.height).unwrap_or(0);
                             if m.row <= 1 && m.column >= 1 && m.column < 31 {
                                 let _ = open::that("https://github.com/IvanWng97/ascii-agents");
                             } else if renderer::hit_test_coffee_machine(
@@ -143,17 +142,6 @@ pub async fn run_tui(
                                 m.row,
                             ) {
                                 let _ = open::that("https://buymeacoffee.com/IvanWng97");
-                            } else if m.row == term_h.saturating_sub(1) {
-                                let footer = renderer::build_status_summary(
-                                    &scene_rx.borrow(),
-                                    renderer.terminal.size().map(|s| s.width).unwrap_or(80),
-                                );
-                                if let Some(pos) = footer.find("Buy me a coffee") {
-                                    let col = m.column as usize;
-                                    if col >= pos && col < pos + "Buy me a coffee".len() + 2 {
-                                        let _ = open::that("https://buymeacoffee.com/IvanWng97");
-                                    }
-                                }
                             } else {
                                 let pinned = renderer.pinned_agent();
                                 if pinned.is_some() {
