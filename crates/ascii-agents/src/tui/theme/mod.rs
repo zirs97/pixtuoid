@@ -48,6 +48,7 @@ pub struct OfficeColors {
     pub building_dark: Rgb,
     pub building_light: Rgb,
     pub city_lit_window: Rgb,
+    pub city_lit_window_alt: Rgb,
     pub city_dark_window: Rgb,
     pub clock_rim: Rgb,
     pub clock_face: Rgb,

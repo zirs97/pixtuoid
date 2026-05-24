@@ -390,10 +390,12 @@ fn paint_floor_to_ceiling_window(
     let building_dark = theme.office.building_dark;
     let building_light = theme.office.building_light;
     let lit_window = theme.office.city_lit_window;
+    let lit_window_alt = theme.office.city_lit_window_alt;
     let dark_window = theme.office.city_dark_window;
 
     let lit_strength = look.darkness.clamp(0.0, 1.0);
     let lit_color = lerp_rgb(dark_window, lit_window, lit_strength);
+    let lit_color_alt = lerp_rgb(dark_window, lit_window_alt, lit_strength);
     let building = lerp_rgb(building_light, building_dark, look.darkness);
 
     // Skyline silhouette as a 0..15 PATTERN; the actual pixel height is
@@ -445,7 +447,12 @@ fn paint_floor_to_ceiling_window(
                 let on_grid = glass_dx % 2 == 1 && bldg_y % 2 == 1;
                 let lit_base = on_grid && city_dot_lit(window_idx, glass_dx, bldg_y);
                 if lit_base && city_dot_twinkle(window_idx, glass_dx, bldg_y, now) {
-                    buf.put(px, py, lit_color);
+                    let dot_color = if (glass_dx.wrapping_add(bldg_y)) % 3 == 0 {
+                        lit_color_alt
+                    } else {
+                        lit_color
+                    };
+                    buf.put(px, py, dot_color);
                 } else {
                     buf.put(px, py, building);
                 }

@@ -27,6 +27,7 @@ pub static CYBERPUNK: Theme = Theme {
         building_dark: Rgb(12, 10, 22),
         building_light: Rgb(30, 25, 50),
         city_lit_window: Rgb(255, 60, 180),
+        city_lit_window_alt: Rgb(0, 255, 220),
         city_dark_window: Rgb(18, 14, 30),
         clock_rim: Rgb(120, 80, 200),
         clock_face: Rgb(20, 15, 35),
