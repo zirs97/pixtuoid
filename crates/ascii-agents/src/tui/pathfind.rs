@@ -476,4 +476,57 @@ mod tests {
             "detour must add at least one corner around the dynamic block, got {detour:?}"
         );
     }
+
+    #[test]
+    fn path_clear_under_empty_overlay_always_true() {
+        let overlay = OccupancyOverlay::new();
+        let path = vec![Point { x: 0, y: 0 }, Point { x: 100, y: 100 }];
+        assert!(path_clear_under(&path, &overlay));
+    }
+
+    #[test]
+    fn path_clear_under_blocked_returns_false() {
+        let mut overlay = OccupancyOverlay::new();
+        overlay.add(50, 50, 10, 10);
+        let path = vec![Point { x: 0, y: 0 }, Point { x: 100, y: 100 }];
+        assert!(!path_clear_under(&path, &overlay));
+    }
+
+    #[test]
+    fn path_clear_under_misses_obstacle_returns_true() {
+        let mut overlay = OccupancyOverlay::new();
+        overlay.add(50, 50, 10, 10);
+        let path = vec![Point { x: 0, y: 0 }, Point { x: 40, y: 0 }];
+        assert!(path_clear_under(&path, &overlay));
+    }
+
+    #[test]
+    fn snap_to_walkable_returns_cell_when_already_walkable() {
+        let l = make_layout();
+        let overlay = OccupancyOverlay::new();
+        let corridor = l.corridor.unwrap();
+        let cell_w = l.buf_w / 4;
+        let cell_h = l.buf_h / 4;
+        let cx = (corridor.x + corridor.width / 2) / 4;
+        let cy = (corridor.y + corridor.height / 2) / 4;
+        let result = snap_to_walkable(&l.walkable, &overlay, (cx, cy), cell_w, cell_h);
+        assert_eq!(result, Some((cx, cy)));
+    }
+
+    #[test]
+    fn snap_to_walkable_finds_nearby_cell_when_blocked() {
+        let l = make_layout();
+        let cell_w = l.buf_w / 4;
+        let cell_h = l.buf_h / 4;
+        let result = snap_to_walkable(
+            &l.walkable,
+            &OccupancyOverlay::new(),
+            (0, 0),
+            cell_w,
+            cell_h,
+        );
+        assert!(result.is_some(), "should snap to a nearby walkable cell");
+        let (nx, ny) = result.unwrap();
+        assert!(nx <= MAX_SNAP_RADIUS && ny <= MAX_SNAP_RADIUS);
+    }
 }

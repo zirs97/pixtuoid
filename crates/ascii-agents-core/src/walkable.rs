@@ -193,4 +193,15 @@ mod tests {
         o.clear();
         assert_eq!(o.signature(), s_empty);
     }
+
+    #[test]
+    fn overlay_signature_is_order_independent() {
+        let mut a = OccupancyOverlay::new();
+        a.add(10, 20, 5, 5);
+        a.add(30, 40, 8, 8);
+        let mut b = OccupancyOverlay::new();
+        b.add(30, 40, 8, 8);
+        b.add(10, 20, 5, 5);
+        assert_eq!(a.signature(), b.signature());
+    }
 }

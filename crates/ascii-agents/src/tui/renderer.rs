@@ -618,6 +618,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clip_widget_rect_fully_inside() {
+        let r = Rect {
+            x: 2,
+            y: 2,
+            width: 4,
+            height: 4,
+        };
+        let b = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        assert_eq!(clip_widget_rect(r, b), Some(r));
+    }
+
+    #[test]
+    fn clip_widget_rect_fully_outside_right() {
+        let r = Rect {
+            x: 80,
+            y: 0,
+            width: 10,
+            height: 5,
+        };
+        let b = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        assert_eq!(clip_widget_rect(r, b), None);
+    }
+
+    #[test]
+    fn clip_widget_rect_partially_overflows_right() {
+        let r = Rect {
+            x: 75,
+            y: 0,
+            width: 10,
+            height: 5,
+        };
+        let b = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let clipped = clip_widget_rect(r, b).unwrap();
+        assert_eq!(clipped.x, 75);
+        assert_eq!(clipped.width, 5);
+    }
+
+    #[test]
+    fn clip_widget_rect_zero_size_returns_none() {
+        let r = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 5,
+        };
+        let b = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        assert_eq!(clip_widget_rect(r, b), None);
+    }
+
+    #[test]
     fn truncate_label_passes_short_labels_through() {
         assert_eq!(truncate_label("hello", 16), "hello");
     }
