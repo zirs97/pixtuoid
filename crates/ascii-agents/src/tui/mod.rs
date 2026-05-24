@@ -136,6 +136,13 @@ pub async fn run_tui(
                             let term_h = renderer.terminal.size().map(|s| s.height).unwrap_or(0);
                             if m.row <= 1 && m.column >= 1 && m.column < 31 {
                                 let _ = open::that("https://github.com/IvanWng97/ascii-agents");
+                            } else if renderer::hit_test_coffee_machine(
+                                renderer.buf(),
+                                max_desks.load(std::sync::atomic::Ordering::Relaxed),
+                                m.column,
+                                m.row,
+                            ) {
+                                let _ = open::that("https://buymeacoffee.com/IvanWng97");
                             } else if m.row == term_h.saturating_sub(1) {
                                 let footer = renderer::build_status_summary(
                                     &scene_rx.borrow(),
