@@ -138,7 +138,7 @@ pub async fn run_tui(
                                 let _ = open::that("https://github.com/IvanWng97/ascii-agents");
                             } else if m.row == term_h.saturating_sub(1) {
                                 let footer = renderer::build_status_summary(
-                                    &*scene_rx.borrow(),
+                                    &scene_rx.borrow(),
                                     renderer.terminal.size().map(|s| s.width).unwrap_or(80),
                                 );
                                 if let Some(pos) = footer.find("Buy me a coffee") {
