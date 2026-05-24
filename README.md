@@ -91,6 +91,7 @@ In another terminal, start a Claude Code session (`claude`). A character walks i
 |---|---|
 | `q` / `Esc` / `Ctrl-C` | Quit |
 | `p` | Pause / resume animation |
+| `t` | Open theme picker (↑↓ to preview, Enter/Esc) |
 | `+` / `-` | Increase / decrease max desks |
 | Click | Pin / unpin agent tooltip |
 
