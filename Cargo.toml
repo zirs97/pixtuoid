@@ -18,6 +18,14 @@ homepage     = "https://github.com/IvanWng97/ascii-agents"
 keywords     = ["terminal", "tui", "pixel-art", "ai-agents", "claude"]
 categories   = ["command-line-utilities", "visualization"]
 
+[workspace.metadata.release]
+shared-version         = "workspace"
+tag-prefix             = "v"
+tag-name               = "v{{version}}"
+pre-release-commit-message = "chore: release v{{version}}"
+publish                = false
+push-remote            = "origin"
+
 [profile.release]
 lto           = true
 codegen-units = 1
