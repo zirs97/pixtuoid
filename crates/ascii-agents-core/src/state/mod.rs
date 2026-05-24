@@ -34,6 +34,12 @@ pub struct AgentSlot {
     pub label: Arc<str>,
     pub state: ActivityState,
     pub state_started_at: SystemTime,
+    /// Wall-clock time of the most recent event (any type) from this
+    /// agent. The stale-agent sweep uses this as the primary liveness
+    /// signal — if `now - last_event_at` exceeds a state-dependent
+    /// threshold, the agent is presumed dead and begins the exit
+    /// animation. Updated on every `reducer::apply` that touches the slot.
+    pub last_event_at: SystemTime,
     /// Wall-clock time the slot was first created. Distinct from
     /// `state_started_at` (updated on every state change) so the renderer
     /// can play a one-shot entry animation for the first few seconds of
@@ -101,6 +107,7 @@ mod tests {
                     state: ActivityState::Idle,
                     state_started_at: now,
                     created_at: now,
+                    last_event_at: now,
                     exiting_at: None,
                     pending_idle_at: None,
                     desk_index: i,

@@ -479,6 +479,7 @@ fn sample_scene(now: SystemTime, max_desks: usize) -> SceneState {
                 state: state.clone(),
                 state_started_at: now - *age,
                 created_at: now - *age,
+                last_event_at: now - *age,
                 exiting_at: None,
                 pending_idle_at: None,
                 desk_index: i,

@@ -606,6 +606,7 @@ mod tests {
             state,
             state_started_at: SystemTime::UNIX_EPOCH,
             created_at: SystemTime::UNIX_EPOCH,
+            last_event_at: SystemTime::UNIX_EPOCH,
             exiting_at: None,
             pending_idle_at: None,
             desk_index: 0,

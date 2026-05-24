@@ -60,6 +60,7 @@ fn fixture_scene(now: SystemTime) -> SceneState {
                 label: std::sync::Arc::from(*key),
                 state: state.clone(),
                 state_started_at: now,
+                last_event_at: now,
                 created_at,
                 exiting_at: None,
                 pending_idle_at: None,

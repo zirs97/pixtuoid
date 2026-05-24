@@ -649,3 +649,165 @@ fn jsonl_event_after_dedup_window_is_applied() {
         }
     ));
 }
+
+// --- stale-agent sweep ---------------------------------------------------
+
+#[test]
+fn stale_idle_agent_is_marked_exiting_after_timeout() {
+    use ascii_agents_core::state::reducer::STALE_IDLE_TIMEOUT;
+    let mut scene = SceneState::new(4);
+    let mut reducer = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/stale.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: id,
+            source: "claude-code".into(),
+            session_id: "s".into(),
+            cwd: PathBuf::from("/repo"),
+        },
+        t0,
+        Transport::Hook,
+    );
+    assert!(scene.agents.get(&id).unwrap().exiting_at.is_none());
+
+    // Tick just before the threshold — should NOT mark exiting.
+    reducer.tick(&mut scene, t0 + STALE_IDLE_TIMEOUT - Duration::from_secs(1));
+    assert!(
+        scene.agents.get(&id).unwrap().exiting_at.is_none(),
+        "should not mark exiting before timeout"
+    );
+
+    // Tick past the threshold — should mark exiting.
+    reducer.tick(&mut scene, t0 + STALE_IDLE_TIMEOUT + Duration::from_secs(1));
+    assert!(
+        scene.agents.get(&id).unwrap().exiting_at.is_some(),
+        "should mark exiting after timeout"
+    );
+}
+
+#[test]
+fn stale_active_agent_uses_shorter_timeout_than_idle() {
+    use ascii_agents_core::state::reducer::{STALE_ACTIVE_TIMEOUT, STALE_IDLE_TIMEOUT};
+    assert!(
+        STALE_ACTIVE_TIMEOUT < STALE_IDLE_TIMEOUT,
+        "active timeout should be shorter than idle"
+    );
+
+    let mut scene = SceneState::new(4);
+    let mut reducer = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/active.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: id,
+            source: "claude-code".into(),
+            session_id: "s".into(),
+            cwd: PathBuf::from("/repo"),
+        },
+        t0,
+        Transport::Hook,
+    );
+    reducer.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("t".into()),
+            detail: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+
+    // Active timeout is 10 min — should mark exiting after that.
+    reducer.tick(
+        &mut scene,
+        t0 + STALE_ACTIVE_TIMEOUT + Duration::from_secs(1),
+    );
+    assert!(
+        scene.agents.get(&id).unwrap().exiting_at.is_some(),
+        "active agent should be reaped after STALE_ACTIVE_TIMEOUT"
+    );
+}
+
+#[test]
+fn fresh_event_resets_stale_timer() {
+    use ascii_agents_core::state::reducer::STALE_IDLE_TIMEOUT;
+    let mut scene = SceneState::new(4);
+    let mut reducer = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/fresh.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: id,
+            source: "claude-code".into(),
+            session_id: "s".into(),
+            cwd: PathBuf::from("/repo"),
+        },
+        t0,
+        Transport::Hook,
+    );
+
+    // At 29 min (just before 30 min idle threshold), send a new event.
+    let almost = t0 + STALE_IDLE_TIMEOUT - Duration::from_secs(60);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::Waiting {
+            agent_id: id,
+            reason: "perm".into(),
+        },
+        almost,
+        Transport::Hook,
+    );
+
+    // Now tick at original t0 + 31 min — should NOT reap because
+    // last_event_at was reset to `almost` (29 min mark).
+    reducer.tick(
+        &mut scene,
+        t0 + STALE_IDLE_TIMEOUT + Duration::from_secs(60),
+    );
+    assert!(
+        scene.agents.get(&id).unwrap().exiting_at.is_none(),
+        "fresh event should have reset the stale timer"
+    );
+}
+
+#[test]
+fn unknown_cwd_agent_reaps_faster() {
+    use ascii_agents_core::state::reducer::STALE_UNKNOWN_CWD_TIMEOUT;
+    let mut scene = SceneState::new(4);
+    let mut reducer = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/ghost.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    // SessionStart with empty cwd → label falls back to "cc#N".
+    reducer.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: id,
+            source: "claude-code".into(),
+            session_id: "s".into(),
+            cwd: PathBuf::new(),
+        },
+        t0,
+        Transport::Jsonl,
+    );
+    let label = scene.agents.get(&id).unwrap().label.clone();
+    assert!(
+        label.starts_with("cc#"),
+        "empty cwd should produce cc#N label, got {label}"
+    );
+
+    // 3 min + 1s → should be reaped (STALE_UNKNOWN_CWD_TIMEOUT = 3 min).
+    reducer.tick(
+        &mut scene,
+        t0 + STALE_UNKNOWN_CWD_TIMEOUT + Duration::from_secs(1),
+    );
+    assert!(
+        scene.agents.get(&id).unwrap().exiting_at.is_some(),
+        "unknown-cwd agent should reap after STALE_UNKNOWN_CWD_TIMEOUT"
+    );
+}

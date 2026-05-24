@@ -1037,6 +1037,7 @@ mod tests {
             state,
             state_started_at: now,
             created_at: now,
+            last_event_at: now,
             exiting_at: None,
             pending_idle_at: None,
             desk_index: 0,

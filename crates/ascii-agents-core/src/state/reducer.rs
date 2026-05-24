@@ -20,6 +20,26 @@ pub const EXIT_GRACE_WINDOW: Duration = Duration::from_millis(4500);
 /// so the slot reads as continuously Active for chained tool work.
 pub const ACTIVE_GRACE_WINDOW: Duration = Duration::from_millis(1500);
 
+/// State-adaptive stale-agent thresholds. If `now - last_event_at`
+/// exceeds the threshold for the agent's current state, the reducer
+/// marks it exiting. Modeled after Kubernetes liveness probes (detect
+/// failure to respond, not the act of dying) + Prometheus staleness
+/// (5-min scrape gap = stale target).
+///
+/// Active: CC fires tool events every few seconds when working. 10 min
+///   of silence means the process died mid-tool.
+/// Idle: users legitimately pause for breaks. 30 min catches "closed
+///   terminal" without reaping lunch-break idle.
+/// Waiting: user could be in a meeting reviewing the permission prompt.
+///   60 min is generous but still GCs eventually.
+/// Unknown cwd (cc#N label): almost always a ghost from startup JSONL
+///   seeding that never gets a follow-up event. 3 min is aggressive
+///   but the false-positive cost is low (just a desk slot freed).
+pub const STALE_ACTIVE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub const STALE_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub const STALE_WAITING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+pub const STALE_UNKNOWN_CWD_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+
 #[derive(Debug, Default)]
 pub struct Reducer {
     /// Track recent hook-derived events so JSONL duplicates can be dropped.
@@ -49,6 +69,7 @@ impl Reducer {
         self.gc(now);
         self.sweep_exited(scene, now);
         self.expire_pending_idles(scene, now);
+        self.sweep_stale(scene, now);
     }
 
     pub fn apply(
@@ -195,6 +216,7 @@ impl Reducer {
                         label,
                         state: ActivityState::Idle,
                         state_started_at: now,
+                        last_event_at: now,
                         created_at: now,
                         exiting_at: None,
                         pending_idle_at: None,
@@ -215,18 +237,14 @@ impl Reducer {
                         detail: detail.map(|d| Arc::<str>::from(d.display())),
                     };
                     slot.state_started_at = now;
-                    // Cancel any debounce in flight — a new tool started
-                    // before the grace window expired, so the slot
-                    // continues to read as continuously Active.
+                    slot.last_event_at = now;
                     slot.pending_idle_at = None;
                 }
             }
             AgentEvent::ActivityEnd { agent_id, .. } => {
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
-                    // Debounce: stay visually Active for ACTIVE_GRACE_WINDOW.
-                    // `expire_pending_idles` (called from `tick`) flips
-                    // state to Idle if no new tool starts in the window.
                     slot.pending_idle_at = Some(now);
+                    slot.last_event_at = now;
                 }
             }
             AgentEvent::Waiting { agent_id, reason } => {
@@ -235,6 +253,7 @@ impl Reducer {
                         reason: Arc::<str>::from(reason.as_str()),
                     };
                     slot.state_started_at = now;
+                    slot.last_event_at = now;
                     slot.pending_idle_at = None;
                 }
             }
@@ -243,6 +262,7 @@ impl Reducer {
                     if &*slot.label != label.as_str() {
                         slot.label = Arc::<str>::from(label.as_str());
                     }
+                    slot.last_event_at = now;
                 }
             }
             AgentEvent::SessionEnd { agent_id } => {
@@ -287,6 +307,44 @@ impl Reducer {
                     slot.state_started_at = now;
                 }
                 slot.pending_idle_at = None;
+            }
+        }
+    }
+
+    /// Mark agents as exiting when they haven't emitted any event for
+    /// longer than their state-adaptive threshold. Uses `last_event_at`
+    /// (updated on every reducer event) as the liveness signal, NOT
+    /// `state_started_at` (which only tracks the current state's age).
+    ///
+    /// Unknown-cwd agents (label starts with "cc#") get a much shorter
+    /// timeout — they're almost always ghosts from JSONL startup seeding.
+    fn sweep_stale(&mut self, scene: &mut SceneState, now: SystemTime) {
+        for slot in scene.agents.values_mut() {
+            if slot.exiting_at.is_some() {
+                continue;
+            }
+            let age = now
+                .duration_since(slot.last_event_at)
+                .unwrap_or(Duration::ZERO);
+            let unknown_cwd = slot.label.starts_with("cc#");
+            let threshold = if unknown_cwd {
+                STALE_UNKNOWN_CWD_TIMEOUT
+            } else {
+                match &slot.state {
+                    ActivityState::Active { .. } => STALE_ACTIVE_TIMEOUT,
+                    ActivityState::Idle => STALE_IDLE_TIMEOUT,
+                    ActivityState::Waiting { .. } => STALE_WAITING_TIMEOUT,
+                }
+            };
+            if age > threshold {
+                tracing::info!(
+                    agent_id = ?slot.agent_id,
+                    label = %slot.label,
+                    age_secs = age.as_secs(),
+                    threshold_secs = threshold.as_secs(),
+                    "stale agent — marking exiting"
+                );
+                slot.exiting_at = Some(now);
             }
         }
     }
