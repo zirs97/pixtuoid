@@ -1,11 +1,15 @@
 <p align="center">
-  <img src="docs/images/demo.gif" alt="ascii-agents animated demo" width="800" />
+  <img src="docs/images/sprite-banner.png" alt="ascii-agents sprites" width="500" />
 </p>
 
 <h1 align="center">ascii-agents</h1>
 
 <p align="center">
   <em>Your AI coding agents, visualized as pixel-art coworkers in a terminal office.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/demo.gif" alt="ascii-agents animated demo" width="800" />
 </p>
 
 <p align="center">
@@ -23,18 +27,11 @@
 
 ---
 
-> [!TIP]
-> **Try it in 30 seconds:**
-> ```bash
-> brew install IvanWng97/ascii-agents/ascii-agents
-> ascii-agents install-hooks && ascii-agents
-> ```
-
 ## Why?
 
-You're running 5 Claude Code sessions across 3 repos. Which one is typing? Which one is stuck waiting? Which one finished 10 minutes ago?
+You spawned 6 Claude Code sessions. Three are doing god-knows-what. One has been "thinking" for 20 minutes. One finished an hour ago and you never noticed. The last one is waiting for permission you forgot to grant.
 
-**ascii-agents** gives you a single pane of glass — a pixel-art office where each session is a character. Typing agents sit at glowing desks. Waiting agents stand up with a `?` bubble. Idle agents doze off with z's floating. You see everything at a glance.
+**ascii-agents** turns this chaos into a tiny pixel-art office you can actually look at. Your agents become little people — typing furiously at glowing screens, standing around with `?` bubbles when they need you, or passed out at their desks when they're done. An office cat wanders between desks judging everyone's productivity. It's absurd, it's delightful, and somehow it's the most effective multi-agent dashboard you've ever used.
 
 ## Features
 
