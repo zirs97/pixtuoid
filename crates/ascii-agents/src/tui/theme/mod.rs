@@ -1,12 +1,16 @@
+mod catppuccin;
 mod cyberpunk;
 mod dracula;
+mod gruvbox;
 mod normal;
 mod tokyo_night;
 
 use ascii_agents_core::sprite::Rgb;
 
+pub use catppuccin::CATPPUCCIN;
 pub use cyberpunk::CYBERPUNK;
 pub use dracula::DRACULA;
+pub use gruvbox::GRUVBOX;
 pub use normal::NORMAL;
 pub use tokyo_night::TOKYO_NIGHT;
 
@@ -120,7 +124,14 @@ pub struct UiColors {
     pub neon_ticker: Rgb,
 }
 
-pub static ALL_THEMES: &[&Theme] = &[&NORMAL, &CYBERPUNK, &DRACULA, &TOKYO_NIGHT];
+pub static ALL_THEMES: &[&Theme] = &[
+    &NORMAL,
+    &CYBERPUNK,
+    &DRACULA,
+    &TOKYO_NIGHT,
+    &CATPPUCCIN,
+    &GRUVBOX,
+];
 
 pub fn theme_by_name(name: &str) -> Option<&'static Theme> {
     ALL_THEMES.iter().find(|t| t.name == name).copied()

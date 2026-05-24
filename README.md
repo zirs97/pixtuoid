@@ -31,16 +31,20 @@ You're running 5 Claude Code sessions across 3 repos. Which one is typing? Which
 
 ## Themes
 
-Press `t` in the TUI to open the theme picker with live preview. 4 built-in themes:
+Press `t` in the TUI to open the theme picker with live preview. 6 built-in themes:
 
 <table>
   <tr>
-    <td align="center"><strong>Normal</strong><br /><img src="docs/images/theme-normal.png" width="400" /></td>
-    <td align="center"><strong>Cyberpunk</strong><br /><img src="docs/images/theme-cyberpunk.png" width="400" /></td>
+    <td align="center"><strong>Normal</strong><br /><img src="docs/images/theme-normal.png" width="380" /></td>
+    <td align="center"><strong>Cyberpunk</strong><br /><img src="docs/images/theme-cyberpunk.png" width="380" /></td>
   </tr>
   <tr>
-    <td align="center"><strong>Dracula</strong><br /><img src="docs/images/theme-dracula.png" width="400" /></td>
-    <td align="center"><strong>Tokyo Night</strong><br /><img src="docs/images/theme-tokyo-night.png" width="400" /></td>
+    <td align="center"><strong>Dracula</strong><br /><img src="docs/images/theme-dracula.png" width="380" /></td>
+    <td align="center"><strong>Tokyo Night</strong><br /><img src="docs/images/theme-tokyo-night.png" width="380" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Catppuccin Mocha</strong><br /><img src="docs/images/theme-catppuccin.png" width="380" /></td>
+    <td align="center"><strong>Gruvbox Dark</strong><br /><img src="docs/images/theme-gruvbox.png" width="380" /></td>
   </tr>
 </table>
 
