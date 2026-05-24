@@ -55,7 +55,7 @@ impl Default for TickerQueue {
 impl TickerQueue {
     pub fn new() -> Self {
         Self {
-            buffer: "★ Star on GitHub  ·  github.com/IvanWng97/ascii-agents  ·  ".to_string(),
+            buffer: String::new(),
             last_snapshot: String::new(),
         }
     }
