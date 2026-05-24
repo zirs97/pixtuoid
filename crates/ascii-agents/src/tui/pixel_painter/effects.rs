@@ -146,20 +146,22 @@ pub(super) fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, fram
     }
 }
 
-/// Compact yellow "?" painted above a Waiting character. 4×8 buffer
-/// pixels = 4 cells wide × 4 cells tall — proportional to the 8×12
-/// character sprite. Row pairs are identical so each half-block
-/// terminal cell is either fully yellow or fully transparent.
+/// Yellow "?" painted above a Waiting character. 8×6 buffer pixels =
+/// 8 cells wide × 3 cells tall — squat and readable. Wider strokes
+/// so the shape holds together at half-block scale. Row pairs
+/// identical for clean half-block rendering.
 pub(super) fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
     const FG: Rgb = Rgb(255, 215, 70);
     const GLYPH: &[&[u8]] = &[
-        b".YY.", b".YY.", // arc
-        b"..Y.", b"..Y.", // hook
-        b"....", b"....", // gap
-        b".Y..", b".Y..", // dot
+        b".YYYYY..",
+        b".YYYYY..", // wide arc
+        b"....YY..",
+        b"..YY....", // hook right → stem left
+        b"..YY....",
+        b"..YY....", // dot (aligned with stem)
     ];
-    let bx = anchor.x + 2;
-    let by = anchor.y.saturating_sub(9) & !1u16;
+    let bx = anchor.x;
+    let by = anchor.y.saturating_sub(7) & !1u16;
     for (dy, row) in GLYPH.iter().enumerate() {
         for (dx, byte) in row.iter().enumerate() {
             if *byte != b'Y' {

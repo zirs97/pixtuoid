@@ -423,12 +423,12 @@ fn sample_scene(now: SystemTime, max_desks: usize) -> SceneState {
             ActivityState::Waiting {
                 reason: "permission?".into(),
             },
-            D::from_millis(0),
+            D::from_secs(10),
         ),
-        ("idle-sit", ActivityState::Idle, D::from_millis(1_000)), // phase 0
-        ("walk-out", ActivityState::Idle, D::from_millis(4_250)), // phase 1
-        ("at-wp", ActivityState::Idle, D::from_millis(6_000)),    // phase 2
-        ("walk-back", ActivityState::Idle, D::from_millis(8_250)), // phase 3
+        ("idle-a", ActivityState::Idle, D::from_secs(300)), // 5 min — many cycles completed
+        ("idle-b", ActivityState::Idle, D::from_secs(301)),
+        ("idle-c", ActivityState::Idle, D::from_secs(302)),
+        ("idle-d", ActivityState::Idle, D::from_secs(303)),
         (
             "couch-act",
             ActivityState::Active {
