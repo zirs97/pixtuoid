@@ -31,9 +31,7 @@
 
 Running multiple AI agents in the terminal is like managing a sweatshop you can't see. They type, they wait, they finish — and you have no idea who's doing what unless you scroll through logs like a bureaucrat.
 
-**ascii-agents** gives you the view from above. Your agents become tiny pixel-art workers trapped in an office — typing at desks that glow with the color of their current tool, standing up with `?` bubbles when they need your permission, dozing off at their desks when you forget about them. A cat roams between cubicles, completely indifferent to the work being done.
-
-It's a little bit *Black Mirror*, a little bit *The Sims*, and somehow the most intuitive multi-agent dashboard you'll ever use.
+**ascii-agents** puts them all in a tiny pixel-art office you can watch from above. A little bit *Black Mirror*, a little bit *The Sims* — and somehow the most intuitive multi-agent dashboard you'll ever use.
 
 ## Features
 
