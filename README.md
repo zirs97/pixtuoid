@@ -29,6 +29,21 @@ You're running 5 Claude Code sessions across 3 repos. Which one is typing? Which
 
 **ascii-agents** gives you a single pane of glass: a pixel-art office where each session is a character. Typing agents sit at desks with glowing monitors. Waiting agents stand up with a `?` bubble. Idle agents doze off — head on desk, z's floating. You see everything at a glance.
 
+## Themes
+
+Press `t` in the TUI to open the theme picker with live preview. 4 built-in themes:
+
+<table>
+  <tr>
+    <td align="center"><strong>Normal</strong><br /><img src="docs/images/theme-normal.png" width="400" /></td>
+    <td align="center"><strong>Cyberpunk</strong><br /><img src="docs/images/theme-cyberpunk.png" width="400" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Dracula</strong><br /><img src="docs/images/theme-dracula.png" width="400" /></td>
+    <td align="center"><strong>Tokyo Night</strong><br /><img src="docs/images/theme-tokyo-night.png" width="400" /></td>
+  </tr>
+</table>
+
 ## Gallery
 
 <table>

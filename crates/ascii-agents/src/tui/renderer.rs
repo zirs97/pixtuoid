@@ -238,12 +238,12 @@ pub fn draw_scene<B: Backend>(
         paint_footer(f, scene, full_rect);
         flush_buffer_to_term(f, buf, scene_rect);
         paint_label_widgets(
-            f, scene, &layout, now, router, overlay, history, scene_rect, hovered,
+            f, scene, &layout, now, router, overlay, history, scene_rect, hovered, theme,
         );
-        paint_wall_display(f, scene, &layout, scene_rect, now, ticker);
+        paint_wall_display(f, scene, &layout, scene_rect, now, ticker, theme);
         let tooltip_agent = hovered.or(pinned_agent);
         if let (Some(agent_id), Some((mx, my))) = (tooltip_agent, mouse_pos) {
-            paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect);
+            paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect, theme);
         } else if let Some(agent_id) = pinned_agent {
             paint_hover_tooltip(
                 f,
@@ -252,6 +252,7 @@ pub fn draw_scene<B: Backend>(
                 scene_rect.width / 2,
                 scene_rect.height / 2,
                 scene_rect,
+                theme,
             );
         }
     })?;
@@ -395,6 +396,7 @@ fn paint_label_widgets(
     history: &mut pose::PoseHistory,
     scene_rect: Rect,
     hovered: Option<AgentId>,
+    theme: &crate::tui::theme::Theme,
 ) {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     let mut label_counts: HashMap<&str, usize> = HashMap::new();
@@ -417,14 +419,14 @@ fn paint_label_widgets(
         let display = truncate_label(&raw, (DESK_W + 4) as usize);
         let is_hovered = hovered == Some(agent.agent_id);
         let label_color = if is_hovered {
-            Color::Rgb(255, 255, 255)
+            Color::White
         } else if agent.exiting_at.is_some() {
-            Color::Rgb(100, 110, 130)
+            to_color(theme.ui.label_exiting)
         } else {
             match &agent.state {
-                ActivityState::Active { .. } => Color::Rgb(140, 240, 170),
-                ActivityState::Waiting { .. } => Color::Rgb(240, 200, 80),
-                ActivityState::Idle => Color::Rgb(160, 160, 160),
+                ActivityState::Active { .. } => to_color(theme.ui.label_active),
+                ActivityState::Waiting { .. } => to_color(theme.ui.label_waiting),
+                ActivityState::Idle => to_color(theme.ui.label_idle),
             }
         };
         let text = if is_hovered {
@@ -538,6 +540,7 @@ fn paint_hover_tooltip(
     mx: u16,
     my: u16,
     scene_rect: Rect,
+    theme: &crate::tui::theme::Theme,
 ) {
     let Some(agent) = scene.agents.get(&agent_id) else {
         return;
@@ -545,15 +548,17 @@ fn paint_hover_tooltip(
 
     // Build the tooltip lines.
     let (state_label, state_detail, state_color) = match &agent.state {
-        ActivityState::Idle => ("Idle", String::new(), Color::Rgb(160, 160, 160)),
+        ActivityState::Idle => ("Idle", String::new(), to_color(theme.ui.label_idle)),
         ActivityState::Active { detail, .. } => (
             "Active",
             detail.as_deref().unwrap_or("").to_string(),
-            Color::Rgb(140, 240, 170),
+            to_color(theme.ui.label_active),
         ),
-        ActivityState::Waiting { reason } => {
-            ("Waiting", reason.to_string(), Color::Rgb(240, 200, 80))
-        }
+        ActivityState::Waiting { reason } => (
+            "Waiting",
+            reason.to_string(),
+            to_color(theme.ui.label_waiting),
+        ),
     };
     let cwd_short = agent
         .cwd
@@ -619,8 +624,11 @@ fn paint_hover_tooltip(
         return;
     };
 
-    let para =
-        Paragraph::new(lines).style(Style::default().bg(Color::Rgb(20, 22, 30)).fg(Color::White));
+    let para = Paragraph::new(lines).style(
+        Style::default()
+            .bg(to_color(theme.ui.tooltip_bg))
+            .fg(Color::White),
+    );
     f.render_widget(ratatui::widgets::Clear, clipped);
     f.render_widget(para, clipped);
 }
@@ -637,6 +645,7 @@ fn paint_wall_display(
     scene_rect: Rect,
     now: SystemTime,
     ticker: &TickerQueue,
+    theme: &crate::tui::theme::Theme,
 ) {
     use ratatui::style::Modifier;
     use ratatui::text::Line;
@@ -664,14 +673,14 @@ fn paint_wall_display(
         Span::styled(
             format!("ascii-agents v{version}"),
             Style::default()
-                .fg(Color::Rgb(80, 240, 255))
+                .fg(to_color(theme.ui.neon_brand))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled(
             "★ Star",
             Style::default()
-                .fg(Color::Rgb(255, 100, 200))
+                .fg(to_color(theme.ui.neon_star))
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -691,9 +700,18 @@ fn paint_wall_display(
     };
 
     let bot_line = Line::from(vec![
-        Span::styled("●".repeat(active), Style::default().fg(Color::Green)),
-        Span::styled("●".repeat(waiting), Style::default().fg(Color::Yellow)),
-        Span::styled("●".repeat(idle), Style::default().fg(Color::Gray)),
+        Span::styled(
+            "●".repeat(active),
+            Style::default().fg(to_color(theme.ui.label_active)),
+        ),
+        Span::styled(
+            "●".repeat(waiting),
+            Style::default().fg(to_color(theme.ui.label_waiting)),
+        ),
+        Span::styled(
+            "●".repeat(idle),
+            Style::default().fg(to_color(theme.ui.label_idle)),
+        ),
         Span::raw("  "),
         Span::styled(uptime_str, Style::default().fg(Color::DarkGray)),
     ]);
@@ -702,7 +720,7 @@ fn paint_wall_display(
     let visible = ticker.visible(ticker_width, now);
     let ticker_line = Line::from(Span::styled(
         visible,
-        Style::default().fg(Color::Rgb(180, 220, 255)),
+        Style::default().fg(to_color(theme.ui.neon_ticker)),
     ));
 
     let w = 30u16;
