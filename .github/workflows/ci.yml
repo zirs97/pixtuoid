@@ -75,8 +75,8 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
-      - name: Generate coverage
-        run: cargo llvm-cov --workspace --features ascii-agents-core/test-renderer --lcov --output-path lcov.info
+      - name: Generate coverage + JUnit XML (single test run)
+        run: cargo llvm-cov nextest --workspace --features ascii-agents-core/test-renderer --lcov --output-path lcov.info --profile ci
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
@@ -85,8 +85,6 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-      - name: Run tests with JUnit output
-        run: cargo nextest run --workspace --features ascii-agents-core/test-renderer --profile ci
       - name: Upload test results to Codecov
         if: always()
         uses: codecov/codecov-action@v5
