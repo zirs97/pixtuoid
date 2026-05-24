@@ -104,6 +104,8 @@ fn load_embedded_pack() -> Result<Pack> {
     let sitting = include_str!("../../../../assets/sprites/default/sitting_couch.sprite");
     let back_couch = include_str!("../../../../assets/sprites/default/back_couch.sprite");
     let sleeping_seat = include_str!("../../../../assets/sprites/default/seated_sleeping.sprite");
+    let sleeping_alt =
+        include_str!("../../../../assets/sprites/default/seated_sleeping_alt.sprite");
     let sleeping_cch =
         include_str!("../../../../assets/sprites/default/sitting_couch_sleeping.sprite");
     let holding = include_str!("../../../../assets/sprites/default/holding_coffee.sprite");
@@ -154,6 +156,7 @@ fn load_embedded_pack() -> Result<Pack> {
             ("sitting_couch.sprite", sitting),
             ("back_couch.sprite", back_couch),
             ("seated_sleeping.sprite", sleeping_seat),
+            ("seated_sleeping_alt.sprite", sleeping_alt),
             ("sitting_couch_sleeping.sprite", sleeping_cch),
             ("holding_coffee.sprite", holding),
             ("pantry.sprite", pantry),

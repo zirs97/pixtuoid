@@ -27,12 +27,18 @@ pub async fn run_tui(mut scene_rx: SceneRx, pack_dir: Option<std::path::PathBuf>
     // visible-desk threshold). Dynamic occupancy churn is handled inside
     // the router via overlay signature.
     let mut last_layout_sig: Option<(u16, u16, usize)> = None;
+    let mut paused = false;
+    let mut frozen_now: Option<SystemTime> = None;
 
     let tick = Duration::from_millis(33); // ~30 fps
     let result: Result<()> = (async {
         loop {
-            let now = SystemTime::now();
-            // O(1) pointer read — no lock, no clone of SceneState's contents.
+            let now = if paused {
+                *frozen_now.get_or_insert(SystemTime::now())
+            } else {
+                frozen_now = None;
+                SystemTime::now()
+            };
             let snapshot = scene_rx.borrow_and_update().clone();
             renderer.evict_missing(&snapshot);
             let sig = (
@@ -62,6 +68,9 @@ pub async fn run_tui(mut scene_rx: SceneRx, pack_dir: Option<std::path::PathBuf>
                         | (KeyCode::Esc, _)
                         | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                             quit = true;
+                        }
+                        (KeyCode::Char('p'), _) => {
+                            paused = !paused;
                         }
                         _ => {}
                     },

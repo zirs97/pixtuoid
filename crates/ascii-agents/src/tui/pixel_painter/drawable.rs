@@ -46,7 +46,9 @@ pub(super) enum DrawableKind<'a> {
         desk: Point,
         is_last_col: bool,
         has_cabinet: bool,
-        occupant_active: bool,
+        /// Per-tool monitor glow color when the occupant is Active.
+        /// `None` = screen stays dark (idle/empty desk).
+        screen_glow: Option<Rgb>,
     },
     Character {
         agent: &'a AgentSlot,
@@ -187,7 +189,7 @@ pub(super) fn paint_drawable(
             desk,
             is_last_col,
             has_cabinet,
-            occupant_active,
+            screen_glow,
         } => {
             const DIVIDER: Rgb = Rgb(72, 82, 104);
             if !is_last_col {
@@ -221,8 +223,8 @@ pub(super) fn paint_drawable(
                     blit_frame(bin, bin_x, bin_y, buf);
                 }
             }
-            if *occupant_active {
-                paint_screen_glow(buf, desk.x, desk.y, now);
+            if let Some(tint) = screen_glow {
+                paint_screen_glow(buf, desk.x, desk.y, now, *tint);
             }
         }
         DrawableKind::Character {

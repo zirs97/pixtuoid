@@ -544,18 +544,21 @@ pub fn render_to_rgb_buffer(
     for (i, &desk) in layout.home_desks.iter().enumerate() {
         let is_last_col =
             desk.x + DESK_W + 2 + DESK_W >= layout.cubicle_band.x + layout.cubicle_band.width;
-        let occupant_active = agents.iter().any(|a| {
-            a.desk_index == i
-                && a.exiting_at.is_none()
-                && matches!(a.state, ActivityState::Active { .. })
-        });
+        let screen_glow = agents
+            .iter()
+            .find(|a| {
+                a.desk_index == i
+                    && a.exiting_at.is_none()
+                    && matches!(a.state, ActivityState::Active { .. })
+            })
+            .and_then(palette::tool_glow_tint);
         drawables.push(Drawable {
             anchor_y: desk.y + 8,
             kind: DrawableKind::DeskCubicle {
                 desk,
                 is_last_col,
                 has_cabinet: i % 2 == 0,
-                occupant_active,
+                screen_glow,
             },
         });
     }
@@ -865,11 +868,16 @@ pub fn render_to_rgb_buffer(
         match p {
             Pose::SeatedIdle => {
                 let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
+                let sleep_variant = if agent.agent_id.raw() % 2 == 0 {
+                    "seated_sleeping"
+                } else {
+                    "seated_sleeping_alt"
+                };
                 drawables.push(Drawable {
                     anchor_y: anchor.y + 12,
                     kind: DrawableKind::Character {
                         agent,
-                        anim_name: "seated_sleeping",
+                        anim_name: sleep_variant,
                         frame_idx: 0,
                         anchor,
                         flip_x: false,

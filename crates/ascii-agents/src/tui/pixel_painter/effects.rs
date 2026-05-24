@@ -19,11 +19,25 @@ use crate::tui::layout::Point;
 /// glow is at least 2 terminal cells tall after half-block compression.
 /// Adds a moving scanline (one extra-bright column that cycles across the
 /// screen) so the monitor reads as actually displaying scrolling content.
-pub(super) fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16, now: SystemTime) {
+pub(super) fn paint_screen_glow(
+    buf: &mut RgbBuffer,
+    desk_x: u16,
+    desk_y: u16,
+    now: SystemTime,
+    tint: Rgb,
+) {
     const FRAME_LIT: Rgb = Rgb(180, 200, 200);
-    const GLOW: Rgb = Rgb(140, 240, 170);
-    const GLOW_BRIGHT: Rgb = Rgb(220, 255, 230);
-    const SCANLINE: Rgb = Rgb(250, 255, 250);
+    let glow = tint;
+    let glow_bright = Rgb(
+        blend(tint.0, 255, 0.4),
+        blend(tint.1, 255, 0.4),
+        blend(tint.2, 255, 0.4),
+    );
+    let scanline = Rgb(
+        blend(tint.0, 255, 0.7),
+        blend(tint.1, 255, 0.7),
+        blend(tint.2, 255, 0.7),
+    );
     let put = |buf: &mut RgbBuffer, dx: u16, dy: u16, c: Rgb| {
         let px = desk_x + dx;
         let py = desk_y + dy;
@@ -35,8 +49,8 @@ pub(super) fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16, n
         put(buf, dx, 0, FRAME_LIT);
     }
     for dx in 4..=9 {
-        put(buf, dx, 1, GLOW_BRIGHT);
-        put(buf, dx, 2, GLOW);
+        put(buf, dx, 1, glow_bright);
+        put(buf, dx, 2, glow);
     }
     for dx in 4..=9 {
         put(buf, dx, 3, FRAME_LIT);
@@ -50,8 +64,8 @@ pub(super) fn paint_screen_glow(buf: &mut RgbBuffer, desk_x: u16, desk_y: u16, n
         .unwrap_or(0);
     let phase = (elapsed_ms / 120) as u16 + desk_x;
     let scan_col = 4 + (phase % 6);
-    put(buf, scan_col, 1, SCANLINE);
-    put(buf, scan_col, 2, SCANLINE);
+    put(buf, scan_col, 1, scanline);
+    put(buf, scan_col, 2, scanline);
 }
 
 /// Animated `z` rising above a sleeping character's head. Cycles ~2.4s
