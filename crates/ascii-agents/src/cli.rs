@@ -14,6 +14,10 @@ pub struct Cli {
 
     #[arg(long, global = true, default_value = "info")]
     pub log_level: String,
+
+    /// Color theme: "normal" (default) or "cyberpunk".
+    #[arg(long, global = true, default_value = "normal")]
+    pub theme: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -36,9 +40,6 @@ pub enum Cmd {
         /// Prints a JSON snapshot of SceneState every 200ms when it changes.
         #[arg(long, default_value_t = false)]
         headless: bool,
-        /// Color theme: "normal" (default) or "cyberpunk".
-        #[arg(long, default_value = "normal")]
-        theme: String,
     },
     /// Install Claude Code hooks into ~/.claude/settings.json.
     InstallHooks {
@@ -55,16 +56,16 @@ pub enum Cmd {
 }
 
 impl Cli {
-    pub fn cmd_or_default(self) -> (String, Cmd) {
+    pub fn cmd_or_default(self) -> (String, String, Cmd) {
         let level = self.log_level;
+        let theme = self.theme;
         let cmd = self.cmd.unwrap_or(Cmd::Run {
             socket: None,
             projects_root: None,
             pack_dir: None,
             max_desks: 16,
             headless: false,
-            theme: "normal".to_string(),
         });
-        (level, cmd)
+        (level, theme, cmd)
     }
 }
