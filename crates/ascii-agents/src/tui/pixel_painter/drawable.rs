@@ -138,16 +138,10 @@ pub(super) enum DrawableKind<'a> {
     },
 }
 
-/// Cat state machine. 45s cycle with desk visits:
-///   0-30%: walk corridor left→right
-///  30-40%: walk from corridor to target desk
-///  40-70%: sit/sleep at target desk
-///  70-80%: walk from desk back to corridor
-///  80-100%: walk corridor right→left
-///
-/// Target desk is deterministic per cycle (hash of cycle number).
-/// If no desks exist, falls back to corridor-only walk.
-/// Returns (position, flip, animation_name, frame_idx).
+/// Cat roaming the whole office like a real cat. Each 40s cycle picks
+/// a destination from all available spots (desks, pantry, meeting sofas,
+/// lounge couch, corridor), walks there from the previous spot, then
+/// sits or sleeps until the next cycle.
 pub(super) fn cat_position(
     layout: &Layout,
     pack: &Pack,
@@ -156,124 +150,107 @@ pub(super) fn cat_position(
     all_idle: bool,
 ) -> Option<(Point, bool, &'static str, usize)> {
     pack.animation("cat_walk")?;
-    let corridor = layout.corridor?;
+    layout.corridor?;
 
     let elapsed_ms = now
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    const CYCLE_MS: u64 = 45_000;
+    const CYCLE_MS: u64 = 40_000;
     let cycle_n = elapsed_ms / CYCLE_MS;
-    let phase = elapsed_ms % CYCLE_MS;
-    let frac = phase as f32 / CYCLE_MS as f32;
+    let frac = (elapsed_ms % CYCLE_MS) as f32 / CYCLE_MS as f32;
 
-    let left_x = corridor.x + corridor.width * 8 / 100;
-    let right_x = corridor.x + corridor.width * 92 / 100;
-    let corridor_y = corridor.y + corridor.height / 2;
-
-    let has_target = !layout.home_desks.is_empty();
-    let target_desk_idx = if has_target {
-        let hash = cycle_n.wrapping_mul(0x9e37_79b9) as usize;
-        hash % layout.home_desks.len()
-    } else {
-        0
-    };
-
-    let desk_target = if has_target {
-        let desk = layout.home_desks[target_desk_idx];
-        Point {
-            x: desk.x + DESK_W + 1,
-            y: desk.y + DESK_H + 2,
-        }
-    } else {
-        Point {
-            x: (left_x + right_x) / 2,
-            y: corridor_y,
-        }
-    };
-
-    let corridor_mid = Point {
-        x: desk_target.x.clamp(left_x, right_x),
-        y: corridor_y,
-    };
-
-    let is_at_idle_desk = idle_desk_indices.contains(&target_desk_idx);
-
-    // Phase 1: walk corridor left → corridor_mid (directly below target desk)
-    if !has_target || frac < 0.25 {
-        let t = if has_target { frac / 0.25 } else { frac / 0.5 };
-        let t = t.min(1.0);
-        let cx = left_x + ((corridor_mid.x - left_x) as f32 * t) as u16;
-        let frame_idx = (elapsed_ms / 220) as usize % 2;
-        return Some((
+    // Gather all interesting spots the cat can visit.
+    let mut spots: Vec<(Point, bool)> = Vec::new();
+    for (i, desk) in layout.home_desks.iter().enumerate() {
+        spots.push((
             Point {
-                x: cx,
-                y: corridor_y,
+                x: desk.x + DESK_W + 1,
+                y: desk.y + DESK_H + 2,
+            },
+            idle_desk_indices.contains(&i),
+        ));
+    }
+    if let Some(wp) = layout
+        .waypoints
+        .iter()
+        .find(|w| matches!(w.kind, crate::tui::layout::WaypointKind::Pantry))
+    {
+        spots.push((
+            Point {
+                x: wp.pos.x + 4,
+                y: wp.pos.y + 6,
             },
             false,
-            "cat_walk",
-            frame_idx,
         ));
     }
-
-    // Phase 2: walk from corridor_mid up to desk
-    if frac < 0.35 {
-        let t = (frac - 0.25) / 0.10;
-        let x = corridor_mid.x as f32 + (desk_target.x as f32 - corridor_mid.x as f32) * t;
-        let y = corridor_y as f32 + (desk_target.y as f32 - corridor_y as f32) * t;
-        let frame_idx = (elapsed_ms / 220) as usize % 2;
-        return Some((
+    for sofa in &layout.meeting_sofas {
+        spots.push((
             Point {
-                x: x as u16,
-                y: y as u16,
+                x: sofa.x + 4,
+                y: sofa.y + 4,
             },
             false,
-            "cat_walk",
-            frame_idx,
         ));
     }
-
-    // Phase 3: sit/sleep at desk
-    if frac < 0.65 {
-        let anim = if all_idle || is_at_idle_desk {
-            "cat_sleep"
-        } else {
-            "cat_sit"
-        };
-        return Some((desk_target, false, anim, 0));
-    }
-
-    // Phase 4: walk from desk back to corridor_mid
-    if frac < 0.75 {
-        let t = (frac - 0.65) / 0.10;
-        let x = desk_target.x as f32 + (corridor_mid.x as f32 - desk_target.x as f32) * t;
-        let y = desk_target.y as f32 + (corridor_y as f32 - desk_target.y as f32) * t;
-        let frame_idx = (elapsed_ms / 220) as usize % 2;
-        return Some((
+    if let Some(wp) = layout
+        .waypoints
+        .iter()
+        .find(|w| matches!(w.kind, crate::tui::layout::WaypointKind::Couch))
+    {
+        spots.push((
             Point {
-                x: x as u16,
-                y: y as u16,
+                x: wp.pos.x + 4,
+                y: wp.pos.y + 6,
             },
-            true,
-            "cat_walk",
-            frame_idx,
+            false,
         ));
     }
+    if let Some(corridor) = layout.corridor {
+        spots.push((
+            Point {
+                x: corridor.x + corridor.width / 2,
+                y: corridor.y + corridor.height / 2,
+            },
+            false,
+        ));
+    }
+    if spots.is_empty() {
+        return None;
+    }
 
-    // Phase 5: walk corridor_mid → left (return)
-    let t = (frac - 0.75) / 0.25;
-    let cx = corridor_mid.x - ((corridor_mid.x - left_x) as f32 * t) as u16;
+    let pick = |n: u64| -> (Point, bool) {
+        let h = n.wrapping_mul(0x9e37_79b9_7f4a_7c15) as usize;
+        spots[h % spots.len()]
+    };
+    let (dest, is_idle_spot) = pick(cycle_n);
+    let (prev, _) = pick(cycle_n.wrapping_sub(1));
+
     let frame_idx = (elapsed_ms / 220) as usize % 2;
-    Some((
-        Point {
-            x: cx,
-            y: corridor_y,
-        },
-        true,
-        "cat_walk",
-        frame_idx,
-    ))
+
+    if frac < 0.35 {
+        let t = frac / 0.35;
+        let x = prev.x as f32 + (dest.x as f32 - prev.x as f32) * t;
+        let y = prev.y as f32 + (dest.y as f32 - prev.y as f32) * t;
+        let flip = dest.x < prev.x;
+        return Some((
+            Point {
+                x: x as u16,
+                y: y as u16,
+            },
+            flip,
+            "cat_walk",
+            frame_idx,
+        ));
+    }
+
+    let anim = if all_idle || is_idle_spot {
+        "cat_sleep"
+    } else {
+        "cat_sit"
+    };
+    Some((dest, false, anim, 0))
 }
 
 /// Dispatch one Drawable's paint. Effects attached to characters paint
