@@ -593,17 +593,11 @@ pub fn render_to_rgb_buffer(
             .find(|a| a.desk_index == i && a.exiting_at.is_none());
         let screen_glow = occupant
             .filter(|a| {
-                matches!(a.state, ActivityState::Active { .. })
-                    && now
-                        .duration_since(a.created_at)
-                        .unwrap_or_default()
-                        .as_millis() as u64
-                        >= pose::ENTRY_ANIMATION_MS
-                    && now
-                        .duration_since(a.state_started_at)
-                        .unwrap_or_default()
-                        .as_millis() as u64
-                        >= 900
+                let p = pose::derive_with_routing(a, now, layout, router, overlay, history);
+                matches!(
+                    p,
+                    Some(Pose::SeatedTyping { .. } | Pose::SeatedThinking)
+                )
             })
             .and_then(|a| palette::tool_glow_tint(a, &theme.tool_glow));
         let session_age_secs = occupant
