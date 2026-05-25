@@ -211,7 +211,8 @@ pub fn draw_scene<B: Backend>(
     let buf_w = scene_rect.width;
     let buf_h = scene_rect.height * 2;
     buf.ensure_size(buf_w, buf_h, theme.surface.bg_fallback);
-    let Some(layout) = Layout::compute(buf_w, buf_h, scene.max_desks) else {
+    let Some(layout) = Layout::compute_with_seed(buf_w, buf_h, scene.max_desks, floor.floor_seed)
+    else {
         term.draw(|f| paint_footer(f, scene, full_rect, theme, floor_info))?;
         return Ok(());
     };

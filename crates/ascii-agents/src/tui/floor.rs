@@ -17,34 +17,11 @@ use crate::tui::pose::PoseHistory;
 
 pub use ascii_agents_core::state::MAX_FLOORS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FloorVariant {
-    #[default]
-    Standard,
-    OpenPlan,
-    Executive,
-    Lab,
-    Lounge,
-}
-
-impl FloorVariant {
-    pub fn for_floor(floor_idx: usize) -> Self {
-        match floor_idx % 5 {
-            0 => Self::Standard,
-            1 => Self::OpenPlan,
-            2 => Self::Executive,
-            3 => Self::Lab,
-            _ => Self::Lounge,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct FloorMeta {
     pub floor_idx: usize,
-    pub variant: FloorVariant,
     pub altitude: f32,
-    pub cat_seed: u64,
+    pub floor_seed: u64,
     pub sunlight_boost: f32,
 }
 
@@ -57,9 +34,8 @@ impl FloorMeta {
         };
         Self {
             floor_idx,
-            variant: FloorVariant::for_floor(floor_idx),
             altitude,
-            cat_seed: (floor_idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
+            floor_seed: (floor_idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
             sunlight_boost: altitude * 0.3,
         }
     }

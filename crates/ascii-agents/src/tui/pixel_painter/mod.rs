@@ -785,7 +785,7 @@ pub fn render_to_rgb_buffer(
         now,
         &idle_desk_indices,
         all_idle,
-        floor.cat_seed,
+        floor.floor_seed,
     ) {
         drawables.push(Drawable {
             anchor_y: pos.y + 3,
