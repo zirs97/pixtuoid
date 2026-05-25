@@ -66,15 +66,14 @@ pub(super) fn paint_floor_and_walls(
     top_wall_h: u16,
     skip_window_x_range: Option<(u16, u16)>,
     theme: &Theme,
+    altitude: f32,
 ) {
-    const BASEBOARD_H: u16 = 3;
     let window_frame = theme.surface.window_frame;
     let carpet_base = theme.surface.carpet_base;
     let carpet_light = theme.surface.carpet_light;
     let carpet_dark = theme.surface.carpet_dark;
     let wall = theme.surface.wall;
     let wall_trim_color = theme.surface.wall_trim;
-    let baseboard = theme.surface.baseboard;
 
     for y in 0..buf_h {
         for x in 0..buf_w {
@@ -125,6 +124,7 @@ pub(super) fn paint_floor_and_walls(
                 now,
                 theme,
                 weather,
+                altitude,
             );
             if look.spill_strength > 0.0 {
                 paint_window_light_spill(
@@ -147,13 +147,6 @@ pub(super) fn paint_floor_and_walls(
     if trim_y < buf_h {
         for x in 0..buf_w {
             buf.put(x, trim_y, wall_trim_color);
-        }
-    }
-
-    let base_y = buf_h.saturating_sub(BASEBOARD_H);
-    for y in base_y..buf_h {
-        for x in 0..buf_w {
-            buf.put(x, y, baseboard);
         }
     }
 }
@@ -430,6 +423,7 @@ fn paint_floor_to_ceiling_window(
     now: SystemTime,
     theme: &Theme,
     weather: Weather,
+    altitude: f32,
 ) {
     let building_dark = theme.office.building_dark;
     let building_light = theme.office.building_light;
@@ -451,8 +445,11 @@ fn paint_floor_to_ceiling_window(
     const SKYLINE_PATTERN: &[u8] = &[8, 14, 11, 15, 6, 13, 9, 12, 7, 15, 10, 13];
     const PATTERN_MAX: u16 = 15;
     let glass_h = h.saturating_sub(2);
-    let min_bh = (glass_h / 5).max(3);
-    let max_bh = (glass_h * 50 / 100).max(min_bh + 4);
+    let alt_shrink = (glass_h as f32 * 0.3 * altitude) as u16;
+    let min_bh = (glass_h / 5).saturating_sub(alt_shrink).max(2);
+    let max_bh = (glass_h * 50 / 100)
+        .saturating_sub(alt_shrink)
+        .max(min_bh + 3);
     let bh_range = max_bh.saturating_sub(min_bh);
     let sky_norm = (glass_h as f32) * 0.7;
     let sky_row: Vec<Rgb> = (0..glass_h)
@@ -886,11 +883,13 @@ pub(super) fn paint_corridor_runner(
     for y in rect.y..max_y {
         for x in rect.x..max_x {
             let is_edge = y == rect.y || y + 1 == max_y;
-            let dy = y - rect.y;
-            let stripe = (x.wrapping_add(dy * 3)) % 9 == 0;
+            let is_inner_edge = y == rect.y + 1 || y + 2 == max_y;
+            let dy = (y - rect.y) as i32;
+            let dx = (x - rect.x) as i32;
+            let diamond = ((dx + dy) % 6 == 0) || ((dx - dy).rem_euclid(6) == 0);
             let color = if is_edge {
                 runner_edge
-            } else if stripe {
+            } else if is_inner_edge || diamond {
                 runner_stripe
             } else {
                 runner_base

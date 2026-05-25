@@ -38,12 +38,14 @@ Running multiple AI agents in the terminal is like managing a sweatshop you can'
 
 | | Feature | Description |
 |---|---|---|
-| 🏢 | **Multi-agent office** | Each CC session gets a desk; overflow agents work from sofas and floor seats |
+| 🏢 | **Multi-agent office** | Each CC session gets a desk; overflow agents auto-fill new floors |
+| 🛗 | **Multi-floor office** | PageUp/PageDown/↑↓/jk to navigate floors with slide transition |
 | 🎭 | **Animated characters** | Typing, thinking (`···`), waiting (`?`), sleeping (z's), walking with A\*-routed pathfinding |
 | 💡 | **Per-tool monitor glow** | Edit = blue, Bash = orange, Read = cyan — scannable at a glance |
 | 🎨 | **Per-agent identity** | Deterministic shirt/hair/skin palette from session hash, 16 curated outfits |
 | 🌧️ | **Weather effects** | Rain, storm, snow, fog, overcast, windy — cycles every 10 min + sunset golden hour |
 | 📊 | **Tooltip stats** | Hover any agent to see session duration, tool call count, and active time % |
+| 🏷️ | **Furniture tooltips** | Hover any item — desks, sofas, plants, vending machine, printer — to see its name |
 | 🐱 | **Office cat** | Roams desks, pantry, sofas; sleeps near idle agents with z's |
 | ☕ | **Desk personalization** | Coffee cup (10min), plant (30min), photo frame (1hr) appear over time |
 | 🛡️ | **Hook-safe** | The shim always exits 0 — a stuck visualizer can never block Claude Code |
@@ -79,7 +81,7 @@ ascii-agents
 
 In another terminal, start a Claude Code session. A character walks in from the elevator within a second.
 
-**Keyboard shortcuts:** `q` quit · `p` pause · `t` themes · `+/-` desks · click to pin tooltip
+**Keyboard shortcuts:** `q` quit · `p` pause · `t` themes · `+/-` desks · `↑↓/jk/PgUp/PgDn` floors · click to pin tooltip
 
 <details>
 <summary><strong>More install methods</strong></summary>

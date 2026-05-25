@@ -25,7 +25,7 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, RwLock};
 
 const COLS: u16 = 192;
-const ROWS: u16 = 64;
+const ROWS: u16 = 80;
 const CELL_W: u32 = 8;
 const CELL_H: u32 = 16;
 
@@ -63,11 +63,10 @@ struct SnapshotArgs {
     #[arg(long)]
     rows: Option<u16>,
 
-    /// Cap on home desks for the sample scene — lowering this forces
-    /// agents past `max_desks` onto overflow seating (meeting sofas
-    /// first, then floor seats). Use `--max-desks 2` to make the
-    /// `working_couch` / `working_floor` poses visible from the
-    /// default 7-agent scene.
+    /// Cap on home desks per floor for the sample scene. Agents past
+    /// this count overflow to additional floors (up to MAX_FLOORS=5).
+    /// Use `--max-desks 2` with the default 12-agent scene to see
+    /// multiple floors.
     #[arg(long, default_value_t = 12)]
     max_desks: usize,
 
@@ -90,6 +89,10 @@ struct SnapshotArgs {
     /// Color theme name.
     #[arg(long, default_value = "normal")]
     theme: String,
+
+    /// Floor seed — selects floor layout variant (0–4).
+    #[arg(long, default_value_t = 0)]
+    floor_seed: u64,
 }
 
 fn default_projects_root() -> String {
@@ -143,6 +146,7 @@ fn main() -> Result<()> {
             args.gif_fps,
             args.gif_duration,
             theme,
+            args.floor_seed,
         )?;
         println!("wrote {}", args.out.display());
         return Ok(());
@@ -163,6 +167,12 @@ fn main() -> Result<()> {
         &ticker,
         theme,
         None,
+        None,
+        {
+            let mut m = ascii_agents::tui::floor::FloorMeta::ground();
+            m.floor_seed = args.floor_seed;
+            m
+        },
     )?;
 
     if args.debug_walkable {
@@ -420,12 +430,8 @@ async fn capture_live_scene(projects_root: &str, listen_secs: u64) -> Result<Sce
 fn sample_scene(now: SystemTime, max_desks: usize) -> SceneState {
     use std::time::Duration as D;
     let mut s = SceneState::new(max_desks);
-    // 12-agent scene — when the buffer is small enough that not every
-    // agent gets a home desk (true at the default 96×36), the trailing
-    // entries fall through to overflow seating (2 meeting sofas + floor
-    // seats). The Active variants at indexes 6 and 8/11 exercise the
-    // working_couch / working_floor sprites; the Waiting at 7 falls
-    // onto the mirrored second sofa (back_couch).
+    // 12-agent scene. With max_desks < 12, agents past the limit
+    // overflow to additional floors.
     let agents: [(&str, ActivityState, D); 12] = [
         (
             "working",
@@ -579,6 +585,7 @@ fn save_as_gif(
     fps: u64,
     duration_secs: u64,
     theme: &ascii_agents::tui::theme::Theme,
+    floor_seed: u64,
 ) -> Result<()> {
     let frame_count = (duration_secs * fps) as usize;
     let frame_ms = 1000 / fps.max(1);
@@ -593,8 +600,26 @@ fn save_as_gif(
     for i in 0..frame_count {
         let now = start_now + Duration::from_millis(i as u64 * frame_ms);
         draw_scene(
-            term, scene, pack, now, buf, cache, router, overlay, history, None, None, &ticker,
-            theme, None,
+            term,
+            scene,
+            pack,
+            now,
+            buf,
+            cache,
+            router,
+            overlay,
+            history,
+            None,
+            None,
+            &ticker,
+            theme,
+            None,
+            None,
+            {
+                let mut m = ascii_agents::tui::floor::FloorMeta::ground();
+                m.floor_seed = floor_seed;
+                m
+            },
         )?;
 
         let term_buf = term.backend().buffer();

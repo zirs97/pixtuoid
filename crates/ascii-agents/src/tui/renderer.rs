@@ -187,6 +187,8 @@ pub fn draw_scene<B: Backend>(
     ticker: &TickerQueue,
     theme: &crate::tui::theme::Theme,
     theme_picker: Option<usize>,
+    floor_info: Option<(usize, usize)>,
+    floor: crate::tui::floor::FloorMeta,
 ) -> Result<()> {
     let term_size = term.size()?;
     let full_rect = Rect {
@@ -202,15 +204,16 @@ pub fn draw_scene<B: Backend>(
         height: full_rect.height.saturating_sub(1),
     };
     if scene_rect.width < 20 || scene_rect.height < 12 {
-        term.draw(|f| paint_footer(f, scene, full_rect, theme))?;
+        term.draw(|f| paint_footer(f, scene, full_rect, theme, floor_info))?;
         return Ok(());
     }
 
     let buf_w = scene_rect.width;
     let buf_h = scene_rect.height * 2;
     buf.ensure_size(buf_w, buf_h, theme.surface.bg_fallback);
-    let Some(layout) = Layout::compute(buf_w, buf_h, scene.max_desks) else {
-        term.draw(|f| paint_footer(f, scene, full_rect, theme))?;
+    let Some(layout) = Layout::compute_with_seed(buf_w, buf_h, scene.max_desks, floor.floor_seed)
+    else {
+        term.draw(|f| paint_footer(f, scene, full_rect, theme, floor_info))?;
         return Ok(());
     };
 
@@ -224,7 +227,7 @@ pub fn draw_scene<B: Backend>(
     // into PoseHistory for every walking/waypoint agent so the next
     // frame's snap-back lookup is fresh.
     render_to_rgb_buffer(
-        scene, &layout, pack, now, buf, cache, router, overlay, history, theme,
+        scene, &layout, pack, now, buf, cache, router, overlay, history, theme, floor,
     );
 
     // Hit-test the cursor against each agent's current sprite footprint
@@ -236,12 +239,18 @@ pub fn draw_scene<B: Backend>(
 
     // Terminal-flush pass — half-block + widgets, inside ratatui's draw.
     term.draw(|f| {
-        paint_footer(f, scene, full_rect, theme);
+        paint_footer(f, scene, full_rect, theme, floor_info);
         flush_buffer_to_term(f, buf, scene_rect);
         paint_label_widgets(
             f, scene, &layout, now, router, overlay, history, scene_rect, hovered, theme,
         );
-        paint_wall_display(f, scene, &layout, scene_rect, now, ticker, theme);
+        paint_wall_display(
+            f, scene, &layout, scene_rect, now, ticker, theme, floor_info,
+        );
+        if let Some(door) = layout.door {
+            let (current, _) = floor_info.unwrap_or((1, 1));
+            paint_elevator_indicator(f, door, current, scene_rect, theme);
+        }
         let tooltip_agent = hovered.or(pinned_agent);
         if let (Some(agent_id), Some((mx, my))) = (tooltip_agent, mouse_pos) {
             paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect, now, theme);
@@ -259,8 +268,12 @@ pub fn draw_scene<B: Backend>(
         }
         if tooltip_agent.is_none() && pinned_agent.is_none() {
             if let Some((mx, my)) = mouse_pos {
-                if hit_test_coffee_machine(buf, scene.max_desks, mx, my) {
+                if hit_test_coffee_machine(buf, scene.max_desks, mx, my, floor.floor_seed) {
                     paint_coffee_tooltip(f, mx, my, scene_rect, theme);
+                } else if let Some(label) =
+                    hit_test_furniture(buf, scene.max_desks, mx, my, floor.floor_seed)
+                {
+                    paint_furniture_tooltip(f, label, mx, my, scene_rect, theme);
                 }
             }
         }
@@ -271,7 +284,7 @@ pub fn draw_scene<B: Backend>(
     Ok(())
 }
 
-fn paint_theme_picker(
+pub(super) fn paint_theme_picker(
     f: &mut ratatui::Frame<'_>,
     selected: usize,
     bounds: Rect,
@@ -316,13 +329,14 @@ fn paint_theme_picker(
     f.render_widget(Paragraph::new(items).block(block), area);
 }
 
-fn paint_footer(
+pub(super) fn paint_footer(
     f: &mut ratatui::Frame<'_>,
     scene: &SceneState,
     full_rect: Rect,
     theme: &crate::tui::theme::Theme,
+    floor_info: Option<(usize, usize)>,
 ) {
-    let summary = build_status_summary(scene, full_rect.width);
+    let summary = build_status_summary(scene, full_rect.width, floor_info);
     let footer = Paragraph::new(Span::raw(summary))
         .style(Style::default().fg(to_color(theme.ui.label_idle)));
     f.render_widget(
@@ -349,7 +363,11 @@ fn paint_footer(
 ///   * **minimal** — just the total, e.g. `12a`.
 ///   * **fallback** — only the quit hint (any narrower terminal will
 ///     truncate this naturally).
-pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> String {
+pub(super) fn build_status_summary(
+    scene: &SceneState,
+    term_width: u16,
+    floor_info: Option<(usize, usize)>,
+) -> String {
     let n = scene.agents.len();
     let mut active = 0usize;
     let mut waiting = 0usize;
@@ -374,7 +392,12 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
         }
     }
 
-    const QUIT: &str = " [p]ause [t]heme [+/-]desks [q]uit ";
+    let floor_suffix = match floor_info {
+        Some((current, total)) if total > 1 => format!(" F{current}/{total} [\u{2191}\u{2193}]"),
+        _ => String::new(),
+    };
+    let quit_base = " [p]ause [t]heme [+/-]desks [q]uit ";
+    let quit = format!("{floor_suffix}{quit_base}");
     let tools_str = {
         // Sort by count desc, then name asc for stable output. Top 4
         // keeps the line bounded — beyond that the listing crowds out
@@ -403,7 +426,7 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
     let stats_min = format!(" {n}a ");
 
     let w = term_width as usize;
-    let q = QUIT.len();
+    let q = quit.len();
     for stats in [&stats_full, &stats_medium, &stats_min] {
         if stats.len() + q <= w {
             let pad = w.saturating_sub(stats.len() + q);
@@ -412,11 +435,43 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
             for _ in 0..pad {
                 out.push(' ');
             }
-            out.push_str(QUIT);
+            out.push_str(&quit);
             return out;
         }
     }
-    QUIT.to_string()
+    quit
+}
+
+pub(super) fn flush_buffer_to_term_at_offset(
+    f: &mut ratatui::Frame<'_>,
+    buf: &RgbBuffer,
+    scene_rect: Rect,
+    y_offset: i32,
+) {
+    let term_buf = f.buffer_mut();
+    let w = buf.width as usize;
+    let cell_rows = (buf.height / 2) as usize;
+    for cy in 0..cell_rows {
+        let target_y = cy as i32 + y_offset;
+        if target_y < 0 || target_y >= scene_rect.height as i32 {
+            continue;
+        }
+        for cx in 0..(buf.width as usize) {
+            let x = scene_rect.x + cx as u16;
+            let y = scene_rect.y + target_y as u16;
+            if x >= scene_rect.x + scene_rect.width {
+                continue;
+            }
+            let py_top = cy * 2;
+            let py_bot = cy * 2 + 1;
+            let fg = buf.pixels[py_top * w + cx];
+            let bg = buf.pixels[py_bot * w + cx];
+            let cell = &mut term_buf[(x, y)];
+            cell.set_symbol("▀");
+            cell.fg = Color::Rgb(fg.0, fg.1, fg.2);
+            cell.bg = Color::Rgb(bg.0, bg.1, bg.2);
+        }
+    }
 }
 
 fn flush_buffer_to_term(f: &mut ratatui::Frame<'_>, buf: &RgbBuffer, scene_rect: Rect) {
@@ -593,6 +648,79 @@ fn hit_test_agent(
     None
 }
 
+pub(super) fn paint_elevator_indicator(
+    f: &mut ratatui::Frame<'_>,
+    door: crate::tui::layout::Point,
+    current_floor: usize,
+    scene_rect: Rect,
+    theme: &crate::tui::theme::Theme,
+) {
+    use ratatui::style::Modifier;
+    use ratatui::text::Line;
+
+    let label = format!(" ▲ F{current_floor} ▼ ");
+    let label_w = label.len() as u16;
+    let door_cell_x = door.x + 8u16.saturating_sub(label_w / 2);
+    let door_cell_y = door.y / 2;
+    let indicator_y = door_cell_y.saturating_sub(1);
+
+    if let Some(r) = clip_widget_rect(
+        Rect {
+            x: scene_rect.x + door_cell_x,
+            y: scene_rect.y + indicator_y,
+            width: label_w,
+            height: 1,
+        },
+        scene_rect,
+    ) {
+        let style = Style::default()
+            .fg(to_color(theme.ui.neon_brand))
+            .bg(to_color(theme.ui.tooltip_bg))
+            .add_modifier(Modifier::BOLD);
+        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
+    }
+}
+
+fn paint_furniture_tooltip(
+    f: &mut ratatui::Frame<'_>,
+    label: &str,
+    mx: u16,
+    my: u16,
+    scene_rect: Rect,
+    theme: &crate::tui::theme::Theme,
+) {
+    use ratatui::text::Line;
+    use ratatui::widgets::Block;
+
+    let text = format!(" {} ", label);
+    let tip_w = text.len() as u16;
+    let tip_h = 1u16;
+    let mut tx = mx.saturating_add(2);
+    if tx.saturating_add(tip_w) > scene_rect.x + scene_rect.width {
+        tx = mx.saturating_sub(tip_w + 1);
+    }
+    let mut ty = my.saturating_sub(1);
+    if ty < scene_rect.y {
+        ty = my.saturating_add(1);
+    }
+    if let Some(r) = clip_widget_rect(
+        Rect {
+            x: tx,
+            y: ty,
+            width: tip_w,
+            height: tip_h,
+        },
+        scene_rect,
+    ) {
+        let block = Block::default().style(Style::default().bg(to_color(theme.ui.tooltip_bg)));
+        let line = Line::from(Span::styled(
+            text,
+            Style::default().fg(to_color(theme.ui.tooltip_title)),
+        ));
+        f.render_widget(Paragraph::new(line).block(block), r);
+    }
+}
+
 fn paint_coffee_tooltip(
     f: &mut ratatui::Frame<'_>,
     mx: u16,
@@ -635,13 +763,19 @@ fn paint_coffee_tooltip(
 /// Hit-test whether the mouse is over the pantry coffee machine.
 /// Returns true if `(mx, my)` (terminal cell coords) falls on the coffee
 /// machine section of the pantry counter sprite.
-pub fn hit_test_coffee_machine(buf: &RgbBuffer, max_desks: usize, mx: u16, my: u16) -> bool {
+pub fn hit_test_coffee_machine(
+    buf: &RgbBuffer,
+    max_desks: usize,
+    mx: u16,
+    my: u16,
+    floor_seed: u64,
+) -> bool {
     let buf_w = buf.width;
     let buf_h = buf.height;
     if buf_w < 20 || buf_h < 24 {
         return false;
     }
-    let Some(layout) = Layout::compute(buf_w, buf_h, max_desks) else {
+    let Some(layout) = Layout::compute_with_seed(buf_w, buf_h, max_desks, floor_seed) else {
         return false;
     };
     let pantry_wp = layout
@@ -663,6 +797,197 @@ pub fn hit_test_coffee_machine(buf: &RgbBuffer, max_desks: usize, mx: u16, my: u
     let coffee_y1 = sprite_y + ch;
     let cell_y = my * 2;
     mx >= coffee_x0 && mx < coffee_x1 && cell_y >= coffee_y0 && cell_y < coffee_y1
+}
+
+/// Hit-test all furniture items in the office. Returns a short label
+/// if `(mx, my)` (terminal cell coords) falls on any known item.
+/// The coffee machine is handled separately for its click-to-open
+/// behavior — this function covers the remaining decorations.
+pub fn hit_test_furniture(
+    buf: &RgbBuffer,
+    max_desks: usize,
+    mx: u16,
+    my: u16,
+    floor_seed: u64,
+) -> Option<&'static str> {
+    use crate::tui::layout::{PlantKind, PodDecor, WallDecor, WaypointKind, DESK_H, DESK_W};
+
+    let layout = Layout::compute_with_seed(buf.width, buf.height, max_desks, floor_seed)?;
+    let px = mx;
+    let py = my * 2;
+
+    let hit = |x: u16, y: u16, w: u16, h: u16| -> bool {
+        px >= x && px < x.saturating_add(w) && py >= y && py < y.saturating_add(h)
+    };
+
+    // Home desks
+    for desk in &layout.home_desks {
+        if hit(desk.x, desk.y, DESK_W + 2, DESK_H) {
+            return Some("Desk");
+        }
+    }
+
+    // Waypoints
+    for wp in &layout.waypoints {
+        let (w, h) = match wp.kind {
+            WaypointKind::Couch => (16, 7),
+            WaypointKind::Pantry => layout.pantry_counter_size,
+            WaypointKind::PhoneBooth => (6, 12),
+            WaypointKind::StandingDesk => (8, 8),
+            WaypointKind::VendingMachine => (4, 6),
+            WaypointKind::Printer => (5, 4),
+        };
+        let wx = wp.pos.x.saturating_sub(w / 2);
+        let wy = wp.pos.y.saturating_sub(h / 2);
+        if hit(wx, wy, w, h) {
+            return Some(match wp.kind {
+                WaypointKind::Couch => "Lounge Sofa",
+                WaypointKind::Pantry => "Pantry Counter",
+                WaypointKind::PhoneBooth => "Phone Booth",
+                WaypointKind::StandingDesk => "Standing Desk",
+                WaypointKind::VendingMachine => "Vending Machine",
+                WaypointKind::Printer => "Printer",
+            });
+        }
+    }
+
+    // Meeting sofas
+    for sofa in &layout.meeting_sofas {
+        if hit(sofa.x.saturating_sub(8), sofa.y.saturating_sub(3), 16, 7) {
+            return Some("Meeting Sofa");
+        }
+    }
+
+    // Meeting tables
+    for t in &layout.meeting_tables {
+        if hit(t.x.saturating_sub(6), t.y.saturating_sub(3), 12, 6) {
+            return Some("Meeting Table");
+        }
+    }
+
+    // Pantry table
+    if let Some(t) = layout.pantry_table {
+        if hit(t.x.saturating_sub(4), t.y.saturating_sub(2), 8, 5) {
+            return Some("Pantry Table");
+        }
+    }
+
+    // Pantry chairs
+    for chair in &layout.pantry_chairs {
+        if hit(chair.x.saturating_sub(2), chair.y.saturating_sub(2), 3, 3) {
+            return Some("Chair");
+        }
+    }
+
+    // Plants
+    for (kind, p) in &layout.plants {
+        if hit(p.x.saturating_sub(3), p.y.saturating_sub(3), 6, 6) {
+            return Some(match kind {
+                PlantKind::Ficus => "Ficus",
+                PlantKind::Tall => "Tall Plant",
+                PlantKind::Flower => "Flower Pot",
+                PlantKind::Succulent => "Succulent",
+            });
+        }
+    }
+
+    // Floor lamp
+    if let Some(lamp) = layout.floor_lamp {
+        if hit(lamp.x.saturating_sub(2), lamp.y.saturating_sub(3), 4, 6) {
+            return Some("Floor Lamp");
+        }
+    }
+
+    // Wall decor
+    for (kind, pos) in &layout.wall_decor {
+        let (w, h) = match kind {
+            WallDecor::Whiteboard => (14, 11),
+            WallDecor::Bookshelf => (10, 8),
+            WallDecor::BulletinBoard => (8, 6),
+            WallDecor::ExitSign => (6, 3),
+            WallDecor::MeetingScreen => (14, 12),
+        };
+        if hit(pos.x, pos.y, w, h) {
+            return Some(match kind {
+                WallDecor::Whiteboard => "Whiteboard",
+                WallDecor::Bookshelf => "Bookshelf",
+                WallDecor::BulletinBoard => "Bulletin Board",
+                WallDecor::ExitSign => "Exit Sign",
+                WallDecor::MeetingScreen => "Meeting Screen",
+            });
+        }
+    }
+
+    // Pod decor (aisle items)
+    for (kind, pos) in &layout.pod_decor {
+        let (w, h) = kind.size();
+        if hit(
+            pos.x.saturating_sub(w / 2),
+            pos.y.saturating_sub(h / 2),
+            w,
+            h,
+        ) {
+            return Some(match kind {
+                PodDecor::PlantTall => "Tall Plant",
+                PodDecor::Whiteboard => "Whiteboard",
+                PodDecor::Tv => "TV Stand",
+                PodDecor::PhoneBooth => "Phone Booth",
+                PodDecor::StandingDesk => "Standing Desk",
+            });
+        }
+    }
+
+    // Lounge side table
+    if let Some(t) = layout.lounge_side_table {
+        if hit(t.x.saturating_sub(3), t.y.saturating_sub(2), 7, 4) {
+            return Some("Side Table");
+        }
+    }
+
+    // Meeting room procedural items (coat rack, doormat)
+    if let Some(mr) = layout.meeting_room {
+        if mr.width > 20 {
+            let cx = mr.x + mr.width - 5;
+            let cy = mr.y + mr.height / 2 - 4;
+            if hit(cx.saturating_sub(2), cy, 5, 8) {
+                return Some("Coat Rack");
+            }
+        }
+        if mr.width > 10 {
+            let mat_x = mr.x + mr.width + 1;
+            let mat_y = mr.y + mr.height / 2 - 2;
+            if hit(mat_x, mat_y, 4, 5) {
+                return Some("Doormat");
+            }
+        }
+    }
+
+    // Pantry room procedural items (water cooler, trash bin)
+    if let Some(pr) = layout.pantry_room {
+        if pr.height > 25 && pr.width > 12 {
+            let wx = pr.x + pr.width - 6;
+            let wy = pr.y + 8;
+            if hit(wx, wy, 3, 6) {
+                return Some("Water Cooler");
+            }
+        }
+        if pr.height > 20 {
+            let tx = pr.x + 3;
+            let ty = pr.y + pr.height - 14;
+            if hit(tx, ty, 4, 5) {
+                return Some("Trash Bin");
+            }
+        }
+    }
+
+    // Door / elevator (16×14 sprite)
+    if let Some(d) = layout.door {
+        if hit(d.x, d.y, 16, 14) {
+            return Some("Elevator");
+        }
+    }
+
+    None
 }
 
 /// Floating detail panel painted near the cursor when an agent is hovered.
@@ -794,7 +1119,8 @@ fn paint_hover_tooltip(
 /// bottom line. The GitHub star link uses OSC 8 hyperlinks — clicking it
 /// in supported terminals (iTerm2, Ghostty, Kitty, WezTerm) opens the
 /// browser.
-fn paint_wall_display(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_wall_display(
     f: &mut ratatui::Frame<'_>,
     scene: &SceneState,
     _layout: &Layout,
@@ -802,6 +1128,7 @@ fn paint_wall_display(
     now: SystemTime,
     ticker: &TickerQueue,
     theme: &crate::tui::theme::Theme,
+    floor_info: Option<(usize, usize)>,
 ) {
     use ratatui::style::Modifier;
     use ratatui::text::Line;
@@ -825,7 +1152,7 @@ fn paint_wall_display(
     let idle = live.len() - active - waiting;
 
     let version = env!("CARGO_PKG_VERSION");
-    let top_line = Line::from(vec![
+    let mut top_spans = vec![
         Span::styled(
             format!("ascii-agents v{version}"),
             Style::default()
@@ -839,7 +1166,17 @@ fn paint_wall_display(
                 .fg(to_color(theme.ui.neon_star))
                 .add_modifier(Modifier::BOLD),
         ),
-    ]);
+    ];
+    if let Some((current, total)) = floor_info {
+        if total > 1 {
+            top_spans.push(Span::raw("  "));
+            top_spans.push(Span::styled(
+                format!("Floor {current}/{total}"),
+                Style::default().fg(to_color(theme.ui.neon_brand)),
+            ));
+        }
+    }
+    let top_line = Line::from(top_spans);
 
     let oldest = live
         .iter()
@@ -1071,7 +1408,7 @@ mod tests {
     #[test]
     fn footer_zero_agents_shows_zero_count_and_quit() {
         let s = scene_of(vec![]);
-        let line = build_status_summary(&s, 80);
+        let line = build_status_summary(&s, 80, None);
         assert!(line.contains("0 agents"), "missing zero count: {line:?}");
         assert!(line.ends_with(QUIT_SUFFIX), "missing quit suffix: {line:?}");
         assert_eq!(line.len(), 80, "should pad to full width: {line:?}");
@@ -1089,7 +1426,7 @@ mod tests {
             idle("g"),
             idle("h"),
         ]);
-        let line = build_status_summary(&s, 120);
+        let line = build_status_summary(&s, 120, None);
         // Per-state counts present.
         assert!(line.contains("8 agents"), "{line:?}");
         assert!(line.contains("3 active"), "{line:?}");
@@ -1111,7 +1448,7 @@ mod tests {
             waiting("b"),
             idle("c"),
         ]);
-        let line = build_status_summary(&s, 60);
+        let line = build_status_summary(&s, 60, None);
         assert!(
             line.contains("3a") && line.contains("1A"),
             "expected medium tier letters: {line:?}"
@@ -1127,7 +1464,7 @@ mod tests {
     fn footer_minimal_width_keeps_total_and_quit_only() {
         let s = scene_of(vec![idle("a"), idle("b")]);
         let w = QUIT_SUFFIX.len() + 6;
-        let line = build_status_summary(&s, w as u16);
+        let line = build_status_summary(&s, w as u16, None);
         assert!(line.contains("2a"), "expected minimal tier: {line:?}");
         assert!(line.ends_with(QUIT_SUFFIX), "{line:?}");
         assert_eq!(line.len(), w);
@@ -1137,7 +1474,7 @@ mod tests {
     fn footer_collapses_to_quit_only_below_minimal_threshold() {
         let s = scene_of(vec![idle("a")]);
         let w = QUIT_SUFFIX.len();
-        let line = build_status_summary(&s, w as u16);
+        let line = build_status_summary(&s, w as u16, None);
         assert_eq!(line, QUIT_SUFFIX);
     }
 
@@ -1151,7 +1488,7 @@ mod tests {
             active_with("Grep x", "e"),
             active_with("Glob x", "f"),
         ]);
-        let line = build_status_summary(&s, 200);
+        let line = build_status_summary(&s, 200, None);
         // Six distinct tools, but only 4 should appear. Count `×` markers.
         let crosses = line.matches('×').count();
         assert_eq!(crosses, 4, "expected ≤4 tools in breakdown: {line:?}");
@@ -1160,13 +1497,13 @@ mod tests {
     #[test]
     fn coffee_machine_hit_test_returns_false_for_tiny_buffer() {
         let buf = RgbBuffer::filled(10, 10, Rgb(0, 0, 0));
-        assert!(!hit_test_coffee_machine(&buf, 4, 5, 5));
+        assert!(!hit_test_coffee_machine(&buf, 4, 5, 5, 0));
     }
 
     #[test]
     fn coffee_machine_hit_test_returns_false_for_origin() {
         let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
-        assert!(!hit_test_coffee_machine(&buf, 4, 0, 0));
+        assert!(!hit_test_coffee_machine(&buf, 4, 0, 0, 0));
     }
 
     #[test]
@@ -1188,8 +1525,68 @@ mod tests {
         };
         let mid_cell_y = (sprite_y + ch / 2) / 2;
         assert!(
-            hit_test_coffee_machine(&buf, 4, mid_x, mid_cell_y),
+            hit_test_coffee_machine(&buf, 4, mid_x, mid_cell_y, 0),
             "expected hit at coffee machine area ({mid_x}, {mid_cell_y})"
         );
+    }
+
+    #[test]
+    fn furniture_hit_test_returns_none_for_empty_space() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        assert_eq!(hit_test_furniture(&buf, 4, 80, 50, 0), None);
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_desk() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        let desk = layout.home_desks.first().expect("desk");
+        let cell_y = (desk.y + 2) / 2;
+        assert_eq!(
+            hit_test_furniture(&buf, 4, desk.x + 2, cell_y, 0),
+            Some("Desk")
+        );
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_elevator() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        let door = layout.door.expect("door");
+        let cell_y = (door.y + 7) / 2;
+        assert_eq!(
+            hit_test_furniture(&buf, 4, door.x + 8, cell_y, 0),
+            Some("Elevator")
+        );
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_meeting_table() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        let table = layout.meeting_tables.first().expect("table");
+        let cell_y = table.y / 2;
+        assert_eq!(
+            hit_test_furniture(&buf, 4, table.x, cell_y, 0),
+            Some("Meeting Table")
+        );
+    }
+
+    #[test]
+    fn furniture_hit_test_respects_floor_seed() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        // Seed 1 = open plan (no meeting room)
+        let layout = Layout::compute_with_seed(160, 200, 4, 1).expect("layout");
+        assert!(layout.meeting_tables.is_empty());
+        // No meeting table at seed=1, so hitting the same coords should not
+        // return "Meeting Table"
+        let layout0 = Layout::compute(160, 200, 4).expect("layout");
+        if let Some(table) = layout0.meeting_tables.first() {
+            let cell_y = table.y / 2;
+            assert_ne!(
+                hit_test_furniture(&buf, 4, table.x, cell_y, 1),
+                Some("Meeting Table"),
+            );
+        }
     }
 }

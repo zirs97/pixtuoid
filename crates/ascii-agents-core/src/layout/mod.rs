@@ -47,7 +47,7 @@ pub struct SceneLayout {
     pub cubicle_band: Bounds,
     /// Horizontal corridor at the bottom of the cubicle area — the "main
     /// aisle" connecting door / meeting / pantry. Used by the cat
-    /// wanderer and as a fallback location for overflow floor seats.
+    /// wanderer destination.
     pub walkway: Bounds,
     pub home_desks: Vec<Point>,
     pub waypoints: Vec<Waypoint>,
@@ -63,11 +63,10 @@ pub struct SceneLayout {
     pub lounge_side_table: Option<Point>,
     pub door: Option<Point>,
     pub door_threshold: Option<Point>,
-    pub floor_seats: Vec<Point>,
     pub meeting_room: Option<Bounds>,
     pub pantry_room: Option<Bounds>,
     pub meeting_sofas: Vec<Point>,
-    pub meeting_table: Option<Point>,
+    pub meeting_tables: Vec<Point>,
     pub room_walls: Vec<(Point, Point)>,
     pub top_margin: u16,
     pub pantry_table: Option<Point>,
@@ -98,6 +97,7 @@ pub const MAX_VISIBLE_DESKS: usize = 16;
 pub const DESK_GAP_X: u16 = 11;
 pub const DESK_GAP_Y: u16 = 14;
 pub const MIN_TOP_MARGIN: u16 = 20;
+const MIN_DUAL_MEETING_H: u16 = 80;
 
 /// Number of desks per side in a pod (`POD_SIDE * POD_SIDE` total).
 pub const POD_SIDE: u16 = 2;
@@ -118,6 +118,15 @@ impl SceneLayout {
     /// Returns `None` if the buffer is too small for even one cubicle and the
     /// fixed lounge area. Caller should paint a "terminal too small" message.
     pub fn compute(buf_w: u16, buf_h: u16, num_agents: usize) -> Option<Self> {
+        Self::compute_with_seed(buf_w, buf_h, num_agents, 0)
+    }
+
+    pub fn compute_with_seed(
+        buf_w: u16,
+        buf_h: u16,
+        num_agents: usize,
+        floor_seed: u64,
+    ) -> Option<Self> {
         const MIN_W: u16 = DESK_W + DESK_GAP_X * 2;
         let min_h: u16 = 40 + MIN_TOP_MARGIN;
         if buf_w < MIN_W || buf_h < min_h {
@@ -126,39 +135,80 @@ impl SceneLayout {
 
         let top_margin = (buf_h * 30 / 100).max(MIN_TOP_MARGIN);
         let usable_h = buf_h - top_margin;
-        let mid_x = buf_w * 28 / 100;
+
+        // Per-floor layout variant: floor_seed encodes floor_idx via
+        // wrapping_mul, so floor_idx = 0 gives seed=0 (F1), etc.
+        // We derive a stable floor index from the seed for variant selection.
+        let floor_variant = (floor_seed % 5) as u8;
+
+        // F1(0): Standard — meeting + pantry, vertical wall between them
+        //        and the cubicle area, horizontal wall between meeting/pantry.
+        // F2(1): Open plan — pantry only, no vertical wall (open kitchen
+        //        corner, counter acts as divider). No meeting room.
+        // F3(2): Dense — two meeting rooms (top + bottom), no pantry.
+        //        Horizontal wall separates the two rooms. Each gets a door.
+        // F4(3): Senior — larger meeting + pantry (like Standard but wider).
+        // F5(4): Lounge — pantry only, no vertical wall (open break area).
+        let (mid_x, has_meeting, has_pantry) = match floor_variant {
+            0 => (buf_w * 28 / 100, true, true),
+            1 => (buf_w * 18 / 100, false, true),
+            2 => (buf_w * 22 / 100, true, false),
+            3 => (buf_w * 35 / 100, true, true),
+            _ => (buf_w * 22 / 100, false, true),
+        };
+        // Open-plan floors (1, 4) have no vertical wall — the pantry
+        // counter/furniture visually defines the zone boundary.
+        let has_vertical_wall = has_meeting;
+        // Dense floor (variant 2): two meeting rooms stacked vertically.
+        // Only when tall enough for two rooms with furniture + door gaps.
+        let has_dual_meeting = floor_variant == 2 && usable_h >= MIN_DUAL_MEETING_H;
+
         let mid_y_split = top_margin + usable_h / 2;
 
-        let meeting_room = Some(Bounds {
-            x: 0,
-            y: top_margin,
-            width: mid_x,
-            height: usable_h / 2,
-        });
-        let pantry_room = Some(Bounds {
-            x: 0,
-            y: mid_y_split,
-            width: mid_x,
-            height: usable_h - usable_h / 2,
-        });
+        let meeting_room = if has_meeting {
+            Some(Bounds {
+                x: 0,
+                y: top_margin,
+                width: mid_x,
+                height: if has_pantry || has_dual_meeting {
+                    usable_h / 2
+                } else {
+                    usable_h
+                },
+            })
+        } else {
+            None
+        };
+        // Second meeting room for dense layout (below the first).
+        let meeting_room_2 = if has_dual_meeting {
+            Some(Bounds {
+                x: 0,
+                y: mid_y_split,
+                width: mid_x,
+                height: usable_h - usable_h / 2,
+            })
+        } else {
+            None
+        };
+        let pantry_room = if has_pantry {
+            Some(Bounds {
+                x: 0,
+                y: if has_meeting { mid_y_split } else { top_margin },
+                width: mid_x,
+                height: if has_meeting {
+                    usable_h - usable_h / 2
+                } else {
+                    usable_h
+                },
+            })
+        } else {
+            None
+        };
 
-        // Vertical walls are 1 px (edge-on, fake-3D perspective). The
-        // cubicle band starts immediately after the partition line.
         let right_x = mid_x + 1;
         let right_w = buf_w.saturating_sub(right_x);
-        // Reserve the last 3 px for the baseboard sprite (matches the
-        // BASEBOARD_H constant in the renderer's paint_floor_and_walls).
-        // Without this reservation, walkway_h overlapped the baseboard and
-        // the corridor itself was marked non-walkable — agents couldn't
-        // route through it, which is one of the root causes of "闪现".
-        const BASEBOARD_RESERVE: u16 = 3;
-        // Walkway floors at 8 px so the corridor is wide enough for the
-        // coarsened 4×4 path grid to see at least 2 walkable cell rows
-        // even after obstacle padding.
         let walkway_h = (usable_h / 10).max(8);
-        let cubicle_h = usable_h
-            .saturating_sub(walkway_h)
-            .saturating_sub(BASEBOARD_RESERVE);
+        let cubicle_h = usable_h.saturating_sub(walkway_h);
         let cubicle_band = Bounds {
             x: right_x,
             y: top_margin,
@@ -305,7 +355,7 @@ impl SceneLayout {
         // golden-ratio hash which (empirically) never picked Tv or
         // PhoneBooth at common buffer sizes — slots were stuck on
         // PlantTall / Whiteboard / StandingDesk.
-        let mut slot_idx: usize = 0;
+        let mut slot_idx: usize = (floor_seed % 7) as usize;
         let mut push_slot = |pod_decor: &mut Vec<(PodDecor, Point)>, x: u16, y: u16| {
             let kind = PodDecor::ALL[slot_idx % PodDecor::ALL.len()];
             slot_idx += 1;
@@ -341,7 +391,7 @@ impl SceneLayout {
         }
 
         const SOFA_H: u16 = 7;
-        let meeting_sofas = if let Some(mr) = meeting_room {
+        let mut meeting_sofas = if let Some(mr) = meeting_room {
             let cx = mr.x + mr.width / 2;
             let south_y =
                 (mr.y + mr.height * 80 / 100).min(mr.y + mr.height.saturating_sub(SOFA_H));
@@ -355,10 +405,29 @@ impl SceneLayout {
         } else {
             vec![]
         };
-        let meeting_table = meeting_room.map(|mr| Point {
-            x: mr.x + mr.width / 2,
-            y: mr.y + mr.height / 2,
-        });
+        let mut meeting_table_vec: Vec<Point> = meeting_room
+            .map(|mr| Point {
+                x: mr.x + mr.width / 2,
+                y: mr.y + mr.height / 2,
+            })
+            .into_iter()
+            .collect();
+        // Second meeting room furniture (dense layout).
+        if let Some(mr2) = meeting_room_2 {
+            let cx2 = mr2.x + mr2.width / 2;
+            let south2 =
+                (mr2.y + mr2.height * 80 / 100).min(mr2.y + mr2.height.saturating_sub(SOFA_H));
+            meeting_sofas.push(Point {
+                x: cx2,
+                y: mr2.y + mr2.height * 30 / 100,
+            });
+            meeting_sofas.push(Point { x: cx2, y: south2 });
+            meeting_table_vec.push(Point {
+                x: mr2.x + mr2.width / 2,
+                y: mr2.y + mr2.height / 2,
+            });
+        }
+        let meeting_tables = meeting_table_vec;
 
         // Doorway widths are ABSOLUTE pixels — using percentages here makes
         // the gap shrink to zero on smaller terminals, which after the
@@ -371,44 +440,90 @@ impl SceneLayout {
         const DOOR_GAP_V: u16 = 14;
         const DOOR_GAP_H: u16 = 14;
         let mut room_walls = Vec::new();
-        let v_x = mid_x;
-        let v_top = top_margin;
-        let v_bot = mid_y_split;
-        let v_door_center = top_margin + (v_bot - v_top) / 2;
-        let v_door_top = v_door_center.saturating_sub(DOOR_GAP_V / 2);
-        let v_door_bot = (v_door_center + DOOR_GAP_V / 2).min(v_bot);
-        room_walls.push((
-            Point { x: v_x, y: v_top },
-            Point {
-                x: v_x,
-                y: v_door_top,
-            },
-        ));
-        room_walls.push((
-            Point {
-                x: v_x,
-                y: v_door_bot,
-            },
-            Point { x: v_x, y: v_bot },
-        ));
+        // Vertical wall: only when we have enclosed rooms (meeting or
+        // meeting+pantry). Open-plan/lounge pantry-only floors skip it
+        // — the counter is the visual boundary.
+        if has_vertical_wall {
+            let v_x = mid_x;
+            let v_top = top_margin;
+            let v_bot = if has_pantry || has_dual_meeting {
+                mid_y_split
+            } else {
+                top_margin + usable_h
+            };
+            let v_door_center = top_margin + (v_bot - v_top) / 2;
+            let v_door_top = v_door_center.saturating_sub(DOOR_GAP_V / 2);
+            let v_door_bot = (v_door_center + DOOR_GAP_V / 2).min(v_bot);
+            room_walls.push((
+                Point { x: v_x, y: v_top },
+                Point {
+                    x: v_x,
+                    y: v_door_top,
+                },
+            ));
+            room_walls.push((
+                Point {
+                    x: v_x,
+                    y: v_door_bot,
+                },
+                Point { x: v_x, y: v_bot },
+            ));
+            // Second meeting room or pantry below: extend wall with
+            // its own door gap.
+            if has_dual_meeting {
+                // Second meeting room: extend wall below horizontal.
+                // Start below the horizontal wall (4px thick + pad).
+                let v2_top = mid_y_split + 6;
+                let v2_bot = top_margin + usable_h;
+                let v2_center = v2_top + (v2_bot - v2_top) / 2;
+                let v2_door_top = v2_center.saturating_sub(DOOR_GAP_V / 2);
+                let v2_door_bot = (v2_center + DOOR_GAP_V / 2).min(v2_bot);
+                room_walls.push((
+                    Point { x: v_x, y: v2_top },
+                    Point {
+                        x: v_x,
+                        y: v2_door_top,
+                    },
+                ));
+                room_walls.push((
+                    Point {
+                        x: v_x,
+                        y: v2_door_bot,
+                    },
+                    Point { x: v_x, y: v2_bot },
+                ));
+            } else if !has_pantry {
+                // Single meeting, no pantry, no dual: extend wall to floor
+                room_walls.push((
+                    Point { x: v_x, y: v_bot },
+                    Point {
+                        x: v_x,
+                        y: top_margin + usable_h,
+                    },
+                ));
+            }
+        }
+        // Horizontal wall: separates meeting from pantry, or two meetings.
         let h_y = mid_y_split;
         let h_door_center = mid_x * 60 / 100;
         let h_door_left = h_door_center.saturating_sub(DOOR_GAP_H / 2);
         let h_door_right = (h_door_center + DOOR_GAP_H / 2).min(mid_x);
-        room_walls.push((
-            Point { x: 0, y: h_y },
-            Point {
-                x: h_door_left,
-                y: h_y,
-            },
-        ));
-        room_walls.push((
-            Point {
-                x: h_door_right,
-                y: h_y,
-            },
-            Point { x: mid_x, y: h_y },
-        ));
+        if (has_meeting && has_pantry) || has_dual_meeting {
+            room_walls.push((
+                Point { x: 0, y: h_y },
+                Point {
+                    x: h_door_left,
+                    y: h_y,
+                },
+            ));
+            room_walls.push((
+                Point {
+                    x: h_door_right,
+                    y: h_y,
+                },
+                Point { x: mid_x, y: h_y },
+            ));
+        }
 
         // Two waypoints now: viewing couch (top of cubicle band, against
         // the city windows) and pantry (bottom-left, doubles as coffee).
@@ -467,6 +582,39 @@ impl SceneLayout {
                     kind: wp_kind,
                 });
             }
+        }
+
+        // Corridor appliances — stored as centre points (same convention
+        // as Pantry/Couch). Painter derives top-left via sub(w/2, h/2).
+        // Sizes: vending 4×6, printer 5×4.
+        let vending_machine = if walkway.height >= 10 && walkway.width > 30 {
+            Some(Point {
+                x: right_x + 5,
+                y: walkway.y + 3,
+            })
+        } else {
+            None
+        };
+        let printer = if walkway.height >= 9 && right_w > 40 {
+            Some(Point {
+                x: right_x + right_w.saturating_sub(10),
+                y: walkway.y + 2,
+            })
+        } else {
+            None
+        };
+
+        if let Some(vm) = vending_machine {
+            waypoints.push(Waypoint {
+                pos: vm,
+                kind: WaypointKind::VendingMachine,
+            });
+        }
+        if let Some(pr) = printer {
+            waypoints.push(Waypoint {
+                pos: pr,
+                kind: WaypointKind::Printer,
+            });
         }
 
         // Plants scatter through the cubicle corridor edges + pantry.
@@ -587,7 +735,7 @@ impl SceneLayout {
         //   exit_sign:      ~6 px (already used top_margin - 13 — kept)
         // We position the TOP-LEFT corner of each sprite so its bottom
         // row lands exactly at `top_margin - 1` (last wall band row).
-        let wall_decor = vec![
+        let mut wall_decor = vec![
             (
                 WallDecor::Bookshelf,
                 Point {
@@ -602,38 +750,24 @@ impl SceneLayout {
                     y: top_margin.saturating_sub(13),
                 },
             ),
-            (
+        ];
+        if has_meeting || has_pantry {
+            wall_decor.push((
                 WallDecor::Whiteboard,
                 Point {
                     x: mid_x + 3,
-                    y: v_door_bot + 2,
+                    y: top_margin + usable_h / 3,
                 },
-            ),
-            // Meeting-room wall screen — centred horizontally in the
-            // meeting room, hung so its bottom sits on the last wall
-            // band row right above the meeting room interior.
-            (
+            ));
+        }
+        if let Some(mr) = meeting_room {
+            wall_decor.push((
                 WallDecor::MeetingScreen,
                 Point {
-                    x: meeting_room.map(|mr| mr.x + mr.width / 2 - 7).unwrap_or(0),
-                    y: top_margin.saturating_sub(6),
+                    x: mr.x + mr.width / 2 - 7,
+                    y: top_margin.saturating_sub(12),
                 },
-            ),
-        ];
-
-        let used_before_floor = home_desks.len() + meeting_sofas.len();
-        let overflow_count = num_agents.saturating_sub(used_before_floor).min(8);
-        let mut floor_seats: Vec<Point> = Vec::with_capacity(overflow_count);
-        // All overflow floor seats go along the corridor — the pantry is
-        // too crowded (counter + bistro table + chairs) and placing
-        // floor-sitters there causes them to render on top of furniture.
-        for slot in 0..overflow_count {
-            let c = (slot as u16) % 6;
-            let along_x = cubicle_band.x + cubicle_band.width * (8 + c * 16) / 100;
-            floor_seats.push(Point {
-                x: along_x,
-                y: walkway.y + walkway.height / 2,
-            });
+            ));
         }
 
         let (pantry_table, pantry_chairs) = if let Some(pr) = pantry_room {
@@ -672,7 +806,7 @@ impl SceneLayout {
             door,
             &home_desks,
             &meeting_sofas,
-            meeting_table,
+            &meeting_tables,
             pantry_table,
             &pantry_chairs,
             &waypoints,
@@ -699,11 +833,10 @@ impl SceneLayout {
             lounge_side_table,
             door,
             door_threshold,
-            floor_seats,
             meeting_room,
             pantry_room,
             meeting_sofas,
-            meeting_table,
+            meeting_tables,
             room_walls,
             top_margin,
             pantry_table,
@@ -777,6 +910,9 @@ mod tests {
                 // tighter check just confirms they're south of the
                 // top wall.
                 WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {
+                    assert!(w.pos.y >= l.top_margin);
+                }
+                WaypointKind::VendingMachine | WaypointKind::Printer => {
                     assert!(w.pos.y >= l.top_margin);
                 }
             }
@@ -893,6 +1029,53 @@ mod tests {
                 walkable_total,
                 "{buf_w}x{buf_h} ({num_agents} agents): {} disconnected pixels — \
                  some open area is isolated from the door",
+                walkable_total - reachable
+            );
+        }
+    }
+
+    #[test]
+    fn walkable_mask_connected_across_floor_seeds() {
+        use std::collections::VecDeque;
+
+        let (buf_w, buf_h, num_agents) = (160u16, 100u16, 12usize);
+        for seed in 0..5u64 {
+            let l = SceneLayout::compute_with_seed(buf_w, buf_h, num_agents, seed)
+                .expect("layout fits");
+            let w = l.buf_w as usize;
+            let h = l.buf_h as usize;
+            let start = l.door_threshold.expect("door_threshold");
+            assert!(l.is_walkable(start.x, start.y));
+
+            let mut visited = vec![false; w * h];
+            visited[(start.y as usize) * w + (start.x as usize)] = true;
+            let mut queue = VecDeque::new();
+            queue.push_back((start.x, start.y));
+            let mut reachable = 1usize;
+            while let Some((cx, cy)) = queue.pop_front() {
+                for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = cx as i32 + dx;
+                    let ny = cy as i32 + dy;
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let (nx, ny) = (nx as u16, ny as u16);
+                    let idx = (ny as usize) * w + (nx as usize);
+                    if !visited[idx] && l.is_walkable(nx, ny) {
+                        visited[idx] = true;
+                        reachable += 1;
+                        queue.push_back((nx, ny));
+                    }
+                }
+            }
+            let walkable_total = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .filter(|&(x, y)| l.is_walkable(x as u16, y as u16))
+                .count();
+            assert_eq!(
+                reachable,
+                walkable_total,
+                "seed={seed}: {buf_w}x{buf_h}: {} disconnected pixels",
                 walkable_total - reachable
             );
         }

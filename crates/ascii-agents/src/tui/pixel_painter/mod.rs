@@ -10,7 +10,7 @@
 //! uses for label placement and mouse hit-testing.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use ascii_agents_core::sprite::blit::blit_frame;
 use ascii_agents_core::sprite::format::Pack;
@@ -315,23 +315,6 @@ pub(super) fn character_anchor(
     history: &mut pose::PoseHistory,
 ) -> Option<Point> {
     use crate::tui::layout::WaypointKind;
-    if agent.desk_index >= layout.home_desks.len() {
-        let overflow_idx = agent.desk_index - layout.home_desks.len();
-        let sofa_count = layout.meeting_sofas.len();
-        if overflow_idx < sofa_count {
-            let sofa = layout.meeting_sofas[overflow_idx];
-            return Some(Point {
-                x: sofa.x.saturating_sub(4),
-                y: sofa.y.saturating_sub(2),
-            });
-        }
-        let floor_idx = overflow_idx - sofa_count;
-        let seat = layout.floor_seats.get(floor_idx).copied()?;
-        return Some(Point {
-            x: seat.x.saturating_sub(4),
-            y: seat.y.saturating_sub(2),
-        });
-    }
     let desk = *layout.home_desks.get(agent.desk_index)?;
     let pose = pose::derive_with_routing(agent, now, layout, router, overlay, history)?;
     let anchor = match pose {
@@ -367,6 +350,7 @@ pub fn render_to_rgb_buffer(
     overlay: &mut OccupancyOverlay,
     history: &mut pose::PoseHistory,
     theme: &crate::tui::theme::Theme,
+    floor: crate::tui::floor::FloorMeta,
 ) {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     let buf_w = layout.buf_w;
@@ -392,15 +376,11 @@ pub fn render_to_rgb_buffer(
         top_wall_h,
         door_x_range,
         theme,
+        floor.altitude,
     );
 
-    // Artificial light pass — at night the floor dims toward navy and
-    // ceiling fluorescents + the floor lamp halo paint the visible
-    // bright spots. During the day the dim is near-zero and the pools
-    // are subtle ambient highlights. The wall-clock-based darkness
-    // already handles "after hours" cleanly — an activity-based boost
-    // flickers because Active flips on/off per tool call.
-    dim_floor_overlay(buf, top_wall_h, buf_h, look.darkness * 0.45, theme);
+    let dim_strength = (0.45 - floor.sunlight_boost).max(0.1);
+    dim_floor_overlay(buf, top_wall_h, buf_h, look.darkness * dim_strength, theme);
     let pool_strength = 0.15 + 0.30 * look.darkness;
     for desk in &layout.home_desks {
         paint_ceiling_pool(
@@ -463,7 +443,7 @@ pub fn render_to_rgb_buffer(
     //   • vertical walls (N-S) are seen edge-on — drawn as a single
     //     1-px partition line.
     // Must match `WALL_THICK_V` / `WALL_THICK_H` in build_walkable_mask.
-    const WALL_THICK_V_PX: u16 = 1;
+    const WALL_THICK_V_PX: u16 = 3;
     const WALL_THICK_H_PX: u16 = 4;
     let wall_body = theme.office.room_wall_body;
     let wall_trim_light = theme.office.room_wall_trim_light;
@@ -474,7 +454,14 @@ pub fn render_to_rgb_buffer(
                 for dx in 0..WALL_THICK_V_PX {
                     let x = start.x + dx;
                     if x < buf_w {
-                        buf.put(x, y, wall_body);
+                        let color = if dx == 0 {
+                            wall_trim_light
+                        } else if dx == WALL_THICK_V_PX - 1 {
+                            wall_trim_dark
+                        } else {
+                            wall_body
+                        };
+                        buf.put(x, y, color);
                     }
                 }
             }
@@ -510,6 +497,146 @@ pub fn render_to_rgb_buffer(
     // zone, but the elevator already defines that visually + the blue
     // rectangle looked out of place under the elevator.
 
+    // Procedural room fill — small pixel items that make rooms feel lived-in.
+    // Ground footprint rule: walkable mask is NOT affected by these (they're
+    // small items characters can walk around or over).
+    if let Some(mr) = layout.meeting_room {
+        let wall_color = theme.office.room_wall_trim_dark;
+        let accent = theme.furniture.rug_accent;
+        let wood = theme.furniture.wood_top;
+        let wood_dark = theme.furniture.wood_trim;
+
+        // Notice board on the south wall (8×5)
+        if mr.height > 20 && mr.width > 15 {
+            let bx = mr.x + 4;
+            let by = mr.y + mr.height - 8;
+            for dy in 0..5u16 {
+                for dx in 0..8u16 {
+                    let px = bx + dx;
+                    let py = by + dy;
+                    if px < buf_w && py < buf_h {
+                        let on_edge = dx == 0 || dx == 7 || dy == 0 || dy == 4;
+                        buf.put(px, py, if on_edge { wall_color } else { accent });
+                    }
+                }
+            }
+        }
+
+        // Coat rack: 1px pole, 3-wide base, bright coat blobs on hooks
+        if mr.width > 20 {
+            let cx = mr.x + mr.width - 5;
+            let cy = mr.y + mr.height / 2 - 4;
+            let pole = wood_dark;
+            let base = wood;
+            let coats = [Rgb(200, 60, 60), Rgb(80, 120, 200), Rgb(240, 240, 240)];
+            // Pole (1px wide, 8 tall)
+            for dy in 0..8u16 {
+                let py = cy + dy;
+                if py < buf_h && cx < buf_w {
+                    buf.put(cx, py, pole);
+                }
+            }
+            // Base (3px wide)
+            let by = cy + 7;
+            for dx in 0..3u16 {
+                let px = cx.saturating_sub(1) + dx;
+                if px < buf_w && by < buf_h {
+                    buf.put(px, by, base);
+                }
+            }
+            // Coat blobs (2×2 colored blocks hanging from hooks)
+            for (i, &coat_color) in coats.iter().enumerate() {
+                let hook_y = cy + 1 + (i as u16) * 2;
+                let side: i16 = if i % 2 == 0 { -1 } else { 1 };
+                let hx = (cx as i16 + side) as u16;
+                for dy in 0..2u16 {
+                    for dx in 0..2u16 {
+                        let px = hx.wrapping_add(if side < 0 { dx.wrapping_sub(1) } else { dx });
+                        let py = hook_y + dy;
+                        if px < buf_w && py < buf_h {
+                            buf.put(px, py, coat_color);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Small doormat at the meeting room entrance (on the cubicle side)
+        if mr.width > 10 {
+            let mat_x = mr.x + mr.width;
+            let mat_y = mr.y + mr.height / 2 - 2;
+            let mat_color = theme.furniture.rug_trim;
+            let mat_accent = theme.furniture.rug_field;
+            for dy in 0..5u16 {
+                for dx in 0..4u16 {
+                    let px = mat_x + dx + 1;
+                    let py = mat_y + dy;
+                    if px < buf_w && py < buf_h {
+                        let on_border = dx == 0 || dx == 3 || dy == 0 || dy == 4;
+                        buf.put(px, py, if on_border { mat_color } else { mat_accent });
+                    }
+                }
+            }
+        }
+    }
+    if let Some(pr) = layout.pantry_room {
+        let cooler_body = theme.office.building_light;
+        let cooler_water = Rgb(100, 180, 230);
+
+        // Water cooler near the pantry wall (3×6)
+        if pr.height > 25 && pr.width > 12 {
+            let wx = pr.x + pr.width - 6;
+            let wy = pr.y + 8;
+            for dy in 0..6u16 {
+                for dx in 0..3u16 {
+                    let px = wx + dx;
+                    let py = wy + dy;
+                    if px < buf_w && py < buf_h {
+                        let color = if dy < 2 { cooler_water } else { cooler_body };
+                        buf.put(px, py, color);
+                    }
+                }
+            }
+        }
+
+        // Trash bin near the pantry counter (4×5 with visible bag liner)
+        if pr.height > 20 {
+            let tx = pr.x + 3;
+            let ty = pr.y + pr.height - 14;
+            let bin_outer = Rgb(70, 70, 78);
+            let bin_rim = Rgb(100, 100, 108);
+            let bag_liner = Rgb(200, 200, 210);
+            let bag_fill = Rgb(160, 160, 170);
+            for dy in 0..5u16 {
+                for dx in 0..4u16 {
+                    let px = tx + dx;
+                    let py = ty + dy;
+                    if px < buf_w && py < buf_h {
+                        let color = if dy == 0 {
+                            // Rim row — lighter metal rim with bag liner peek
+                            if dx == 0 || dx == 3 {
+                                bin_rim
+                            } else {
+                                bag_liner
+                            }
+                        } else if dy == 1 {
+                            // Bag liner visible
+                            if dx == 0 || dx == 3 {
+                                bin_outer
+                            } else {
+                                bag_fill
+                            }
+                        } else {
+                            // Bin body
+                            bin_outer
+                        };
+                        buf.put(px, py, color);
+                    }
+                }
+            }
+        }
+    }
+
     // Shadow pass — soft floor shadows under desks + lounge furniture
     // so nothing floats. Painted BEFORE the y-sorted entity pass so
     // every entity sits on top of its own shadow. Strength is a
@@ -542,27 +669,11 @@ pub fn render_to_rgb_buffer(
     // every frame, which would change the overlay signature every frame,
     // wipe the path cache, recompute A*, and snap walkers to new path
     // segments (the visible "flash"). Sitters at desks are already
-    // covered by the static desk mask. Only waypoint visitors and
-    // overflow-seat occupants contribute here — both have stable
-    // positions across frames, so the signature is stable and the
-    // cache hits.
+    // covered by the static desk mask. Only waypoint visitors
+    // contribute here — they have stable positions across frames,
+    // so the signature is stable and the cache hits.
     overlay.clear();
     for agent in &agents {
-        if agent.desk_index >= layout.home_desks.len() {
-            let overflow_idx = agent.desk_index - layout.home_desks.len();
-            let sofa_count = layout.meeting_sofas.len();
-            let pos = if overflow_idx < sofa_count {
-                layout.meeting_sofas[overflow_idx]
-            } else {
-                let floor_idx = overflow_idx - sofa_count;
-                let Some(seat) = layout.floor_seats.get(floor_idx).copied() else {
-                    continue;
-                };
-                seat
-            };
-            overlay.add(pos.x.saturating_sub(4), pos.y.saturating_sub(6), 8, 12);
-            continue;
-        }
         let Some(pose) = pose::derive(agent, now, layout) else {
             continue;
         };
@@ -622,26 +733,32 @@ pub fn render_to_rgb_buffer(
     // Meeting-room area rug — sized to span both sofas + the coffee
     // table with a small margin. Anchored at the TOP so y-sort paints
     // it before the furniture sitting on top of it.
-    if let (Some(table), Some(&top_sofa), Some(&bot_sofa)) = (
-        layout.meeting_table,
-        layout.meeting_sofas.first(),
-        layout.meeting_sofas.get(1),
-    ) {
-        let rug_w = 18u16;
-        let rug_h = (bot_sofa.y - top_sofa.y + 8).min(layout.buf_h - table.y + 8);
-        drawables.push(Drawable {
-            anchor_y: table.y.saturating_sub(rug_h / 2),
-            kind: DrawableKind::AreaRug {
-                pos: table,
-                width: rug_w,
-                height: rug_h,
-            },
-        });
+    // Meeting-room area rugs + sofas + tables. For dual-meeting layouts,
+    // sofas come in pairs (2 per room), tables 1 per room.
+    let sofas_per_room = if layout.meeting_tables.len() > 1 {
+        2
+    } else {
+        layout.meeting_sofas.len()
+    };
+    for (room_idx, &table) in layout.meeting_tables.iter().enumerate() {
+        let sofa_start = room_idx * sofas_per_room;
+        let top_sofa = layout.meeting_sofas.get(sofa_start);
+        let bot_sofa = layout.meeting_sofas.get(sofa_start + 1);
+        if let (Some(&ts), Some(&bs)) = (top_sofa, bot_sofa) {
+            let rug_w = 18u16;
+            let rug_h = (bs.y - ts.y + 8).min(layout.buf_h - table.y + 8);
+            drawables.push(Drawable {
+                anchor_y: table.y.saturating_sub(rug_h / 2),
+                kind: DrawableKind::AreaRug {
+                    pos: table,
+                    width: rug_w,
+                    height: rug_h,
+                },
+            });
+        }
     }
-
-    // Meeting sofas (couch sprite 14×5, centered → bottom = sofa.y + 2).
     for (i, &sofa) in layout.meeting_sofas.iter().enumerate() {
-        let mirrored = i > 0;
+        let mirrored = i % 2 != 0;
         drawables.push(Drawable {
             anchor_y: sofa.y + 2,
             kind: DrawableKind::MeetingSofa {
@@ -650,8 +767,7 @@ pub fn render_to_rgb_buffer(
             },
         });
     }
-    // Meeting table (drawn 11×5 centered).
-    if let Some(table) = layout.meeting_table {
+    for &table in &layout.meeting_tables {
         drawables.push(Drawable {
             anchor_y: table.y + 2,
             kind: DrawableKind::MeetingTable { pos: table },
@@ -720,6 +836,18 @@ pub fn render_to_rgb_buffer(
                 });
             }
             WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {}
+            WaypointKind::VendingMachine => {
+                drawables.push(Drawable {
+                    anchor_y: wp.pos.y + 3,
+                    kind: DrawableKind::VendingMachine { pos: wp.pos },
+                });
+            }
+            WaypointKind::Printer => {
+                drawables.push(Drawable {
+                    anchor_y: wp.pos.y + 2,
+                    kind: DrawableKind::Printer { pos: wp.pos },
+                });
+            }
         }
     }
 
@@ -791,7 +919,7 @@ pub fn render_to_rgb_buffer(
             WallDecor::BulletinBoard => 6,
             WallDecor::ExitSign => 3,
             WallDecor::Whiteboard => 11,
-            WallDecor::MeetingScreen => 6,
+            WallDecor::MeetingScreen => 12,
         };
         drawables.push(Drawable {
             anchor_y: pos.y + h,
@@ -815,9 +943,14 @@ pub fn render_to_rgb_buffer(
         .iter()
         .all(|a| matches!(a.state, ActivityState::Idle));
 
-    if let Some((pos, flip, anim_name, frame_idx)) =
-        cat_position(layout, pack, now, &idle_desk_indices, all_idle)
-    {
+    if let Some((pos, flip, anim_name, frame_idx)) = cat_position(
+        layout,
+        pack,
+        now,
+        &idle_desk_indices,
+        all_idle,
+        floor.floor_seed,
+    ) {
         drawables.push(Drawable {
             anchor_y: pos.y + 3,
             kind: DrawableKind::Cat {
@@ -834,175 +967,6 @@ pub fn render_to_rgb_buffer(
     // BTreeMap iteration order.
     let mut wp_rank: HashMap<usize, usize> = HashMap::new();
     for agent in &agents {
-        // Overflow seating — past cubicle capacity, agents take meeting-
-        // room sofas then floor seats. Short 2s entry/exit walk.
-        if agent.desk_index >= layout.home_desks.len() {
-            const OVERFLOW_ANIM_MS: u64 = 2000;
-            let entry_elapsed = now
-                .duration_since(agent.created_at)
-                .unwrap_or(Duration::ZERO)
-                .as_millis() as u64;
-            let is_entering = entry_elapsed < OVERFLOW_ANIM_MS && agent.exiting_at.is_none();
-            let is_exiting = agent.exiting_at.is_some();
-            if is_entering || is_exiting {
-                if let Some(threshold) = layout.door_threshold {
-                    let target = if agent.desk_index - layout.home_desks.len()
-                        < layout.meeting_sofas.len()
-                    {
-                        let sofa = layout.meeting_sofas[agent.desk_index - layout.home_desks.len()];
-                        Point {
-                            x: sofa.x.saturating_sub(4),
-                            y: sofa.y.saturating_sub(2),
-                        }
-                    } else {
-                        let floor_idx =
-                            agent.desk_index - layout.home_desks.len() - layout.meeting_sofas.len();
-                        let seat = match layout.floor_seats.get(floor_idx).copied() {
-                            Some(s) => s,
-                            None => threshold,
-                        };
-                        Point {
-                            x: seat.x.saturating_sub(4),
-                            y: seat.y.saturating_sub(2),
-                        }
-                    };
-                    let (from, to, t) = if is_exiting {
-                        let exit_elapsed = agent
-                            .exiting_at
-                            .and_then(|e| now.duration_since(e).ok())
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0);
-                        let t = (exit_elapsed as f32 / OVERFLOW_ANIM_MS as f32).min(1.0);
-                        (target, threshold, t)
-                    } else {
-                        let t = (entry_elapsed as f32 / OVERFLOW_ANIM_MS as f32).min(1.0);
-                        (threshold, target, t)
-                    };
-                    let x = from.x as f32 + (to.x as f32 - from.x as f32) * t;
-                    let y = from.y as f32 + (to.y as f32 - from.y as f32) * t;
-                    let anchor = Point {
-                        x: x as u16,
-                        y: y as u16,
-                    };
-                    let dy = to.y as i32 - from.y as i32;
-                    let dx = to.x as i32 - from.x as i32;
-                    let anim_name = if dy.abs() > dx.abs() && dy < 0 {
-                        "walking_back"
-                    } else {
-                        "walking"
-                    };
-                    let frame_idx = (entry_elapsed / 220) as usize % 2;
-                    drawables.push(Drawable {
-                        anchor_y: anchor.y + 12,
-                        kind: DrawableKind::Character {
-                            agent,
-                            anim_name,
-                            frame_idx,
-                            anchor,
-                            flip_x: dx < 0,
-                            glow_tint: None,
-                            sleep_z_seed: None,
-                            waiting_bubble: false,
-                            thinking_dots: false,
-                            walking_dust_frame: Some(frame_idx),
-                        },
-                    });
-                    continue;
-                }
-            }
-            let overflow_idx = agent.desk_index - layout.home_desks.len();
-            let sofa_count = layout.meeting_sofas.len();
-            // 400 ms screen-pulse period for active overflow agents.
-            // Out of phase with typing (140 ms) and walking (220 ms) so
-            // adjacent agents don't visibly strobe together.
-            const OVERFLOW_PULSE_MS: u64 = 400;
-            let pulse_frame: usize = now
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| (d.as_millis() as u64 / OVERFLOW_PULSE_MS) as usize % 2)
-                .unwrap_or(0);
-            let is_active = matches!(agent.state, ActivityState::Active { .. });
-
-            if overflow_idx < sofa_count {
-                let sofa = layout.meeting_sofas[overflow_idx];
-                let is_mirrored_sofa = overflow_idx > 0;
-                let (anim_name, base_anchor_y, sprite_h, frame_idx) = if is_mirrored_sofa {
-                    // Back-facing sofa — viewer sees the agent's back, no
-                    // laptop to show. Keep the static back_couch sprite.
-                    ("back_couch", sofa.y.saturating_sub(7), 9u16, 0)
-                } else if is_active {
-                    (
-                        "working_couch",
-                        sofa.y.saturating_sub(2),
-                        12u16,
-                        pulse_frame,
-                    )
-                } else {
-                    ("sitting_couch_sleeping", sofa.y.saturating_sub(2), 12u16, 0)
-                };
-                let anchor = with_breath(
-                    Point {
-                        x: sofa.x.saturating_sub(4),
-                        y: base_anchor_y,
-                    },
-                    agent.agent_id,
-                    now,
-                );
-                let sleeping = !is_active && !is_mirrored_sofa;
-                drawables.push(Drawable {
-                    anchor_y: anchor.y + sprite_h,
-                    kind: DrawableKind::Character {
-                        agent,
-                        anim_name,
-                        frame_idx,
-                        anchor,
-                        flip_x: false,
-                        glow_tint: None,
-                        sleep_z_seed: if sleeping {
-                            Some(agent.agent_id.raw())
-                        } else {
-                            None
-                        },
-                        waiting_bubble: false,
-                        thinking_dots: false,
-                        walking_dust_frame: None,
-                    },
-                });
-                continue;
-            }
-            let floor_idx = overflow_idx - sofa_count;
-            let Some(seat) = layout.floor_seats.get(floor_idx).copied() else {
-                continue;
-            };
-            let anchor = with_breath(
-                Point {
-                    x: seat.x.saturating_sub(4),
-                    y: seat.y.saturating_sub(2),
-                },
-                agent.agent_id,
-                now,
-            );
-            let (anim_name, frame_idx) = if is_active {
-                ("working_floor", pulse_frame)
-            } else {
-                ("seated_floor_sleeping", 0)
-            };
-            drawables.push(Drawable {
-                anchor_y: anchor.y + 12,
-                kind: DrawableKind::Character {
-                    agent,
-                    anim_name,
-                    frame_idx,
-                    anchor,
-                    flip_x: false,
-                    glow_tint: None,
-                    sleep_z_seed: None,
-                    waiting_bubble: false,
-                    thinking_dots: false,
-                    walking_dust_frame: None,
-                },
-            });
-            continue;
-        }
         let Some(desk) = layout.home_desks.get(agent.desk_index).copied() else {
             continue;
         };
@@ -1104,9 +1068,10 @@ pub fn render_to_rgb_buffer(
                         // decor. waypoint_anchor positions them directly above
                         // the decor centre (sprite footprint sits just north
                         // of the decor's centre, head visible above).
-                        WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {
-                            ("standing", waypoint_anchor(wp_obj.pos), 12u16)
-                        }
+                        WaypointKind::PhoneBooth
+                        | WaypointKind::StandingDesk
+                        | WaypointKind::VendingMachine
+                        | WaypointKind::Printer => ("standing", waypoint_anchor(wp_obj.pos), 12u16),
                     };
                     let anchor = with_breath(
                         Point {

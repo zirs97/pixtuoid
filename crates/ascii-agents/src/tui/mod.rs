@@ -1,4 +1,5 @@
 pub mod embedded_pack;
+pub mod floor;
 pub mod frame_cache;
 pub mod layout;
 pub mod pathfind;
@@ -61,6 +62,7 @@ pub async fn run_tui(
             );
             if last_layout_sig != Some(sig) {
                 renderer.invalidate_routes();
+                renderer.cancel_transition();
                 last_layout_sig = Some(sig);
             }
             renderer.set_theme_picker(theme_picker);
@@ -123,6 +125,23 @@ pub async fn run_tui(
                                             .store(cur - 1, std::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
+                                (KeyCode::PageUp, _)
+                                | (KeyCode::Up, _)
+                                | (KeyCode::Char('k'), _) => {
+                                    let n_floors = crate::tui::floor::num_floors(&snapshot);
+                                    let cur = renderer.current_floor();
+                                    if cur + 1 < n_floors && renderer.transition().is_none() {
+                                        renderer.navigate_floor(cur + 1, now);
+                                    }
+                                }
+                                (KeyCode::PageDown, _)
+                                | (KeyCode::Down, _)
+                                | (KeyCode::Char('j'), _) => {
+                                    let cur = renderer.current_floor();
+                                    if cur > 0 && renderer.transition().is_none() {
+                                        renderer.navigate_floor(cur - 1, now);
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -140,6 +159,7 @@ pub async fn run_tui(
                                 max_desks.load(std::sync::atomic::Ordering::Relaxed),
                                 m.column,
                                 m.row,
+                                renderer.current_floor_seed(),
                             ) {
                                 let _ = open::that("https://buymeacoffee.com/IvanWng97");
                             } else {
