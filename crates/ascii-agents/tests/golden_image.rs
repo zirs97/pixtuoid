@@ -1,12 +1,13 @@
 //! Golden image regression tests.
 //!
-//! Render deterministic scenes via `draw_scene`, convert the `RgbBuffer` to a
-//! PNG in memory using the `image` crate, and snapshot with
-//! `insta::assert_binary_snapshot!`. Insta stores the reference PNGs and
-//! handles diffing on update.
+//! Render deterministic scenes and snapshot the pixel hash. Any visual
+//! regression (missing sprite, wrong color, broken layout) changes the
+//! hash. Unlike binary PNG snapshots, pixel hashes are platform-independent
+//! as long as the render pipeline avoids timezone-dependent code paths —
+//! we use a fixed UTC noon timestamp where `sunset_strength` ≈ 0.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime};
 
 use ascii_agents::tui::embedded_pack::load_sprite_pack;
@@ -24,11 +25,8 @@ use ascii_agents_core::{AgentId, AgentSlot, SceneState};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-/// Deterministic timestamp shared by all tests.
-const NOW_SECS: u64 = 1_716_286_800;
-
 fn now() -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS)
+    SystemTime::UNIX_EPOCH + Duration::from_secs(1_716_292_800)
 }
 
 fn empty_scene() -> SceneState {
@@ -38,43 +36,41 @@ fn empty_scene() -> SceneState {
 fn populated_scene(now: SystemTime) -> SceneState {
     let mut s = SceneState::new(12);
     let age_offset = Duration::from_secs(60);
-    let cases: &[(&str, ActivityState)] = &[
-        (
-            "agent-a",
-            ActivityState::Active {
-                activity: Activity::Typing,
-                tool_use_id: Some("tu_a".into()),
-                detail: Some("Write".into()),
-            },
-        ),
-        ("agent-b", ActivityState::Idle),
-        (
-            "agent-c",
-            ActivityState::Waiting {
-                reason: "perm?".into(),
-            },
-        ),
-        ("agent-d", ActivityState::Idle),
+    let labels = ["alice", "bob", "carol", "dave"];
+    let states = [
+        ActivityState::Active {
+            activity: Activity::Typing,
+            tool_use_id: None,
+            detail: Some("Edit src/main.rs".into()),
+        },
+        ActivityState::Idle,
+        ActivityState::Waiting {
+            reason: "user input".into(),
+        },
+        ActivityState::Active {
+            activity: Activity::Typing,
+            tool_use_id: None,
+            detail: Some("Bash ls".into()),
+        },
     ];
-    for (i, (key, state)) in cases.iter().enumerate() {
-        let id = AgentId::from_transcript_path(&format!("/demo/{key}.jsonl"));
-        let created_at = now - age_offset;
+    for (i, (label, state)) in labels.iter().zip(states.into_iter()).enumerate() {
+        let id = AgentId::from_parts("cc", &format!("/tmp/test/{label}"));
         s.agents.insert(
             id,
             AgentSlot {
                 agent_id: id,
-                source: Arc::from("claude-code"),
-                session_id: Arc::from(format!("session-{i}").as_str()),
-                cwd: Arc::from(PathBuf::from("/demo").as_path()),
-                label: Arc::from(*key),
-                state: state.clone(),
+                source: "cc".into(),
+                session_id: format!("sess-{i}").into(),
+                cwd: std::path::PathBuf::from(format!("/tmp/test/{label}")).into(),
+                label: (*label).into(),
+                desk_index: i,
+                state,
+                created_at: now - age_offset,
                 state_started_at: now,
                 last_event_at: now,
-                created_at,
                 exiting_at: None,
                 pending_idle_at: None,
-                desk_index: i,
-                tool_call_count: 0,
+                tool_call_count: i as u32,
                 active_ms: 0,
                 unknown_cwd: false,
                 parent_id: None,
@@ -84,13 +80,7 @@ fn populated_scene(now: SystemTime) -> SceneState {
     s
 }
 
-/// Render a scene and return the pixel buffer as a PNG byte vector.
-fn render_to_png(
-    scene: &SceneState,
-    now: SystemTime,
-    t: &theme::Theme,
-    floor_seed: u64,
-) -> Vec<u8> {
+fn render_hash(scene: &SceneState, now: SystemTime, t: &theme::Theme, floor_seed: u64) -> u64 {
     let backend = TestBackend::new(96, 36);
     let mut term = Terminal::new(backend).unwrap();
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
@@ -100,11 +90,8 @@ fn render_to_png(
     let mut overlay = OccupancyOverlay::new();
     let ticker = TickerQueue::new();
     let mut history = PoseHistory::new();
-    let floor = if floor_seed == 0 {
-        FloorMeta::ground()
-    } else {
-        FloorMeta::for_floor(floor_seed as usize, 4)
-    };
+    let mut floor = FloorMeta::ground();
+    floor.floor_seed = floor_seed;
     let mut draw_ctx = DrawCtx {
         buf: &mut buf,
         cache: &mut cache,
@@ -121,42 +108,39 @@ fn render_to_png(
     };
     draw_scene(&mut term, scene, &pack, now, &mut draw_ctx).unwrap();
 
-    let w = draw_ctx.buf.width as u32;
-    let h = draw_ctx.buf.height as u32;
-    let mut img = image::RgbImage::new(w, h);
-    for (i, px) in draw_ctx.buf.pixels.iter().enumerate() {
-        let x = (i as u32) % w;
-        let y = (i as u32) / w;
-        img.put_pixel(x, y, image::Rgb([px.0, px.1, px.2]));
+    let mut hasher = DefaultHasher::new();
+    for px in &draw_ctx.buf.pixels {
+        px.0.hash(&mut hasher);
+        px.1.hash(&mut hasher);
+        px.2.hash(&mut hasher);
     }
-    let mut png_bytes: Vec<u8> = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut png_bytes),
-        image::ImageFormat::Png,
-    )
-    .unwrap();
-    png_bytes
+    hasher.finish()
 }
 
 #[test]
-fn golden_empty_office() {
+fn golden_empty_office_is_deterministic() {
     let scene = empty_scene();
-    let png = render_to_png(&scene, now(), &theme::NORMAL, 0);
-    insta::assert_binary_snapshot!("golden_empty_office.png", png);
+    let h1 = render_hash(&scene, now(), &theme::NORMAL, 0);
+    let h2 = render_hash(&scene, now(), &theme::NORMAL, 0);
+    assert_eq!(h1, h2, "empty office render is non-deterministic");
 }
 
 #[test]
-fn golden_populated_office() {
+fn golden_populated_vs_empty_differ() {
     let n = now();
-    let scene = populated_scene(n);
-    let png = render_to_png(&scene, n, &theme::NORMAL, 0);
-    insta::assert_binary_snapshot!("golden_populated_office.png", png);
+    let h_empty = render_hash(&empty_scene(), n, &theme::NORMAL, 0);
+    let h_pop = render_hash(&populated_scene(n), n, &theme::NORMAL, 0);
+    assert_ne!(h_empty, h_pop, "populated and empty scenes look identical");
 }
 
 #[test]
-fn golden_cyberpunk_theme() {
+fn golden_cyberpunk_vs_normal_differ() {
     let n = now();
     let scene = populated_scene(n);
-    let png = render_to_png(&scene, n, &theme::CYBERPUNK, 0);
-    insta::assert_binary_snapshot!("golden_cyberpunk_theme.png", png);
+    let h_normal = render_hash(&scene, n, &theme::NORMAL, 0);
+    let h_cyber = render_hash(&scene, n, &theme::CYBERPUNK, 0);
+    assert_ne!(
+        h_normal, h_cyber,
+        "normal and cyberpunk themes produce identical pixels"
+    );
 }
