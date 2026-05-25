@@ -498,10 +498,15 @@ pub fn render_to_rgb_buffer(
     // rectangle looked out of place under the elevator.
 
     // Procedural room fill — small pixel items that make rooms feel lived-in.
+    // Ground footprint rule: walkable mask is NOT affected by these (they're
+    // small items characters can walk around or over).
     if let Some(mr) = layout.meeting_room {
         let wall_color = theme.office.room_wall_trim_dark;
         let accent = theme.furniture.rug_accent;
-        // Small notice board on the meeting room's south wall
+        let wood = theme.furniture.wood_top;
+        let wood_dark = theme.furniture.wood_trim;
+
+        // Notice board on the south wall (8×5)
         if mr.height > 20 && mr.width > 15 {
             let bx = mr.x + 4;
             let by = mr.y + mr.height - 8;
@@ -516,14 +521,61 @@ pub fn render_to_rgb_buffer(
                 }
             }
         }
+
+        // Coat rack near the meeting room door (2×7 dark pole + pegs)
+        if mr.width > 20 {
+            let cx = mr.x + mr.width - 5;
+            let cy = mr.y + mr.height / 2 - 3;
+            for dy in 0..7u16 {
+                let py = cy + dy;
+                if py < buf_h && cx < buf_w {
+                    buf.put(cx, py, wood_dark);
+                    if cx + 1 < buf_w {
+                        buf.put(cx + 1, py, wood_dark);
+                    }
+                }
+            }
+            // Pegs (small colored dots on each side)
+            for &dy in &[1u16, 3, 5] {
+                let py = cy + dy;
+                if py < buf_h {
+                    if cx > 0 && cx - 1 < buf_w {
+                        buf.put(cx - 1, py, accent);
+                    }
+                    if cx + 2 < buf_w {
+                        buf.put(cx + 2, py, wood);
+                    }
+                }
+            }
+        }
+
+        // Small doormat at the meeting room entrance (on the cubicle side)
+        if mr.width > 10 {
+            let mat_x = mr.x + mr.width;
+            let mat_y = mr.y + mr.height / 2 - 2;
+            let mat_color = theme.furniture.rug_trim;
+            let mat_accent = theme.furniture.rug_field;
+            for dy in 0..5u16 {
+                for dx in 0..4u16 {
+                    let px = mat_x + dx + 1;
+                    let py = mat_y + dy;
+                    if px < buf_w && py < buf_h {
+                        let on_border = dx == 0 || dx == 3 || dy == 0 || dy == 4;
+                        buf.put(px, py, if on_border { mat_color } else { mat_accent });
+                    }
+                }
+            }
+        }
     }
     if let Some(pr) = layout.pantry_room {
-        // Water cooler near the pantry entrance
+        let cooler_body = theme.office.building_light;
+        let cooler_water = Rgb(100, 180, 230);
+        let wood_dark = theme.furniture.wood_trim;
+
+        // Water cooler near the pantry wall (3×6)
         if pr.height > 25 && pr.width > 12 {
             let wx = pr.x + pr.width - 6;
             let wy = pr.y + 8;
-            let cooler_body = theme.office.building_light;
-            let cooler_water = Rgb(100, 180, 230);
             for dy in 0..6u16 {
                 for dx in 0..3u16 {
                     let px = wx + dx;
@@ -531,6 +583,23 @@ pub fn render_to_rgb_buffer(
                     if px < buf_w && py < buf_h {
                         let color = if dy < 2 { cooler_water } else { cooler_body };
                         buf.put(px, py, color);
+                    }
+                }
+            }
+        }
+
+        // Small trash bin near the pantry counter (3×4)
+        if pr.height > 20 {
+            let tx = pr.x + 3;
+            let ty = pr.y + pr.height - 14;
+            let bin_body = Rgb(70, 70, 75);
+            let bin_rim = Rgb(90, 90, 95);
+            for dy in 0..4u16 {
+                for dx in 0..3u16 {
+                    let px = tx + dx;
+                    let py = ty + dy;
+                    if px < buf_w && py < buf_h {
+                        buf.put(px, py, if dy == 0 { bin_rim } else { bin_body });
                     }
                 }
             }
