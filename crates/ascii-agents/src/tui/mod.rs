@@ -1,4 +1,5 @@
 pub mod embedded_pack;
+pub mod floor;
 pub mod frame_cache;
 pub mod layout;
 pub mod pathfind;
