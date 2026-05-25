@@ -272,76 +272,22 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
 
             let theme = self.theme;
             let theme_picker = self.theme_picker;
-            let ticker = &self.ticker;
+            let _ticker = &self.ticker;
 
-            let from_layout = Layout::compute(buf_w, buf_h, from_scene.max_desks);
-            let to_layout = Layout::compute(buf_w, buf_h, to_scene.max_desks);
+            let _from_layout = Layout::compute(buf_w, buf_h, from_scene.max_desks);
+            let _to_layout = Layout::compute(buf_w, buf_h, to_scene.max_desks);
 
-            let from_floor_info = Some((from_floor + 1, nf));
-            let to_floor_info = Some((to_floor + 1, nf));
+            let _from_floor_info = Some((from_floor + 1, nf));
+            let _to_floor_info = Some((to_floor + 1, nf));
 
             self.terminal.draw(|f| {
                 crate::tui::renderer::paint_footer(f, scene, full_rect, theme, floor_info);
                 flush_buffer_to_term_at_offset(f, from_buf, scene_rect, from_offset);
                 flush_buffer_to_term_at_offset(f, to_buf, scene_rect, to_offset);
 
-                // Paint text overlays for BOTH floors at their y-offsets.
-                // Ratatui clips anything outside the frame bounds.
-                let offset_rect = |y_off: i32| -> Rect {
-                    let y = (scene_rect.y as i32 + y_off).max(0) as u16;
-                    let max_h = full_rect.height.saturating_sub(y);
-                    Rect {
-                        y,
-                        height: scene_rect.height.min(max_h),
-                        ..scene_rect
-                    }
-                };
-
-                if let Some(ref layout) = from_layout {
-                    let r = offset_rect(from_offset);
-                    crate::tui::renderer::paint_wall_display(
-                        f,
-                        scene,
-                        layout,
-                        r,
-                        now,
-                        ticker,
-                        theme,
-                        from_floor_info,
-                    );
-                    if let Some(door) = layout.door {
-                        crate::tui::renderer::paint_elevator_indicator(
-                            f,
-                            door,
-                            from_floor + 1,
-                            r,
-                            theme,
-                        );
-                    }
-                }
-
-                if let Some(ref layout) = to_layout {
-                    let r = offset_rect(to_offset);
-                    crate::tui::renderer::paint_wall_display(
-                        f,
-                        scene,
-                        layout,
-                        r,
-                        now,
-                        ticker,
-                        theme,
-                        to_floor_info,
-                    );
-                    if let Some(door) = layout.door {
-                        crate::tui::renderer::paint_elevator_indicator(
-                            f,
-                            door,
-                            to_floor + 1,
-                            r,
-                            theme,
-                        );
-                    }
-                }
+                // Text overlays are hidden during transition — they can't
+                // scroll with the pixel buffer in ratatui's coordinate system.
+                // They reappear once the transition completes.
 
                 if let Some(idx) = theme_picker {
                     crate::tui::renderer::paint_theme_picker(f, idx, full_rect, theme);
