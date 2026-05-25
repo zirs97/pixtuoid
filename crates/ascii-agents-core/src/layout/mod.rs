@@ -63,7 +63,6 @@ pub struct SceneLayout {
     pub lounge_side_table: Option<Point>,
     pub door: Option<Point>,
     pub door_threshold: Option<Point>,
-    pub floor_seats: Vec<Point>,
     pub meeting_room: Option<Bounds>,
     pub pantry_room: Option<Bounds>,
     pub meeting_sofas: Vec<Point>,
@@ -610,21 +609,6 @@ impl SceneLayout {
             ),
         ];
 
-        let used_before_floor = home_desks.len() + meeting_sofas.len();
-        let overflow_count = num_agents.saturating_sub(used_before_floor).min(8);
-        let mut floor_seats: Vec<Point> = Vec::with_capacity(overflow_count);
-        // All overflow floor seats go along the corridor — the pantry is
-        // too crowded (counter + bistro table + chairs) and placing
-        // floor-sitters there causes them to render on top of furniture.
-        for slot in 0..overflow_count {
-            let c = (slot as u16) % 6;
-            let along_x = cubicle_band.x + cubicle_band.width * (8 + c * 16) / 100;
-            floor_seats.push(Point {
-                x: along_x,
-                y: walkway.y + walkway.height / 2,
-            });
-        }
-
         let (pantry_table, pantry_chairs) = if let Some(pr) = pantry_room {
             let tx = pr.x + pr.width * 25 / 100;
             let ty = pr.y + pr.height * 25 / 100;
@@ -688,7 +672,6 @@ impl SceneLayout {
             lounge_side_table,
             door,
             door_threshold,
-            floor_seats,
             meeting_room,
             pantry_room,
             meeting_sofas,
