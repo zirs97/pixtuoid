@@ -491,7 +491,7 @@ fn session_start_without_cwd_falls_back_to_cc_label() {
         SystemTime::now(),
         Transport::Hook,
     );
-    assert_eq!(&*scene.agents.get(&id).unwrap().label, "cc#1");
+    assert_eq!(&*scene.agents.get(&id).unwrap().label, "cl#1");
 }
 
 #[test]
@@ -797,8 +797,8 @@ fn unknown_cwd_agent_reaps_faster() {
     );
     let label = scene.agents.get(&id).unwrap().label.clone();
     assert!(
-        label.starts_with("cc#"),
-        "empty cwd should produce cc#N label, got {label}"
+        label.contains('#'),
+        "empty cwd should produce source#N label, got {label}"
     );
 
     // 3 min + 1s → should be reaped (STALE_UNKNOWN_CWD_TIMEOUT = 3 min).

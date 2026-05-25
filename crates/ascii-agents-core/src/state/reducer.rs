@@ -201,7 +201,8 @@ impl Reducer {
                     .filter(|s| !s.is_empty())
                     .map(Arc::<str>::from)
                     .unwrap_or_else(|| {
-                        Arc::<str>::from(format!("cc#{}", self.next_label_n).as_str())
+                        let prefix: String = source.chars().take(2).collect();
+                        Arc::<str>::from(format!("{prefix}#{}", self.next_label_n).as_str())
                     });
                 // Disambiguation for multiple sessions sharing a cwd happens
                 // at render time, not here — we don't want to suffix unique
@@ -343,7 +344,7 @@ impl Reducer {
             let age = now
                 .duration_since(slot.last_event_at)
                 .unwrap_or(Duration::ZERO);
-            let unknown_cwd = slot.label.starts_with("cc#");
+            let unknown_cwd = slot.label.contains('#');
             let threshold = if unknown_cwd {
                 STALE_UNKNOWN_CWD_TIMEOUT
             } else {

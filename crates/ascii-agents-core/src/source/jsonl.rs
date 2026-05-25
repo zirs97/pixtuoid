@@ -182,7 +182,18 @@ async fn initial_seed_walk(
         .unwrap_or(false);
 
     if recent {
-        walk_jsonl(path, source, decode_line, derive_label, cursors, seen, tx).await;
+        let stale_minutes = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() / 60)
+            .unwrap_or(0);
+        let ended = session_ended_last(path).await || stale_minutes >= 5;
+        if ended {
+            cursors.lock().await.insert(path.to_path_buf(), meta.len());
+        } else {
+            walk_jsonl(path, source, decode_line, derive_label, cursors, seen, tx).await;
+        }
     } else {
         cursors.lock().await.insert(path.to_path_buf(), meta.len());
     }
@@ -373,6 +384,50 @@ async fn walk_jsonl(
             Err(e) => warn!("decode error in {}: {e}", path.display()),
         }
     }
+}
+
+/// Check if the last session lifecycle event in the file is a session-end.
+/// Reads the tail of the file (up to 8KB) and scans for session_start vs
+/// session_end markers. If the last one is session_end, the session is
+/// finished and shouldn't be replayed on startup.
+async fn session_ended_last(path: &Path) -> bool {
+    const TAIL_BYTES: u64 = 8192;
+    let Ok(meta) = tokio::fs::metadata(path).await else {
+        return false;
+    };
+    let file_len = meta.len();
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let start = file_len.saturating_sub(TAIL_BYTES);
+    if tokio::io::AsyncSeekExt::seek(&mut file, SeekFrom::Start(start))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = Vec::with_capacity(TAIL_BYTES as usize);
+    if tokio::io::AsyncReadExt::read_to_end(&mut file, &mut buf)
+        .await
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut last_is_end = false;
+    for line in buf.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if line.windows(13).any(|w| w == b"session_start") {
+            last_is_end = false;
+        }
+        if line.windows(11).any(|w| w == b"session_end") || line.windows(10).any(|w| w == b"SessionEnd")
+        {
+            last_is_end = true;
+        }
+    }
+    last_is_end
 }
 
 fn extract_cwd(bytes: &[u8]) -> Option<PathBuf> {
