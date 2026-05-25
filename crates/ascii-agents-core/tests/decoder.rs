@@ -318,3 +318,61 @@ fn ag_ask_permission_and_question_emits_waiting() {
         other => panic!("expected Waiting, got {other:?}"),
     }
 }
+
+#[test]
+fn cc_session_ended_detects_session_end_subtype() {
+    use ascii_agents_core::source::claude_code::cc_session_ended;
+    let tail = br#"{"type":"system","subtype":"session_start","sessionId":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+{"type":"system","subtype":"session_end","sessionId":"s1"}
+"#;
+    assert!(cc_session_ended(tail));
+}
+
+#[test]
+fn cc_session_ended_returns_false_for_active_session() {
+    use ascii_agents_core::source::claude_code::cc_session_ended;
+    let tail = br#"{"type":"system","subtype":"session_start","sessionId":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+"#;
+    assert!(!cc_session_ended(tail));
+}
+
+#[test]
+fn cc_session_ended_ignores_string_content_containing_session_end() {
+    use ascii_agents_core::source::claude_code::cc_session_ended;
+    let tail = br#"{"type":"system","subtype":"session_start","sessionId":"s1"}
+{"type":"user","message":{"content":[{"type":"tool_result","output":"cat session_end.sh"}]}}
+"#;
+    assert!(
+        !cc_session_ended(tail),
+        "should not false-positive on session_end inside tool output"
+    );
+}
+
+#[test]
+fn detect_parent_id_for_subagent_path() {
+    use ascii_agents_core::AgentId;
+    use std::path::Path;
+
+    // Simulate what jsonl.rs::detect_parent_id does
+    let path = Path::new("/Users/me/.claude/projects/x/abc123/subagents/agent-1.jsonl");
+    let path_str = path.to_string_lossy();
+    let idx = path_str.find("/subagents/");
+    assert!(idx.is_some(), "should find /subagents/ in path");
+    let parent_dir = &path_str[..idx.unwrap()];
+    let parent_jsonl = format!("{parent_dir}.jsonl");
+    let parent_id = AgentId::from_parts("claude-code", &parent_jsonl);
+    let expected = AgentId::from_parts("claude-code", "/Users/me/.claude/projects/x/abc123.jsonl");
+    assert_eq!(parent_id, expected);
+}
+
+#[test]
+fn detect_parent_id_returns_none_for_regular_path() {
+    let path = std::path::Path::new("/Users/me/.claude/projects/x/ses-abc.jsonl");
+    let path_str = path.to_string_lossy();
+    assert!(
+        path_str.find("/subagents/").is_none(),
+        "regular path should not match subagent pattern"
+    );
+}

@@ -960,3 +960,146 @@ fn active_ms_does_not_double_count_on_duplicate_activity_end() {
         slot.active_ms
     );
 }
+
+#[test]
+fn session_end_cascades_to_children() {
+    let mut scene = SceneState::new(8);
+    let mut r = Reducer::new();
+    let parent = AgentId::from_transcript_path("/p/parent.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/parent/subagents/agent-1.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "parent".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "child".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    assert!(scene.agents.get(&child).unwrap().exiting_at.is_none());
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionEnd { agent_id: parent },
+        t0 + Duration::from_secs(10),
+        Transport::Hook,
+    );
+    assert!(
+        scene.agents.get(&parent).unwrap().exiting_at.is_some(),
+        "parent should be exiting"
+    );
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_some(),
+        "child should cascade to exiting when parent ends"
+    );
+}
+
+#[test]
+fn session_end_cascades_to_grandchildren() {
+    let mut scene = SceneState::new(8);
+    let mut r = Reducer::new();
+    let grandparent = AgentId::from_transcript_path("/p/gp.jsonl");
+    let parent = AgentId::from_parts("claude-code", "/p/gp/subagents/agent-p.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/gp/subagents/agent-c.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: grandparent,
+            source: "claude-code".into(),
+            session_id: "gp".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "p".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(grandparent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "c".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(200),
+        Transport::Jsonl,
+    );
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionEnd {
+            agent_id: grandparent,
+        },
+        t0 + Duration::from_secs(10),
+        Transport::Hook,
+    );
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_some(),
+        "grandchild should cascade to exiting via BFS"
+    );
+}
+
+#[test]
+fn unknown_cwd_agent_uses_faster_stale_timeout() {
+    use ascii_agents_core::state::reducer::STALE_UNKNOWN_CWD_TIMEOUT;
+    let mut scene = SceneState::new(4);
+    let mut r = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/unknown.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: id,
+            source: "claude-code".into(),
+            session_id: "u".into(),
+            cwd: PathBuf::new(),
+            parent_id: None,
+        },
+        t0,
+        Transport::Jsonl,
+    );
+    let slot = scene.agents.get(&id).unwrap();
+    assert!(slot.unknown_cwd, "empty cwd should set unknown_cwd");
+
+    r.tick(
+        &mut scene,
+        t0 + STALE_UNKNOWN_CWD_TIMEOUT + Duration::from_secs(1),
+    );
+    assert!(
+        scene.agents.get(&id).unwrap().exiting_at.is_some(),
+        "unknown_cwd agent should reap after STALE_UNKNOWN_CWD_TIMEOUT"
+    );
+}
