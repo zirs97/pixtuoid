@@ -45,7 +45,7 @@ pub(super) fn build_walkable_mask(
     //   • vertical walls (N-S) are seen EDGE-ON — 1 px thin partition.
     // Render thicknesses must stay in sync; see `WALL_THICK_*_PX` in
     // the renderer.
-    const WALL_THICK_V: u16 = 1;
+    const WALL_THICK_V: u16 = 3;
     const WALL_THICK_H: u16 = 4;
     for (start, end) in room_walls {
         if start.x == end.x {

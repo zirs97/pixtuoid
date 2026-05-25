@@ -443,7 +443,7 @@ pub fn render_to_rgb_buffer(
     //   • vertical walls (N-S) are seen edge-on — drawn as a single
     //     1-px partition line.
     // Must match `WALL_THICK_V` / `WALL_THICK_H` in build_walkable_mask.
-    const WALL_THICK_V_PX: u16 = 1;
+    const WALL_THICK_V_PX: u16 = 3;
     const WALL_THICK_H_PX: u16 = 4;
     let wall_body = theme.office.room_wall_body;
     let wall_trim_light = theme.office.room_wall_trim_light;
@@ -454,7 +454,14 @@ pub fn render_to_rgb_buffer(
                 for dx in 0..WALL_THICK_V_PX {
                     let x = start.x + dx;
                     if x < buf_w {
-                        buf.put(x, y, wall_body);
+                        let color = if dx == 0 {
+                            wall_trim_light
+                        } else if dx == WALL_THICK_V_PX - 1 {
+                            wall_trim_dark
+                        } else {
+                            wall_body
+                        };
+                        buf.put(x, y, color);
                     }
                 }
             }
