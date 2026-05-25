@@ -187,6 +187,7 @@ pub fn draw_scene<B: Backend>(
     ticker: &TickerQueue,
     theme: &crate::tui::theme::Theme,
     theme_picker: Option<usize>,
+    floor_info: Option<(usize, usize)>,
 ) -> Result<()> {
     let term_size = term.size()?;
     let full_rect = Rect {
@@ -202,7 +203,7 @@ pub fn draw_scene<B: Backend>(
         height: full_rect.height.saturating_sub(1),
     };
     if scene_rect.width < 20 || scene_rect.height < 12 {
-        term.draw(|f| paint_footer(f, scene, full_rect, theme))?;
+        term.draw(|f| paint_footer(f, scene, full_rect, theme, floor_info))?;
         return Ok(());
     }
 
@@ -210,7 +211,7 @@ pub fn draw_scene<B: Backend>(
     let buf_h = scene_rect.height * 2;
     buf.ensure_size(buf_w, buf_h, theme.surface.bg_fallback);
     let Some(layout) = Layout::compute(buf_w, buf_h, scene.max_desks) else {
-        term.draw(|f| paint_footer(f, scene, full_rect, theme))?;
+        term.draw(|f| paint_footer(f, scene, full_rect, theme, floor_info))?;
         return Ok(());
     };
 
@@ -236,12 +237,12 @@ pub fn draw_scene<B: Backend>(
 
     // Terminal-flush pass — half-block + widgets, inside ratatui's draw.
     term.draw(|f| {
-        paint_footer(f, scene, full_rect, theme);
+        paint_footer(f, scene, full_rect, theme, floor_info);
         flush_buffer_to_term(f, buf, scene_rect);
         paint_label_widgets(
             f, scene, &layout, now, router, overlay, history, scene_rect, hovered, theme,
         );
-        paint_wall_display(f, scene, &layout, scene_rect, now, ticker, theme);
+        paint_wall_display(f, scene, &layout, scene_rect, now, ticker, theme, floor_info);
         let tooltip_agent = hovered.or(pinned_agent);
         if let (Some(agent_id), Some((mx, my))) = (tooltip_agent, mouse_pos) {
             paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect, now, theme);
@@ -321,8 +322,9 @@ fn paint_footer(
     scene: &SceneState,
     full_rect: Rect,
     theme: &crate::tui::theme::Theme,
+    floor_info: Option<(usize, usize)>,
 ) {
-    let summary = build_status_summary(scene, full_rect.width);
+    let summary = build_status_summary(scene, full_rect.width, floor_info);
     let footer = Paragraph::new(Span::raw(summary))
         .style(Style::default().fg(to_color(theme.ui.label_idle)));
     f.render_widget(
@@ -349,7 +351,11 @@ fn paint_footer(
 ///   * **minimal** — just the total, e.g. `12a`.
 ///   * **fallback** — only the quit hint (any narrower terminal will
 ///     truncate this naturally).
-pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> String {
+pub(super) fn build_status_summary(
+    scene: &SceneState,
+    term_width: u16,
+    floor_info: Option<(usize, usize)>,
+) -> String {
     let n = scene.agents.len();
     let mut active = 0usize;
     let mut waiting = 0usize;
@@ -374,7 +380,12 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
         }
     }
 
-    const QUIT: &str = " [p]ause [t]heme [+/-]desks [q]uit ";
+    let floor_suffix = match floor_info {
+        Some((current, total)) if total > 1 => format!(" F{current}/{total} [\u{2191}\u{2193}]"),
+        _ => String::new(),
+    };
+    let quit_base = " [p]ause [t]heme [+/-]desks [q]uit ";
+    let quit = format!("{floor_suffix}{quit_base}");
     let tools_str = {
         // Sort by count desc, then name asc for stable output. Top 4
         // keeps the line bounded — beyond that the listing crowds out
@@ -403,7 +414,7 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
     let stats_min = format!(" {n}a ");
 
     let w = term_width as usize;
-    let q = QUIT.len();
+    let q = quit.len();
     for stats in [&stats_full, &stats_medium, &stats_min] {
         if stats.len() + q <= w {
             let pad = w.saturating_sub(stats.len() + q);
@@ -412,11 +423,11 @@ pub(super) fn build_status_summary(scene: &SceneState, term_width: u16) -> Strin
             for _ in 0..pad {
                 out.push(' ');
             }
-            out.push_str(QUIT);
+            out.push_str(&quit);
             return out;
         }
     }
-    QUIT.to_string()
+    quit
 }
 
 fn flush_buffer_to_term(f: &mut ratatui::Frame<'_>, buf: &RgbBuffer, scene_rect: Rect) {
@@ -794,6 +805,7 @@ fn paint_hover_tooltip(
 /// bottom line. The GitHub star link uses OSC 8 hyperlinks — clicking it
 /// in supported terminals (iTerm2, Ghostty, Kitty, WezTerm) opens the
 /// browser.
+#[allow(clippy::too_many_arguments)]
 fn paint_wall_display(
     f: &mut ratatui::Frame<'_>,
     scene: &SceneState,
@@ -802,6 +814,7 @@ fn paint_wall_display(
     now: SystemTime,
     ticker: &TickerQueue,
     theme: &crate::tui::theme::Theme,
+    floor_info: Option<(usize, usize)>,
 ) {
     use ratatui::style::Modifier;
     use ratatui::text::Line;
@@ -825,7 +838,7 @@ fn paint_wall_display(
     let idle = live.len() - active - waiting;
 
     let version = env!("CARGO_PKG_VERSION");
-    let top_line = Line::from(vec![
+    let mut top_spans = vec![
         Span::styled(
             format!("ascii-agents v{version}"),
             Style::default()
@@ -839,7 +852,17 @@ fn paint_wall_display(
                 .fg(to_color(theme.ui.neon_star))
                 .add_modifier(Modifier::BOLD),
         ),
-    ]);
+    ];
+    if let Some((current, total)) = floor_info {
+        if total > 1 {
+            top_spans.push(Span::raw("  "));
+            top_spans.push(Span::styled(
+                format!("Floor {current}/{total}"),
+                Style::default().fg(to_color(theme.ui.neon_brand)),
+            ));
+        }
+    }
+    let top_line = Line::from(top_spans);
 
     let oldest = live
         .iter()
@@ -1071,7 +1094,7 @@ mod tests {
     #[test]
     fn footer_zero_agents_shows_zero_count_and_quit() {
         let s = scene_of(vec![]);
-        let line = build_status_summary(&s, 80);
+        let line = build_status_summary(&s, 80, None);
         assert!(line.contains("0 agents"), "missing zero count: {line:?}");
         assert!(line.ends_with(QUIT_SUFFIX), "missing quit suffix: {line:?}");
         assert_eq!(line.len(), 80, "should pad to full width: {line:?}");
@@ -1089,7 +1112,7 @@ mod tests {
             idle("g"),
             idle("h"),
         ]);
-        let line = build_status_summary(&s, 120);
+        let line = build_status_summary(&s, 120, None);
         // Per-state counts present.
         assert!(line.contains("8 agents"), "{line:?}");
         assert!(line.contains("3 active"), "{line:?}");
@@ -1111,7 +1134,7 @@ mod tests {
             waiting("b"),
             idle("c"),
         ]);
-        let line = build_status_summary(&s, 60);
+        let line = build_status_summary(&s, 60, None);
         assert!(
             line.contains("3a") && line.contains("1A"),
             "expected medium tier letters: {line:?}"
@@ -1127,7 +1150,7 @@ mod tests {
     fn footer_minimal_width_keeps_total_and_quit_only() {
         let s = scene_of(vec![idle("a"), idle("b")]);
         let w = QUIT_SUFFIX.len() + 6;
-        let line = build_status_summary(&s, w as u16);
+        let line = build_status_summary(&s, w as u16, None);
         assert!(line.contains("2a"), "expected minimal tier: {line:?}");
         assert!(line.ends_with(QUIT_SUFFIX), "{line:?}");
         assert_eq!(line.len(), w);
@@ -1137,7 +1160,7 @@ mod tests {
     fn footer_collapses_to_quit_only_below_minimal_threshold() {
         let s = scene_of(vec![idle("a")]);
         let w = QUIT_SUFFIX.len();
-        let line = build_status_summary(&s, w as u16);
+        let line = build_status_summary(&s, w as u16, None);
         assert_eq!(line, QUIT_SUFFIX);
     }
 
@@ -1151,7 +1174,7 @@ mod tests {
             active_with("Grep x", "e"),
             active_with("Glob x", "f"),
         ]);
-        let line = build_status_summary(&s, 200);
+        let line = build_status_summary(&s, 200, None);
         // Six distinct tools, but only 4 should appear. Count `×` markers.
         let crosses = line.matches('×').count();
         assert_eq!(crosses, 4, "expected ≤4 tools in breakdown: {line:?}");

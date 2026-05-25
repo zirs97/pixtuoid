@@ -4,8 +4,8 @@
 //! `draw_scene` directly, leaving the core `Renderer` trait exercised only
 //! by `TestRenderer` in tests. `TuiRenderer` is the production impl: it
 //! owns the cross-frame mutable state (`RgbBuffer`, `FrameCache`,
-//! `AStarRouter`, `OccupancyOverlay`, `PoseHistory`) and forwards to
-//! `draw_scene`, which recomputes its own layout per frame from
+//! `AStarRouter`, `OccupancyOverlay`, `PoseHistory`) per floor and forwards
+//! to `draw_scene`, which recomputes its own layout per frame from
 //! `terminal.size()` because the user can resize at any time.
 
 use std::time::SystemTime;
@@ -14,23 +14,20 @@ use anyhow::Result;
 use ascii_agents_core::sprite::format::Pack;
 use ascii_agents_core::sprite::{Rgb, RgbBuffer};
 use ascii_agents_core::state::SceneState;
-use ascii_agents_core::walkable::OccupancyOverlay;
 use ascii_agents_core::Renderer;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
-use crate::tui::frame_cache::FrameCache;
-use crate::tui::pathfind::AStarRouter;
-use crate::tui::pose::PoseHistory;
+use crate::tui::floor::{build_floor_scene, num_floors, FloorCtx, FloorTransition};
+use crate::tui::pathfind::Router;
 use crate::tui::renderer::draw_scene;
 
 pub struct TuiRenderer<B: Backend> {
     pub terminal: Terminal<B>,
-    buf: RgbBuffer,
-    cache: FrameCache,
-    router: AStarRouter,
-    overlay: OccupancyOverlay,
-    history: PoseHistory,
+    floor_bufs: Vec<RgbBuffer>,
+    floor_ctxs: Vec<FloorCtx>,
+    current_floor: usize,
+    transition: Option<FloorTransition>,
     mouse_pos: Option<(u16, u16)>,
     pinned_agent: Option<ascii_agents_core::AgentId>,
     pub ticker: crate::tui::renderer::TickerQueue,
@@ -42,17 +39,35 @@ impl<B: Backend> TuiRenderer<B> {
     pub fn new(terminal: Terminal<B>, theme: &'static crate::tui::theme::Theme) -> Self {
         Self {
             terminal,
-            buf: RgbBuffer::filled(0, 0, Rgb(0, 0, 0)),
-            cache: FrameCache::new(),
-            router: AStarRouter::new(),
-            overlay: OccupancyOverlay::new(),
-            history: PoseHistory::new(),
+            floor_bufs: vec![RgbBuffer::filled(0, 0, Rgb(0, 0, 0))],
+            floor_ctxs: vec![FloorCtx::new()],
+            current_floor: 0,
+            transition: None,
             mouse_pos: None,
             pinned_agent: None,
             ticker: crate::tui::renderer::TickerQueue::new(),
             theme,
             theme_picker: None,
         }
+    }
+
+    pub fn current_floor(&self) -> usize {
+        self.current_floor
+    }
+
+    pub fn transition(&self) -> Option<&FloorTransition> {
+        self.transition.as_ref()
+    }
+
+    pub fn navigate_floor(&mut self, target: usize, now: SystemTime) {
+        if target == self.current_floor || target >= self.floor_ctxs.len() {
+            return;
+        }
+        self.transition = Some(FloorTransition::new(self.current_floor, target, now));
+    }
+
+    pub fn cancel_transition(&mut self) {
+        self.transition = None;
     }
 
     pub fn set_mouse_pos(&mut self, pos: Option<(u16, u16)>) {
@@ -68,13 +83,15 @@ impl<B: Backend> TuiRenderer<B> {
     }
 
     pub fn buf(&self) -> &RgbBuffer {
-        &self.buf
+        &self.floor_bufs[self.current_floor]
     }
 
     pub fn set_theme(&mut self, theme: &'static crate::tui::theme::Theme) {
         if !std::ptr::eq(self.theme, theme) {
             self.theme = theme;
-            self.cache = FrameCache::new();
+            for ctx in &mut self.floor_ctxs {
+                ctx.cache = crate::tui::frame_cache::FrameCache::new();
+            }
         }
     }
 
@@ -85,35 +102,80 @@ impl<B: Backend> TuiRenderer<B> {
     /// Drop the cached frame entries for agents no longer in `scene`.
     /// Forwarded so the render loop doesn't reach into the cache directly.
     pub fn evict_missing(&mut self, scene: &SceneState) {
-        self.cache.evict_missing(scene);
+        for ctx in &mut self.floor_ctxs {
+            ctx.cache.evict_missing(scene);
+        }
     }
 
-    /// Invalidate the router's path cache. Call when the static walkable
-    /// mask changes (terminal resize, max_desks change).
+    /// Invalidate all floors' router path caches. Call when the static
+    /// walkable mask changes (terminal resize, max_desks change).
     pub fn invalidate_routes(&mut self) {
-        use crate::tui::pathfind::Router;
-        self.router.invalidate();
+        for ctx in &mut self.floor_ctxs {
+            ctx.router.invalidate();
+        }
     }
 }
 
 impl<B: Backend> Renderer for TuiRenderer<B> {
     fn render(&mut self, scene: &SceneState, pack: &Pack, now: SystemTime) -> Result<()> {
         self.ticker.update(scene);
+
+        // Compute how many floors the current scene needs.
+        let nf = num_floors(scene).min(crate::tui::floor::MAX_FLOORS);
+
+        // Grow vectors if needed.
+        while self.floor_bufs.len() < nf {
+            self.floor_bufs
+                .push(RgbBuffer::filled(0, 0, Rgb(0, 0, 0)));
+        }
+        while self.floor_ctxs.len() < nf {
+            self.floor_ctxs.push(FloorCtx::new());
+        }
+
+        // Clamp current_floor if agents left and floors shrank.
+        if self.current_floor >= nf {
+            self.current_floor = nf.saturating_sub(1);
+        }
+
+        // Complete transition if done.
+        if let Some(ref tr) = self.transition {
+            if tr.is_done(now) {
+                self.current_floor = tr.to_floor;
+                self.transition = None;
+            }
+        }
+
+        // Build the floor-scoped scene for the current floor.
+        let (floor_agents, desks_per_floor) = build_floor_scene(scene, self.current_floor);
+        let mut floor_scene = SceneState::new(desks_per_floor);
+        for agent in floor_agents {
+            floor_scene.agents.insert(agent.agent_id, agent);
+        }
+
+        let floor_info = if nf > 1 {
+            Some((self.current_floor + 1, nf))
+        } else {
+            None
+        };
+
+        let ctx = &mut self.floor_ctxs[self.current_floor];
+        let buf = &mut self.floor_bufs[self.current_floor];
         draw_scene(
             &mut self.terminal,
-            scene,
+            &floor_scene,
             pack,
             now,
-            &mut self.buf,
-            &mut self.cache,
-            &mut self.router,
-            &mut self.overlay,
-            &mut self.history,
+            buf,
+            &mut ctx.cache,
+            &mut ctx.router,
+            &mut ctx.overlay,
+            &mut ctx.history,
             self.mouse_pos,
             self.pinned_agent,
             &self.ticker,
             self.theme,
             self.theme_picker,
+            floor_info,
         )
     }
 }

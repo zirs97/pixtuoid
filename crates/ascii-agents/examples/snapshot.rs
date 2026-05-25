@@ -163,6 +163,7 @@ fn main() -> Result<()> {
         &ticker,
         theme,
         None,
+        None,
     )?;
 
     if args.debug_walkable {
@@ -594,7 +595,7 @@ fn save_as_gif(
         let now = start_now + Duration::from_millis(i as u64 * frame_ms);
         draw_scene(
             term, scene, pack, now, buf, cache, router, overlay, history, None, None, &ticker,
-            theme, None,
+            theme, None, None,
         )?;
 
         let term_buf = term.backend().buffer();
