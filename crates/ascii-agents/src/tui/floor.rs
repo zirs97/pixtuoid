@@ -15,9 +15,7 @@ use crate::tui::frame_cache::FrameCache;
 use crate::tui::pathfind::{AStarRouter, Router};
 use crate::tui::pose::PoseHistory;
 
-/// Hard ceiling on navigable floors — keeps memory bounded even if
-/// hundreds of agents show up.
-pub const MAX_FLOORS: usize = 5;
+pub use ascii_agents_core::state::MAX_FLOORS;
 
 /// Per-floor rendering state. Each floor gets its own pathfinder,
 /// occupancy overlay, pose history, and recolored-frame cache so floors

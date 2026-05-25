@@ -82,7 +82,7 @@ impl SceneState {
     pub fn next_free_desk(&self) -> Option<usize> {
         let occupied: std::collections::BTreeSet<usize> =
             self.agents.values().map(|a| a.desk_index).collect();
-        (0..self.max_desks * MAX_FLOORS).find(|i| !occupied.contains(i))
+        (0..self.max_desks.saturating_mul(MAX_FLOORS)).find(|i| !occupied.contains(i))
     }
 }
 

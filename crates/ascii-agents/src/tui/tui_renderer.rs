@@ -64,9 +64,10 @@ impl<B: Backend> TuiRenderer<B> {
     }
 
     pub fn navigate_floor(&mut self, target: usize, now: SystemTime) {
-        if target == self.current_floor || target >= self.floor_ctxs.len() {
+        if target == self.current_floor || self.transition.is_some() {
             return;
         }
+        self.set_pinned_agent(None);
         self.transition = Some(FloorTransition::new(self.current_floor, target, now));
     }
 
@@ -135,9 +136,11 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             self.floor_ctxs.push(FloorCtx::new());
         }
 
-        // Clamp current_floor if agents left and floors shrank.
-        if self.current_floor >= nf {
-            self.current_floor = nf.saturating_sub(1);
+        // Cancel transition if target floors no longer exist.
+        if let Some(ref tr) = self.transition {
+            if tr.from_floor >= nf || tr.to_floor >= nf {
+                self.transition = None;
+            }
         }
 
         // Complete transition if done.
@@ -146,6 +149,11 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                 self.current_floor = tr.to_floor;
                 self.transition = None;
             }
+        }
+
+        // Clamp current_floor after transition completion.
+        if self.current_floor >= nf {
+            self.current_floor = nf.saturating_sub(1);
         }
 
         let floor_info = if nf > 1 {
@@ -272,13 +280,6 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
 
             let theme = self.theme;
             let theme_picker = self.theme_picker;
-            let _ticker = &self.ticker;
-
-            let _from_layout = Layout::compute(buf_w, buf_h, from_scene.max_desks);
-            let _to_layout = Layout::compute(buf_w, buf_h, to_scene.max_desks);
-
-            let _from_floor_info = Some((from_floor + 1, nf));
-            let _to_floor_info = Some((to_floor + 1, nf));
 
             self.terminal.draw(|f| {
                 crate::tui::renderer::paint_footer(f, scene, full_rect, theme, floor_info);
