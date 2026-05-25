@@ -51,7 +51,7 @@ pub struct Reducer {
     /// ActivityStart/End events for that AgentId are dropped — JSONL has
     /// correct attribution to the subagent's own AgentId.
     active_tasks: HashMap<AgentId, HashSet<String>>,
-    /// Monotonic counter for human-readable labels (cc#1, cc#2, ...).
+    /// Monotonic counter for human-readable labels.
     next_label_n: u32,
 }
 
@@ -180,6 +180,7 @@ impl Reducer {
                 source,
                 session_id,
                 cwd,
+                parent_id,
             } => {
                 if scene.agents.contains_key(&agent_id) {
                     return;
@@ -227,6 +228,7 @@ impl Reducer {
                         tool_call_count: 0,
                         active_ms: 0,
                         unknown_cwd: !has_cwd,
+                        parent_id,
                     },
                 );
             }
@@ -282,13 +284,25 @@ impl Reducer {
                 }
             }
             AgentEvent::SessionEnd { agent_id } => {
-                // Don't drop the slot yet — mark it as exiting so the
-                // renderer can play the door-walkout animation. The slot
-                // is GC'd by `sweep_exited` once the animation completes.
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
                     if slot.exiting_at.is_none() {
                         slot.exiting_at = Some(now);
                     }
+                }
+                let mut frontier = vec![agent_id];
+                while let Some(parent) = frontier.pop() {
+                    let children: Vec<AgentId> = scene
+                        .agents
+                        .values()
+                        .filter(|s| s.parent_id == Some(parent) && s.exiting_at.is_none())
+                        .map(|s| s.agent_id)
+                        .collect();
+                    for cid in &children {
+                        if let Some(slot) = scene.agents.get_mut(cid) {
+                            slot.exiting_at = Some(now);
+                        }
+                    }
+                    frontier.extend(children);
                 }
             }
         }

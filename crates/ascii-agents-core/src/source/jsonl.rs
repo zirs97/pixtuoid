@@ -328,6 +328,7 @@ async fn walk_jsonl(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let cwd = extract_cwd(new_bytes).unwrap_or_default();
+            let parent_id = detect_parent_id(path, source);
             let _ = tx
                 .send((
                     Transport::Jsonl,
@@ -336,6 +337,7 @@ async fn walk_jsonl(
                         source: source.to_string(),
                         session_id: session_id.clone(),
                         cwd: cwd.clone(),
+                        parent_id,
                     },
                 ))
                 .await;
@@ -409,6 +411,17 @@ async fn check_session_ended(path: &Path, checker: SessionEndChecker) -> bool {
         return false;
     }
     checker(&buf)
+}
+
+/// Detect if this transcript is a subagent by checking for a "subagents"
+/// component in the path. If found, derive the parent's AgentId from the
+/// grandparent directory (the parent session's transcript directory).
+fn detect_parent_id(path: &Path, source: &str) -> Option<AgentId> {
+    let path_str = path.to_string_lossy();
+    let idx = path_str.find("/subagents/")?;
+    let parent_dir = &path_str[..idx];
+    let parent_jsonl = format!("{parent_dir}.jsonl");
+    Some(AgentId::from_parts(source, &parent_jsonl))
 }
 
 fn extract_cwd(bytes: &[u8]) -> Option<PathBuf> {

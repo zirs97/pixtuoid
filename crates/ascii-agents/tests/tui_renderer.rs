@@ -41,6 +41,7 @@ fn tui_renderer_render_paints_a_full_frame() {
             tool_call_count: 0,
             active_ms: 0,
             unknown_cwd: false,
+            parent_id: None,
         },
     );
 

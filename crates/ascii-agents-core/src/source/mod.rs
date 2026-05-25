@@ -79,6 +79,7 @@ pub enum AgentEvent {
         source: String,
         session_id: String,
         cwd: PathBuf,
+        parent_id: Option<AgentId>,
     },
     ActivityStart {
         agent_id: AgentId,

@@ -39,6 +39,7 @@ fn make_slot(id: AgentId) -> AgentSlot {
         tool_call_count: 0,
         active_ms: 0,
         unknown_cwd: false,
+        parent_id: None,
     }
 }
 

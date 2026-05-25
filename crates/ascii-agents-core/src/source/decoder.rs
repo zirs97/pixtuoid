@@ -40,6 +40,7 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
                 source,
                 session_id,
                 cwd,
+                parent_id: None,
             })
         }
         "PreToolUse" => {

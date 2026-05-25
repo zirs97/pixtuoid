@@ -41,6 +41,7 @@ async fn manager_runs_multiple_sources_concurrently() {
                 source: "src-a".into(),
                 session_id: "1".into(),
                 cwd: PathBuf::from("/a"),
+                parent_id: None,
             },
         )],
     };
@@ -53,6 +54,7 @@ async fn manager_runs_multiple_sources_concurrently() {
                 source: "src-b".into(),
                 session_id: "1".into(),
                 cwd: PathBuf::from("/b"),
+                parent_id: None,
             },
         )],
     };

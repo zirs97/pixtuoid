@@ -59,6 +59,7 @@ pub struct AgentSlot {
     pub tool_call_count: u32,
     pub active_ms: u64,
     pub unknown_cwd: bool,
+    pub parent_id: Option<AgentId>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -117,6 +118,7 @@ mod tests {
                     tool_call_count: 0,
                     active_ms: 0,
                     unknown_cwd: false,
+                    parent_id: None,
                 },
             );
         }

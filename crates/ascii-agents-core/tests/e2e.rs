@@ -34,6 +34,7 @@ fn scripted_timeline_drives_scene_through_states() {
             source: "claude-code".into(),
             session_id: "abc".into(),
             cwd: PathBuf::from("/repo"),
+            parent_id: None,
         }],
         10,
         &mut reducer,
