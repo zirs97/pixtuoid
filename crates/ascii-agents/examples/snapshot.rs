@@ -377,7 +377,13 @@ async fn capture_live_scene(projects_root: &str, listen_secs: u64) -> Result<Sce
     let scene: Arc<RwLock<SceneState>> = Arc::new(RwLock::new(SceneState::new(12)));
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(1024);
     let root = PathBuf::from(projects_root);
-    let watcher = JsonlWatcher::new(root);
+    let watcher = JsonlWatcher::new(
+        root,
+        ascii_agents_core::source::claude_code::SOURCE_NAME.to_string(),
+        ascii_agents_core::source::claude_code::decode_cc_line,
+        ascii_agents_core::source::claude_code::cc_derive_label,
+        ascii_agents_core::source::claude_code::cc_session_ended,
+    );
     let watcher_handle = tokio::spawn(async move { watcher.run(tx).await });
 
     let mut reducer = Reducer::new();
@@ -497,6 +503,7 @@ fn sample_scene(now: SystemTime, max_desks: usize) -> SceneState {
                 desk_index: i,
                 tool_call_count: 0,
                 active_ms: 0,
+                unknown_cwd: false,
             },
         );
     }

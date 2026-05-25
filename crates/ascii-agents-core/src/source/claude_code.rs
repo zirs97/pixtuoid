@@ -10,6 +10,8 @@ use crate::source::jsonl::JsonlWatcher;
 use crate::source::{Activity, AgentEvent, Source, TaggedSender};
 use crate::AgentId;
 
+pub const SOURCE_NAME: &str = "claude-code";
+
 pub struct ClaudeCodeSource {
     pub socket_path: PathBuf,
     pub projects_root: PathBuf,
@@ -44,9 +46,13 @@ impl Source for ClaudeCodeSource {
 
     async fn run(self: Box<Self>, tx: TaggedSender) -> Result<()> {
         let socket = HookSocketListener::bind(self.socket_path.clone()).await?;
-        let watcher = JsonlWatcher::new(self.projects_root.clone())
-            .with_decoder(decode_cc_line)
-            .with_label_deriver(cc_derive_label);
+        let watcher = JsonlWatcher::new(
+            self.projects_root.clone(),
+            SOURCE_NAME.to_string(),
+            decode_cc_line,
+            cc_derive_label,
+            cc_session_ended,
+        );
 
         let tx_hook = tx.clone();
         let tx_jsonl = tx.clone();
@@ -135,6 +141,35 @@ pub fn decode_cc_line(transcript_path: &str, source: &str, v: Value) -> Result<V
         _ => {}
     }
     Ok(out)
+}
+
+/// CC session-end checker: parses lines as JSON and checks for
+/// session lifecycle markers structurally (not byte scan).
+pub fn cc_session_ended(tail: &[u8]) -> bool {
+    let mut last_is_end = false;
+    for line in tail.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(s) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
+            continue;
+        };
+        let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+        let hook = v
+            .get("hook_event_name")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        if subtype == "session_start" {
+            last_is_end = false;
+        }
+        if subtype == "session_end" || hook == "SessionEnd" {
+            last_is_end = true;
+        }
+    }
+    last_is_end
 }
 
 /// CC label: subagent paths → "subagent", otherwise "cc·" + cwd basename.

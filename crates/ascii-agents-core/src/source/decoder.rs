@@ -7,8 +7,6 @@ use serde_json::Value;
 use crate::source::{Activity, AgentEvent, ToolDetail};
 use crate::AgentId;
 
-pub const SOURCE_NAME: &str = "claude-code";
-
 pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
     let obj = v
         .as_object()
@@ -27,16 +25,16 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
         .get("transcript_path")
         .and_then(|s| s.as_str())
         .ok_or_else(|| anyhow!("missing transcript_path"))?;
-    let agent_id = AgentId::from_transcript_path(transcript_path);
+    let source = obj
+        .get("source")
+        .and_then(|s| s.as_str())
+        .unwrap_or(crate::source::claude_code::SOURCE_NAME);
+    let agent_id = AgentId::from_parts(source, transcript_path);
 
     match event {
         "SessionStart" => {
             let cwd = obj.get("cwd").and_then(|s| s.as_str()).unwrap_or("").into();
-            let source = obj
-                .get("source")
-                .and_then(|s| s.as_str())
-                .unwrap_or(SOURCE_NAME)
-                .to_string();
+            let source = source.to_string();
             Ok(AgentEvent::SessionStart {
                 agent_id,
                 source,

@@ -9,13 +9,12 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-use crate::source::claude_code;
-use crate::source::decoder;
 use crate::source::{AgentEvent, TaggedSender, Transport};
 use crate::AgentId;
 
 pub type LineDecoder = fn(&str, &str, serde_json::Value) -> Result<Vec<AgentEvent>>;
 pub type LabelDeriver = fn(&Path, &str, &Path) -> String;
+pub type SessionEndChecker = fn(&[u8]) -> bool;
 
 pub struct JsonlWatcher {
     root: PathBuf,
@@ -23,40 +22,32 @@ pub struct JsonlWatcher {
     source_name: String,
     decode_line: LineDecoder,
     derive_label: LabelDeriver,
+    check_session_ended: SessionEndChecker,
 }
 
 const DEFAULT_INITIAL_WINDOW: Duration = Duration::from_secs(3600);
+const STARTUP_STALE_MINUTES: u64 = 5;
 
 impl JsonlWatcher {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(
+        root: PathBuf,
+        source: String,
+        decode_line: LineDecoder,
+        derive_label: LabelDeriver,
+        check_session_ended: SessionEndChecker,
+    ) -> Self {
         Self {
             root,
             initial_window: DEFAULT_INITIAL_WINDOW,
-            source_name: decoder::SOURCE_NAME.to_string(),
-            decode_line: claude_code::decode_cc_line,
-            derive_label: claude_code::cc_derive_label,
+            source_name: source,
+            decode_line,
+            derive_label,
+            check_session_ended,
         }
     }
 
-    pub fn with_initial_window(root: PathBuf, window: Duration) -> Self {
-        Self {
-            initial_window: window,
-            ..Self::new(root)
-        }
-    }
-
-    pub fn with_source(mut self, source: String) -> Self {
-        self.source_name = source;
-        self
-    }
-
-    pub fn with_decoder(mut self, f: LineDecoder) -> Self {
-        self.decode_line = f;
-        self
-    }
-
-    pub fn with_label_deriver(mut self, f: LabelDeriver) -> Self {
-        self.derive_label = f;
+    pub fn with_initial_window(mut self, window: Duration) -> Self {
+        self.initial_window = window;
         self
     }
 
@@ -82,6 +73,7 @@ impl JsonlWatcher {
         let source_arc: Arc<str> = Arc::from(self.source_name.as_str());
         let decode_line = self.decode_line;
         let derive_label = self.derive_label;
+        let check_ended = self.check_session_ended;
 
         initial_seed_root(
             &self.root,
@@ -89,6 +81,7 @@ impl JsonlWatcher {
             &source_arc,
             decode_line,
             derive_label,
+            check_ended,
             &cursors,
             &seen_sessions,
             &tx,
@@ -116,6 +109,7 @@ async fn initial_seed_root(
     source: &Arc<str>,
     decode_line: LineDecoder,
     derive_label: LabelDeriver,
+    check_ended: SessionEndChecker,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
@@ -128,6 +122,7 @@ async fn initial_seed_root(
                 source,
                 decode_line,
                 derive_label,
+                check_ended,
                 cursors,
                 seen,
                 tx,
@@ -144,6 +139,7 @@ async fn initial_seed_walk(
     source: &Arc<str>,
     decode_line: LineDecoder,
     derive_label: LabelDeriver,
+    check_ended: SessionEndChecker,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
@@ -161,6 +157,7 @@ async fn initial_seed_walk(
                     source,
                     decode_line,
                     derive_label,
+                    check_ended,
                     cursors,
                     seen,
                     tx,
@@ -188,7 +185,8 @@ async fn initial_seed_walk(
             .and_then(|t| t.elapsed().ok())
             .map(|d| d.as_secs() / 60)
             .unwrap_or(0);
-        let ended = session_ended_last(path).await || stale_minutes >= 5;
+        let ended =
+            check_session_ended(path, check_ended).await || stale_minutes >= STARTUP_STALE_MINUTES;
         if ended {
             cursors.lock().await.insert(path.to_path_buf(), meta.len());
         } else {
@@ -386,11 +384,8 @@ async fn walk_jsonl(
     }
 }
 
-/// Check if the last session lifecycle event in the file is a session-end.
-/// Reads the tail of the file (up to 8KB) and scans for session_start vs
-/// session_end markers. If the last one is session_end, the session is
-/// finished and shouldn't be replayed on startup.
-async fn session_ended_last(path: &Path) -> bool {
+/// Read the tail of a file and delegate to the source-specific checker.
+async fn check_session_ended(path: &Path, checker: SessionEndChecker) -> bool {
     const TAIL_BYTES: u64 = 8192;
     let Ok(meta) = tokio::fs::metadata(path).await else {
         return false;
@@ -413,22 +408,7 @@ async fn session_ended_last(path: &Path) -> bool {
     {
         return false;
     }
-
-    let mut last_is_end = false;
-    for line in buf.split(|b| *b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        if line.windows(13).any(|w| w == b"session_start") {
-            last_is_end = false;
-        }
-        if line.windows(11).any(|w| w == b"session_end")
-            || line.windows(10).any(|w| w == b"SessionEnd")
-        {
-            last_is_end = true;
-        }
-    }
-    last_is_end
+    checker(&buf)
 }
 
 fn extract_cwd(bytes: &[u8]) -> Option<PathBuf> {

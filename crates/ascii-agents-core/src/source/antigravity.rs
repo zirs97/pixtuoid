@@ -32,10 +32,13 @@ impl Source for AntigravitySource {
     }
 
     async fn run(self: Box<Self>, tx: TaggedSender) -> Result<()> {
-        let watcher = JsonlWatcher::new(self.brain_root.clone())
-            .with_source("antigravity".to_string())
-            .with_decoder(decode_ag_line)
-            .with_label_deriver(derive_ag_label);
+        let watcher = JsonlWatcher::new(
+            self.brain_root.clone(),
+            "antigravity".to_string(),
+            decode_ag_line,
+            derive_ag_label,
+            ag_session_ended,
+        );
         watcher.run(tx).await
     }
 }
@@ -111,6 +114,10 @@ pub fn decode_ag_line(transcript_path: &str, source: &str, v: Value) -> Result<V
     }
 
     Ok(out)
+}
+
+fn ag_session_ended(_tail: &[u8]) -> bool {
+    false
 }
 
 fn derive_ag_label(_path: &Path, _source: &str, cwd: &Path) -> String {

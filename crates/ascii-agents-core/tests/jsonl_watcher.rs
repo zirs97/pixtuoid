@@ -5,9 +5,20 @@ use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
+use ascii_agents_core::source::claude_code::{cc_derive_label, cc_session_ended, decode_cc_line};
 use ascii_agents_core::source::jsonl::JsonlWatcher;
 use ascii_agents_core::source::AgentEvent;
 use ascii_agents_core::source::Transport;
+
+fn cc_watcher(root: std::path::PathBuf) -> JsonlWatcher {
+    JsonlWatcher::new(
+        root,
+        "claude-code".to_string(),
+        decode_cc_line,
+        cc_derive_label,
+        cc_session_ended,
+    )
+}
 
 #[tokio::test]
 async fn watcher_emits_session_start_then_activity_for_tool_use() {
@@ -18,7 +29,7 @@ async fn watcher_emits_session_start_then_activity_for_tool_use() {
     let transcript = project_dir.join("ses-abc.jsonl");
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(projects_root.clone());
+    let watcher = cc_watcher(projects_root.clone());
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -94,7 +105,7 @@ async fn watcher_does_not_consume_partial_trailing_line() {
     let transcript = project_dir.join("ses-abc.jsonl");
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(projects_root.clone());
+    let watcher = cc_watcher(projects_root.clone());
     let handle = tokio::spawn(async move { watcher.run(tx).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -205,7 +216,7 @@ async fn watcher_skips_session_start_for_stale_files_on_startup() {
     set_file_mtime(&stale, backdated).unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(60));
+    let watcher = cc_watcher(projects_root.clone()).with_initial_window(Duration::from_secs(60));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     // Give the initial scan a moment to run.
@@ -249,8 +260,7 @@ async fn watcher_emits_session_start_for_recent_files_on_startup() {
     // mtime is "now" (just written) — well inside the 1 hour window.
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher =
-        JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(3600));
+    let watcher = cc_watcher(projects_root.clone()).with_initial_window(Duration::from_secs(3600));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     let mut got_start = false;
@@ -283,7 +293,7 @@ async fn first_sight_extracts_cwd_past_non_json_prefix() {
     let transcript = project_dir.join("ses-cwd.jsonl");
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(projects_root.clone());
+    let watcher = cc_watcher(projects_root.clone());
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -346,7 +356,7 @@ async fn stale_file_emits_session_start_when_written_to() {
     .unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(60));
+    let watcher = cc_watcher(projects_root.clone()).with_initial_window(Duration::from_secs(60));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -405,7 +415,13 @@ async fn watcher_custom_label_deriver() {
     let transcript = project_dir.join("ses-xyz.jsonl");
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(projects_root.clone()).with_label_deriver(custom_label);
+    let watcher = JsonlWatcher::new(
+        projects_root.clone(),
+        "claude-code".to_string(),
+        decode_cc_line,
+        custom_label,
+        cc_session_ended,
+    );
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
