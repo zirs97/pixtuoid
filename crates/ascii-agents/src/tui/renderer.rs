@@ -272,7 +272,7 @@ pub fn draw_scene<B: Backend>(
     Ok(())
 }
 
-fn paint_theme_picker(
+pub(super) fn paint_theme_picker(
     f: &mut ratatui::Frame<'_>,
     selected: usize,
     bounds: Rect,
@@ -317,7 +317,7 @@ fn paint_theme_picker(
     f.render_widget(Paragraph::new(items).block(block), area);
 }
 
-fn paint_footer(
+pub(super) fn paint_footer(
     f: &mut ratatui::Frame<'_>,
     scene: &SceneState,
     full_rect: Rect,
@@ -428,6 +428,38 @@ pub(super) fn build_status_summary(
         }
     }
     quit
+}
+
+pub(super) fn flush_buffer_to_term_at_offset(
+    f: &mut ratatui::Frame<'_>,
+    buf: &RgbBuffer,
+    scene_rect: Rect,
+    x_offset: i32,
+) {
+    let term_buf = f.buffer_mut();
+    let w = buf.width as usize;
+    let cell_rows = (buf.height / 2) as usize;
+    for cy in 0..cell_rows {
+        for cx in 0..(buf.width as usize) {
+            let target_x = cx as i32 + x_offset;
+            if target_x < 0 || target_x >= scene_rect.width as i32 {
+                continue;
+            }
+            let x = scene_rect.x + target_x as u16;
+            let y = scene_rect.y + cy as u16;
+            if y >= scene_rect.y + scene_rect.height {
+                continue;
+            }
+            let py_top = cy * 2;
+            let py_bot = cy * 2 + 1;
+            let fg = buf.pixels[py_top * w + cx];
+            let bg = buf.pixels[py_bot * w + cx];
+            let cell = &mut term_buf[(x, y)];
+            cell.set_symbol("▀");
+            cell.fg = Color::Rgb(fg.0, fg.1, fg.2);
+            cell.bg = Color::Rgb(bg.0, bg.1, bg.2);
+        }
+    }
 }
 
 fn flush_buffer_to_term(f: &mut ratatui::Frame<'_>, buf: &RgbBuffer, scene_rect: Rect) {

@@ -18,9 +18,13 @@ use ascii_agents_core::Renderer;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
+use ratatui::layout::Rect;
+
 use crate::tui::floor::{build_floor_scene, num_floors, FloorCtx, FloorTransition};
+use crate::tui::layout::Layout;
 use crate::tui::pathfind::Router;
-use crate::tui::renderer::draw_scene;
+use crate::tui::pixel_painter::render_to_rgb_buffer;
+use crate::tui::renderer::{draw_scene, flush_buffer_to_term_at_offset};
 
 pub struct TuiRenderer<B: Backend> {
     pub terminal: Terminal<B>,
@@ -145,18 +149,144 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             }
         }
 
-        // Build the floor-scoped scene for the current floor.
-        let (floor_agents, desks_per_floor) = build_floor_scene(scene, self.current_floor);
-        let mut floor_scene = SceneState::new(desks_per_floor);
-        for agent in floor_agents {
-            floor_scene.agents.insert(agent.agent_id, agent);
-        }
-
         let floor_info = if nf > 1 {
             Some((self.current_floor + 1, nf))
         } else {
             None
         };
+
+        // --- Transition path: composite two floors sliding in/out ----------
+        if let Some(ref tr) = self.transition {
+            let from_floor = tr.from_floor;
+            let to_floor = tr.to_floor;
+            let t = tr.t(now);
+            let going_down = to_floor > from_floor;
+
+            // Build floor-scoped scenes for both floors.
+            let (from_agents, from_dpf) = build_floor_scene(scene, from_floor);
+            let mut from_scene = SceneState::new(from_dpf);
+            for a in from_agents {
+                from_scene.agents.insert(a.agent_id, a);
+            }
+
+            let (to_agents, to_dpf) = build_floor_scene(scene, to_floor);
+            let mut to_scene = SceneState::new(to_dpf);
+            for a in to_agents {
+                to_scene.agents.insert(a.agent_id, a);
+            }
+
+            let term_size = self.terminal.size()?;
+            let full_rect = Rect {
+                x: 0,
+                y: 0,
+                width: term_size.width,
+                height: term_size.height,
+            };
+            let scene_rect = Rect {
+                x: 0,
+                y: 0,
+                width: full_rect.width,
+                height: full_rect.height.saturating_sub(1),
+            };
+
+            let buf_w = scene_rect.width;
+            let buf_h = scene_rect.height * 2;
+
+            // Render both floors into their respective buffers.
+            // Use split_at_mut to get mutable access to two different indices.
+            let (lo, hi) = if from_floor < to_floor {
+                (from_floor, to_floor)
+            } else {
+                (to_floor, from_floor)
+            };
+
+            let (bufs_lo, bufs_hi) = self.floor_bufs.split_at_mut(hi);
+            let lo_buf = &mut bufs_lo[lo];
+            let hi_buf = &mut bufs_hi[0];
+            let (from_buf, to_buf) = if from_floor < to_floor {
+                (lo_buf, hi_buf)
+            } else {
+                (hi_buf, lo_buf)
+            };
+
+            let (ctxs_lo, ctxs_hi) = self.floor_ctxs.split_at_mut(hi);
+            let lo_ctx = &mut ctxs_lo[lo];
+            let hi_ctx = &mut ctxs_hi[0];
+            let (from_ctx, to_ctx) = if from_floor < to_floor {
+                (lo_ctx, hi_ctx)
+            } else {
+                (hi_ctx, lo_ctx)
+            };
+
+            from_buf.ensure_size(buf_w, buf_h, self.theme.surface.bg_fallback);
+            to_buf.ensure_size(buf_w, buf_h, self.theme.surface.bg_fallback);
+
+            if let Some(layout) = Layout::compute(buf_w, buf_h, from_scene.max_desks) {
+                from_ctx.router.set_preferred_zone(layout.corridor);
+                render_to_rgb_buffer(
+                    &from_scene,
+                    &layout,
+                    pack,
+                    now,
+                    from_buf,
+                    &mut from_ctx.cache,
+                    &mut from_ctx.router,
+                    &mut from_ctx.overlay,
+                    &mut from_ctx.history,
+                    self.theme,
+                );
+            }
+
+            if let Some(layout) = Layout::compute(buf_w, buf_h, to_scene.max_desks) {
+                to_ctx.router.set_preferred_zone(layout.corridor);
+                render_to_rgb_buffer(
+                    &to_scene,
+                    &layout,
+                    pack,
+                    now,
+                    to_buf,
+                    &mut to_ctx.cache,
+                    &mut to_ctx.router,
+                    &mut to_ctx.overlay,
+                    &mut to_ctx.history,
+                    self.theme,
+                );
+            }
+
+            // Compute x-offsets for the slide.
+            let width = scene_rect.width as f32;
+            let (from_offset, to_offset) = if going_down {
+                // Outgoing slides left, incoming from right.
+                let from_x = -(t * width) as i32;
+                let to_x = (width - t * width) as i32;
+                (from_x, to_x)
+            } else {
+                // Outgoing slides right, incoming from left.
+                let from_x = (t * width) as i32;
+                let to_x = -((width - t * width) as i32);
+                (from_x, to_x)
+            };
+
+            let theme = self.theme;
+            let theme_picker = self.theme_picker;
+            self.terminal.draw(|f| {
+                crate::tui::renderer::paint_footer(f, scene, full_rect, theme, floor_info);
+                flush_buffer_to_term_at_offset(f, from_buf, scene_rect, from_offset);
+                flush_buffer_to_term_at_offset(f, to_buf, scene_rect, to_offset);
+                if let Some(idx) = theme_picker {
+                    crate::tui::renderer::paint_theme_picker(f, idx, full_rect, theme);
+                }
+            })?;
+
+            return Ok(());
+        }
+
+        // --- Normal path: single floor ------------------------------------
+        let (floor_agents, desks_per_floor) = build_floor_scene(scene, self.current_floor);
+        let mut floor_scene = SceneState::new(desks_per_floor);
+        for agent in floor_agents {
+            floor_scene.agents.insert(agent.agent_id, agent);
+        }
 
         let ctx = &mut self.floor_ctxs[self.current_floor];
         let buf = &mut self.floor_bufs[self.current_floor];
