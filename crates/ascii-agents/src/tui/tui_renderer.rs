@@ -315,6 +315,7 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                 }
             })?;
 
+            self.cached_layout = None;
             return Ok(());
         }
 
@@ -341,16 +342,9 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             floor: FloorMeta::for_floor(self.current_floor, nf),
         };
         let result = draw_scene(&mut self.terminal, &floor_scene, pack, now, &mut draw_ctx);
-
-        let buf = &self.floor_bufs[self.current_floor];
-        let floor_meta = FloorMeta::for_floor(self.current_floor, nf);
-        self.cached_layout = Layout::compute_with_seed(
-            buf.width,
-            buf.height,
-            floor_scene.max_desks,
-            floor_meta.floor_seed,
-        );
-
-        result
+        if let Ok(ref layout_opt) = result {
+            self.cached_layout = layout_opt.clone();
+        }
+        result.map(|_| ())
     }
 }

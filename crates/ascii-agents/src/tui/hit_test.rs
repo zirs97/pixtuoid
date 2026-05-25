@@ -3,7 +3,6 @@
 
 use std::time::SystemTime;
 
-use ascii_agents_core::sprite::RgbBuffer;
 use ascii_agents_core::walkable::OccupancyOverlay;
 use ascii_agents_core::{AgentId, SceneState};
 
@@ -54,19 +53,7 @@ pub(crate) fn hit_test_agent(
 
 /// Lightweight hit-test for click-to-pin without needing router/overlay state.
 /// Uses home desk positions only (no walking agents).
-pub fn hit_test_from_tui(
-    scene: &SceneState,
-    max_desks: usize,
-    mx: u16,
-    my: u16,
-    buf: &RgbBuffer,
-) -> Option<AgentId> {
-    let buf_h = buf.height;
-    let buf_w = buf.width;
-    if buf_w < 20 || buf_h < 24 {
-        return None;
-    }
-    let layout = Layout::compute(buf_w, buf_h, max_desks)?;
+pub fn hit_test_from_tui(scene: &SceneState, layout: &Layout, mx: u16, my: u16) -> Option<AgentId> {
     const SPRITE_W: u16 = 8;
     const SPRITE_H_CELLS: u16 = 6;
     for agent in scene.agents.values() {

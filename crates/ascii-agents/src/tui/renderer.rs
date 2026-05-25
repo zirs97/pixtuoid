@@ -133,7 +133,7 @@ pub fn draw_scene<B: Backend>(
     pack: &Pack,
     now: SystemTime,
     ctx: &mut DrawCtx<'_>,
-) -> Result<()> {
+) -> Result<Option<Layout>> {
     let term_size = term.size()?;
     let full_rect = Rect {
         x: 0,
@@ -153,7 +153,7 @@ pub fn draw_scene<B: Backend>(
 
     if scene_rect.width < 20 || scene_rect.height < 12 {
         term.draw(|f| paint_footer(f, scene, full_rect, theme, floor_info))?;
-        return Ok(());
+        return Ok(None);
     }
 
     let buf_w = scene_rect.width;
@@ -162,7 +162,7 @@ pub fn draw_scene<B: Backend>(
     let Some(layout) = Layout::compute_with_seed(buf_w, buf_h, scene.max_desks, floor.floor_seed)
     else {
         term.draw(|f| paint_footer(f, scene, full_rect, theme, floor_info))?;
-        return Ok(());
+        return Ok(None);
     };
 
     ctx.router.set_preferred_zone(layout.corridor);
@@ -249,7 +249,7 @@ pub fn draw_scene<B: Backend>(
             paint_theme_picker(f, idx, full_rect, theme);
         }
     })?;
-    Ok(())
+    Ok(Some(layout))
 }
 
 pub(super) fn flush_buffer_to_term_at_offset(

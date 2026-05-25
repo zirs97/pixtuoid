@@ -166,13 +166,9 @@ pub async fn run_tui(
                                     renderer.set_pinned_agent(None);
                                 } else {
                                     let snap = scene_rx.borrow().clone();
-                                    let hit = renderer::hit_test_from_tui(
-                                        &snap,
-                                        snap.max_desks,
-                                        m.column,
-                                        m.row,
-                                        renderer.buf(),
-                                    );
+                                    let hit = renderer.cached_layout().and_then(|layout| {
+                                        renderer::hit_test_from_tui(&snap, layout, m.column, m.row)
+                                    });
                                     renderer.set_pinned_agent(hit);
                                 }
                             }
