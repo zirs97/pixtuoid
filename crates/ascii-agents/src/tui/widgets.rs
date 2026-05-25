@@ -671,6 +671,39 @@ fn truncate_label(label: &str, budget: usize) -> std::borrow::Cow<'_, str> {
     Cow::Owned(label.chars().take(budget).collect())
 }
 
+pub(super) fn paint_elevator_indicator(
+    f: &mut ratatui::Frame<'_>,
+    door: crate::tui::layout::Point,
+    current_floor: usize,
+    scene_rect: Rect,
+    theme: &crate::tui::theme::Theme,
+) {
+    use ratatui::style::Modifier;
+    use ratatui::text::Line;
+
+    let label = format!(" \u{25b2} F{current_floor} \u{25bc} ");
+    let label_w = label.len() as u16;
+    let door_cell_x = door.x + 8u16.saturating_sub(label_w / 2);
+    let door_cell_y = door.y / 2;
+    let indicator_y = door_cell_y.saturating_sub(1);
+
+    if let Some(r) = crate::tui::renderer::clip_widget_rect(
+        Rect {
+            x: scene_rect.x + door_cell_x,
+            y: scene_rect.y + indicator_y,
+            width: label_w,
+            height: 1,
+        },
+        scene_rect,
+    ) {
+        let style = Style::default()
+            .fg(to_color(theme.ui.neon_brand))
+            .bg(to_color(theme.ui.tooltip_bg))
+            .add_modifier(Modifier::BOLD);
+        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

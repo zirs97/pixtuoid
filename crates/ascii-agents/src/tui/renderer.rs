@@ -13,7 +13,7 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use ascii_agents_core::sprite::format::Pack;
-use ascii_agents_core::sprite::{Rgb, RgbBuffer};
+use ascii_agents_core::sprite::RgbBuffer;
 use ascii_agents_core::SceneState;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
@@ -22,9 +22,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::Span;
-use ratatui::widgets::Paragraph;
+use ratatui::style::Color;
 use ratatui::Terminal;
 
 use crate::tui::frame_cache::FrameCache;
@@ -39,13 +37,9 @@ pub use crate::tui::hit_test::{hit_test_coffee_machine, hit_test_from_tui, hit_t
 pub(crate) use crate::tui::widgets::paint_hover_tooltip;
 pub use crate::tui::widgets::TickerQueue;
 pub(super) use crate::tui::widgets::{
-    paint_coffee_tooltip, paint_footer, paint_furniture_tooltip, paint_label_widgets,
-    paint_theme_picker, paint_wall_display,
+    paint_coffee_tooltip, paint_elevator_indicator, paint_footer, paint_furniture_tooltip,
+    paint_label_widgets, paint_theme_picker, paint_wall_display,
 };
-
-fn to_color(c: Rgb) -> Color {
-    Color::Rgb(c.0, c.1, c.2)
-}
 
 /// Mutable per-frame render state, borrowed from `TuiRenderer`. Replaces
 /// the 14-parameter `draw_scene` signature with a single struct pass.
@@ -304,39 +298,6 @@ fn flush_buffer_to_term(f: &mut ratatui::Frame<'_>, buf: &RgbBuffer, scene_rect:
             cell.fg = Color::Rgb(fg.0, fg.1, fg.2);
             cell.bg = Color::Rgb(bg.0, bg.1, bg.2);
         }
-    }
-}
-
-pub(super) fn paint_elevator_indicator(
-    f: &mut ratatui::Frame<'_>,
-    door: crate::tui::layout::Point,
-    current_floor: usize,
-    scene_rect: Rect,
-    theme: &crate::tui::theme::Theme,
-) {
-    use ratatui::style::Modifier;
-    use ratatui::text::Line;
-
-    let label = format!(" \u{25b2} F{current_floor} \u{25bc} ");
-    let label_w = label.len() as u16;
-    let door_cell_x = door.x + 8u16.saturating_sub(label_w / 2);
-    let door_cell_y = door.y / 2;
-    let indicator_y = door_cell_y.saturating_sub(1);
-
-    if let Some(r) = clip_widget_rect(
-        Rect {
-            x: scene_rect.x + door_cell_x,
-            y: scene_rect.y + indicator_y,
-            width: label_w,
-            height: 1,
-        },
-        scene_rect,
-    ) {
-        let style = Style::default()
-            .fg(to_color(theme.ui.neon_brand))
-            .bg(to_color(theme.ui.tooltip_bg))
-            .add_modifier(Modifier::BOLD);
-        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
     }
 }
 
