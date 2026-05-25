@@ -38,7 +38,8 @@ Running multiple AI agents in the terminal is like managing a sweatshop you can'
 
 | | Feature | Description |
 |---|---|---|
-| 🏢 | **Multi-agent office** | Each CC session gets a desk; overflow agents work from sofas and floor seats |
+| 🏢 | **Multi-agent office** | Each CC session gets a desk; overflow agents auto-fill new floors |
+| 🛗 | **Multi-floor office** | PageUp/PageDown/↑↓/jk to navigate floors with slide transition |
 | 🎭 | **Animated characters** | Typing, thinking (`···`), waiting (`?`), sleeping (z's), walking with A\*-routed pathfinding |
 | 💡 | **Per-tool monitor glow** | Edit = blue, Bash = orange, Read = cyan — scannable at a glance |
 | 🎨 | **Per-agent identity** | Deterministic shirt/hair/skin palette from session hash, 16 curated outfits |

@@ -129,8 +129,7 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
 
         // Grow vectors if needed.
         while self.floor_bufs.len() < nf {
-            self.floor_bufs
-                .push(RgbBuffer::filled(0, 0, Rgb(0, 0, 0)));
+            self.floor_bufs.push(RgbBuffer::filled(0, 0, Rgb(0, 0, 0)));
         }
         while self.floor_ctxs.len() < nf {
             self.floor_ctxs.push(FloorCtx::new());

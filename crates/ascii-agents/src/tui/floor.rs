@@ -224,7 +224,11 @@ mod tests {
         assert_eq!(dpf0, 16);
         assert_eq!(floor0.len(), 16);
         for a in &floor0 {
-            assert!(a.desk_index < 16, "desk_index {} out of range", a.desk_index);
+            assert!(
+                a.desk_index < 16,
+                "desk_index {} out of range",
+                a.desk_index
+            );
         }
 
         let (floor1, dpf1) = build_floor_scene(&scene, 1);

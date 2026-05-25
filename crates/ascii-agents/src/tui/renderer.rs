@@ -242,7 +242,9 @@ pub fn draw_scene<B: Backend>(
         paint_label_widgets(
             f, scene, &layout, now, router, overlay, history, scene_rect, hovered, theme,
         );
-        paint_wall_display(f, scene, &layout, scene_rect, now, ticker, theme, floor_info);
+        paint_wall_display(
+            f, scene, &layout, scene_rect, now, ticker, theme, floor_info,
+        );
         let tooltip_agent = hovered.or(pinned_agent);
         if let (Some(agent_id), Some((mx, my))) = (tooltip_agent, mouse_pos) {
             paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect, now, theme);

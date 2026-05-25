@@ -128,12 +128,9 @@ pub async fn run_tui(
                                 (KeyCode::PageDown, _)
                                 | (KeyCode::Down, _)
                                 | (KeyCode::Char('j'), _) => {
-                                    let n_floors =
-                                        crate::tui::floor::num_floors(&snapshot);
+                                    let n_floors = crate::tui::floor::num_floors(&snapshot);
                                     let cur = renderer.current_floor();
-                                    if cur + 1 < n_floors
-                                        && renderer.transition().is_none()
-                                    {
+                                    if cur + 1 < n_floors && renderer.transition().is_none() {
                                         renderer.navigate_floor(cur + 1, now);
                                     }
                                 }
