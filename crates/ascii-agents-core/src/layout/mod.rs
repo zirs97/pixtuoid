@@ -47,7 +47,7 @@ pub struct SceneLayout {
     pub cubicle_band: Bounds,
     /// Horizontal corridor at the bottom of the cubicle area — the "main
     /// aisle" connecting door / meeting / pantry. Used by the cat
-    /// wanderer and as a fallback location for overflow floor seats.
+    /// wanderer destination.
     pub walkway: Bounds,
     pub home_desks: Vec<Point>,
     pub waypoints: Vec<Waypoint>,
@@ -918,7 +918,8 @@ mod tests {
                 .filter(|&(x, y)| l.is_walkable(x as u16, y as u16))
                 .count();
             assert_eq!(
-                reachable, walkable_total,
+                reachable,
+                walkable_total,
                 "seed={seed}: {buf_w}x{buf_h}: {} disconnected pixels",
                 walkable_total - reachable
             );

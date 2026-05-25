@@ -231,7 +231,9 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             let from_meta = FloorMeta::for_floor(from_floor, nf);
             let to_meta = FloorMeta::for_floor(to_floor, nf);
 
-            if let Some(layout) = Layout::compute(buf_w, buf_h, from_scene.max_desks) {
+            if let Some(layout) =
+                Layout::compute_with_seed(buf_w, buf_h, from_scene.max_desks, from_meta.cat_seed)
+            {
                 from_ctx.router.set_preferred_zone(layout.corridor);
                 render_to_rgb_buffer(
                     &from_scene,
@@ -248,7 +250,9 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                 );
             }
 
-            if let Some(layout) = Layout::compute(buf_w, buf_h, to_scene.max_desks) {
+            if let Some(layout) =
+                Layout::compute_with_seed(buf_w, buf_h, to_scene.max_desks, to_meta.cat_seed)
+            {
                 to_ctx.router.set_preferred_zone(layout.corridor);
                 render_to_rgb_buffer(
                     &to_scene,
@@ -328,6 +332,7 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             self.theme,
             self.theme_picker,
             floor_info,
+            FloorMeta::for_floor(self.current_floor, nf),
         )
     }
 }
