@@ -10,7 +10,7 @@
 //! uses for label placement and mouse hit-testing.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use ascii_agents_core::sprite::blit::blit_frame;
 use ascii_agents_core::sprite::format::Pack;
@@ -315,23 +315,6 @@ pub(super) fn character_anchor(
     history: &mut pose::PoseHistory,
 ) -> Option<Point> {
     use crate::tui::layout::WaypointKind;
-    if agent.desk_index >= layout.home_desks.len() {
-        let overflow_idx = agent.desk_index - layout.home_desks.len();
-        let sofa_count = layout.meeting_sofas.len();
-        if overflow_idx < sofa_count {
-            let sofa = layout.meeting_sofas[overflow_idx];
-            return Some(Point {
-                x: sofa.x.saturating_sub(4),
-                y: sofa.y.saturating_sub(2),
-            });
-        }
-        let floor_idx = overflow_idx - sofa_count;
-        let seat = layout.floor_seats.get(floor_idx).copied()?;
-        return Some(Point {
-            x: seat.x.saturating_sub(4),
-            y: seat.y.saturating_sub(2),
-        });
-    }
     let desk = *layout.home_desks.get(agent.desk_index)?;
     let pose = pose::derive_with_routing(agent, now, layout, router, overlay, history)?;
     let anchor = match pose {
@@ -542,27 +525,11 @@ pub fn render_to_rgb_buffer(
     // every frame, which would change the overlay signature every frame,
     // wipe the path cache, recompute A*, and snap walkers to new path
     // segments (the visible "flash"). Sitters at desks are already
-    // covered by the static desk mask. Only waypoint visitors and
-    // overflow-seat occupants contribute here — both have stable
-    // positions across frames, so the signature is stable and the
-    // cache hits.
+    // covered by the static desk mask. Only waypoint visitors
+    // contribute here — they have stable positions across frames,
+    // so the signature is stable and the cache hits.
     overlay.clear();
     for agent in &agents {
-        if agent.desk_index >= layout.home_desks.len() {
-            let overflow_idx = agent.desk_index - layout.home_desks.len();
-            let sofa_count = layout.meeting_sofas.len();
-            let pos = if overflow_idx < sofa_count {
-                layout.meeting_sofas[overflow_idx]
-            } else {
-                let floor_idx = overflow_idx - sofa_count;
-                let Some(seat) = layout.floor_seats.get(floor_idx).copied() else {
-                    continue;
-                };
-                seat
-            };
-            overlay.add(pos.x.saturating_sub(4), pos.y.saturating_sub(6), 8, 12);
-            continue;
-        }
         let Some(pose) = pose::derive(agent, now, layout) else {
             continue;
         };
@@ -834,175 +801,6 @@ pub fn render_to_rgb_buffer(
     // BTreeMap iteration order.
     let mut wp_rank: HashMap<usize, usize> = HashMap::new();
     for agent in &agents {
-        // Overflow seating — past cubicle capacity, agents take meeting-
-        // room sofas then floor seats. Short 2s entry/exit walk.
-        if agent.desk_index >= layout.home_desks.len() {
-            const OVERFLOW_ANIM_MS: u64 = 2000;
-            let entry_elapsed = now
-                .duration_since(agent.created_at)
-                .unwrap_or(Duration::ZERO)
-                .as_millis() as u64;
-            let is_entering = entry_elapsed < OVERFLOW_ANIM_MS && agent.exiting_at.is_none();
-            let is_exiting = agent.exiting_at.is_some();
-            if is_entering || is_exiting {
-                if let Some(threshold) = layout.door_threshold {
-                    let target = if agent.desk_index - layout.home_desks.len()
-                        < layout.meeting_sofas.len()
-                    {
-                        let sofa = layout.meeting_sofas[agent.desk_index - layout.home_desks.len()];
-                        Point {
-                            x: sofa.x.saturating_sub(4),
-                            y: sofa.y.saturating_sub(2),
-                        }
-                    } else {
-                        let floor_idx =
-                            agent.desk_index - layout.home_desks.len() - layout.meeting_sofas.len();
-                        let seat = match layout.floor_seats.get(floor_idx).copied() {
-                            Some(s) => s,
-                            None => threshold,
-                        };
-                        Point {
-                            x: seat.x.saturating_sub(4),
-                            y: seat.y.saturating_sub(2),
-                        }
-                    };
-                    let (from, to, t) = if is_exiting {
-                        let exit_elapsed = agent
-                            .exiting_at
-                            .and_then(|e| now.duration_since(e).ok())
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0);
-                        let t = (exit_elapsed as f32 / OVERFLOW_ANIM_MS as f32).min(1.0);
-                        (target, threshold, t)
-                    } else {
-                        let t = (entry_elapsed as f32 / OVERFLOW_ANIM_MS as f32).min(1.0);
-                        (threshold, target, t)
-                    };
-                    let x = from.x as f32 + (to.x as f32 - from.x as f32) * t;
-                    let y = from.y as f32 + (to.y as f32 - from.y as f32) * t;
-                    let anchor = Point {
-                        x: x as u16,
-                        y: y as u16,
-                    };
-                    let dy = to.y as i32 - from.y as i32;
-                    let dx = to.x as i32 - from.x as i32;
-                    let anim_name = if dy.abs() > dx.abs() && dy < 0 {
-                        "walking_back"
-                    } else {
-                        "walking"
-                    };
-                    let frame_idx = (entry_elapsed / 220) as usize % 2;
-                    drawables.push(Drawable {
-                        anchor_y: anchor.y + 12,
-                        kind: DrawableKind::Character {
-                            agent,
-                            anim_name,
-                            frame_idx,
-                            anchor,
-                            flip_x: dx < 0,
-                            glow_tint: None,
-                            sleep_z_seed: None,
-                            waiting_bubble: false,
-                            thinking_dots: false,
-                            walking_dust_frame: Some(frame_idx),
-                        },
-                    });
-                    continue;
-                }
-            }
-            let overflow_idx = agent.desk_index - layout.home_desks.len();
-            let sofa_count = layout.meeting_sofas.len();
-            // 400 ms screen-pulse period for active overflow agents.
-            // Out of phase with typing (140 ms) and walking (220 ms) so
-            // adjacent agents don't visibly strobe together.
-            const OVERFLOW_PULSE_MS: u64 = 400;
-            let pulse_frame: usize = now
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| (d.as_millis() as u64 / OVERFLOW_PULSE_MS) as usize % 2)
-                .unwrap_or(0);
-            let is_active = matches!(agent.state, ActivityState::Active { .. });
-
-            if overflow_idx < sofa_count {
-                let sofa = layout.meeting_sofas[overflow_idx];
-                let is_mirrored_sofa = overflow_idx > 0;
-                let (anim_name, base_anchor_y, sprite_h, frame_idx) = if is_mirrored_sofa {
-                    // Back-facing sofa — viewer sees the agent's back, no
-                    // laptop to show. Keep the static back_couch sprite.
-                    ("back_couch", sofa.y.saturating_sub(7), 9u16, 0)
-                } else if is_active {
-                    (
-                        "working_couch",
-                        sofa.y.saturating_sub(2),
-                        12u16,
-                        pulse_frame,
-                    )
-                } else {
-                    ("sitting_couch_sleeping", sofa.y.saturating_sub(2), 12u16, 0)
-                };
-                let anchor = with_breath(
-                    Point {
-                        x: sofa.x.saturating_sub(4),
-                        y: base_anchor_y,
-                    },
-                    agent.agent_id,
-                    now,
-                );
-                let sleeping = !is_active && !is_mirrored_sofa;
-                drawables.push(Drawable {
-                    anchor_y: anchor.y + sprite_h,
-                    kind: DrawableKind::Character {
-                        agent,
-                        anim_name,
-                        frame_idx,
-                        anchor,
-                        flip_x: false,
-                        glow_tint: None,
-                        sleep_z_seed: if sleeping {
-                            Some(agent.agent_id.raw())
-                        } else {
-                            None
-                        },
-                        waiting_bubble: false,
-                        thinking_dots: false,
-                        walking_dust_frame: None,
-                    },
-                });
-                continue;
-            }
-            let floor_idx = overflow_idx - sofa_count;
-            let Some(seat) = layout.floor_seats.get(floor_idx).copied() else {
-                continue;
-            };
-            let anchor = with_breath(
-                Point {
-                    x: seat.x.saturating_sub(4),
-                    y: seat.y.saturating_sub(2),
-                },
-                agent.agent_id,
-                now,
-            );
-            let (anim_name, frame_idx) = if is_active {
-                ("working_floor", pulse_frame)
-            } else {
-                ("seated_floor_sleeping", 0)
-            };
-            drawables.push(Drawable {
-                anchor_y: anchor.y + 12,
-                kind: DrawableKind::Character {
-                    agent,
-                    anim_name,
-                    frame_idx,
-                    anchor,
-                    flip_x: false,
-                    glow_tint: None,
-                    sleep_z_seed: None,
-                    waiting_bubble: false,
-                    thinking_dots: false,
-                    walking_dust_frame: None,
-                },
-            });
-            continue;
-        }
         let Some(desk) = layout.home_desks.get(agent.desk_index).copied() else {
             continue;
         };
