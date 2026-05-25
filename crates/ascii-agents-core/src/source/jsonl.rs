@@ -9,40 +9,46 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-use crate::source::decoder::{decode_jsonl_line, SOURCE_NAME};
 use crate::source::{AgentEvent, TaggedSender, Transport};
 use crate::AgentId;
 
+pub type LineDecoder = fn(&str, &str, serde_json::Value) -> Result<Vec<AgentEvent>>;
+pub type LabelDeriver = fn(&Path, &str, &Path) -> String;
+pub type SessionEndChecker = fn(&[u8]) -> bool;
+
 pub struct JsonlWatcher {
     root: PathBuf,
-    /// On startup, only emit SessionStart for transcripts whose mtime is
-    /// within this window. Older files have their cursor seeded at end-of-file
-    /// so any future writes still bring them live (next SessionStart fires
-    /// then). Without this, every historical .jsonl floods the desk allocator.
     initial_window: Duration,
+    source_name: String,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    check_session_ended: SessionEndChecker,
 }
 
-/// On startup, transcripts modified within this window are treated as
-/// "live" — `SessionStart` fires for them so their sprites appear without
-/// the user needing to fire a fresh tool call. Older files have cursors
-/// seeded at EOF (no flood). Bumped from 10 min to 1 hour after users hit
-/// the case "I had a CC session open but it had been idle a while; when I
-/// started ascii-agents nothing showed up until I made a new tool call."
 const DEFAULT_INITIAL_WINDOW: Duration = Duration::from_secs(3600);
+const STARTUP_STALE_MINUTES: u64 = 5;
 
 impl JsonlWatcher {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(
+        root: PathBuf,
+        source: String,
+        decode_line: LineDecoder,
+        derive_label: LabelDeriver,
+        check_session_ended: SessionEndChecker,
+    ) -> Self {
         Self {
             root,
             initial_window: DEFAULT_INITIAL_WINDOW,
+            source_name: source,
+            decode_line,
+            derive_label,
+            check_session_ended,
         }
     }
 
-    pub fn with_initial_window(root: PathBuf, window: Duration) -> Self {
-        Self {
-            root,
-            initial_window: window,
-        }
+    pub fn with_initial_window(mut self, window: Duration) -> Self {
+        self.initial_window = window;
+        self
     }
 
     pub async fn run(self, tx: TaggedSender) -> Result<()> {
@@ -64,9 +70,18 @@ impl JsonlWatcher {
         let _ = tokio::fs::create_dir_all(&self.root).await;
         watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
+        let source_arc: Arc<str> = Arc::from(self.source_name.as_str());
+        let decode_line = self.decode_line;
+        let derive_label = self.derive_label;
+        let check_ended = self.check_session_ended;
+
         initial_seed_root(
             &self.root,
             self.initial_window,
+            &source_arc,
+            decode_line,
+            derive_label,
+            check_ended,
             &cursors,
             &seen_sessions,
             &tx,
@@ -74,35 +89,57 @@ impl JsonlWatcher {
         .await;
 
         loop {
+            let source_arc = source_arc.clone();
             tokio::select! {
                 Some(path) = notify_rx.recv() => {
-                    walk_jsonl(&path, &cursors, &seen_sessions, &tx).await;
+                    walk_jsonl(&path, &source_arc, decode_line, derive_label, &cursors, &seen_sessions, &tx).await;
                 }
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                    scan_root(&self.root, &cursors, &seen_sessions, &tx).await;
+                    scan_root(&self.root, &source_arc, decode_line, derive_label, &cursors, &seen_sessions, &tx).await;
                 }
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn initial_seed_root(
     root: &Path,
     window: Duration,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    check_ended: SessionEndChecker,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
 ) {
     if let Ok(mut read) = tokio::fs::read_dir(root).await {
         while let Ok(Some(entry)) = read.next_entry().await {
-            initial_seed_walk(&entry.path(), window, cursors, seen, tx).await;
+            initial_seed_walk(
+                &entry.path(),
+                window,
+                source,
+                decode_line,
+                derive_label,
+                check_ended,
+                cursors,
+                seen,
+                tx,
+            )
+            .await;
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn initial_seed_walk(
     path: &Path,
     window: Duration,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    check_ended: SessionEndChecker,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
@@ -114,7 +151,18 @@ async fn initial_seed_walk(
     if meta.is_dir() {
         if let Ok(mut read) = tokio::fs::read_dir(path).await {
             while let Ok(Some(entry)) = read.next_entry().await {
-                Box::pin(initial_seed_walk(&entry.path(), window, cursors, seen, tx)).await;
+                Box::pin(initial_seed_walk(
+                    &entry.path(),
+                    window,
+                    source,
+                    decode_line,
+                    derive_label,
+                    check_ended,
+                    cursors,
+                    seen,
+                    tx,
+                ))
+                .await;
             }
         }
         return;
@@ -131,33 +179,54 @@ async fn initial_seed_walk(
         .unwrap_or(false);
 
     if recent {
-        // Live session: let the normal walk_jsonl flow read from offset 0,
-        // emit SessionStart, and replay content so in-flight Task / tool
-        // state survives an ascii-agents restart.
-        walk_jsonl(path, cursors, seen, tx).await;
+        let stale_minutes = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() / 60)
+            .unwrap_or(0);
+        let ended =
+            check_session_ended(path, check_ended).await || stale_minutes >= STARTUP_STALE_MINUTES;
+        if ended {
+            cursors.lock().await.insert(path.to_path_buf(), meta.len());
+        } else {
+            walk_jsonl(path, source, decode_line, derive_label, cursors, seen, tx).await;
+        }
     } else {
-        // Stale: seed cursor at end so historical events don't replay, and
-        // leave `seen` untouched so the first future write triggers a fresh
-        // SessionStart-on-first-sight via walk_jsonl.
         cursors.lock().await.insert(path.to_path_buf(), meta.len());
     }
 }
 
 async fn scan_root(
     root: &Path,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
 ) {
     if let Ok(mut read) = tokio::fs::read_dir(root).await {
         while let Ok(Some(entry)) = read.next_entry().await {
-            walk_jsonl(&entry.path(), cursors, seen, tx).await;
+            walk_jsonl(
+                &entry.path(),
+                source,
+                decode_line,
+                derive_label,
+                cursors,
+                seen,
+                tx,
+            )
+            .await;
         }
     }
 }
 
 async fn walk_jsonl(
     path: &Path,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
@@ -169,7 +238,16 @@ async fn walk_jsonl(
     if meta.is_dir() {
         if let Ok(mut read) = tokio::fs::read_dir(path).await {
             while let Ok(Some(entry)) = read.next_entry().await {
-                Box::pin(walk_jsonl(&entry.path(), cursors, seen, tx)).await;
+                Box::pin(walk_jsonl(
+                    &entry.path(),
+                    source,
+                    decode_line,
+                    derive_label,
+                    cursors,
+                    seen,
+                    tx,
+                ))
+                .await;
             }
         }
         return;
@@ -179,19 +257,13 @@ async fn walk_jsonl(
     }
 
     let file_len = meta.len();
-
-    // Cap on how many unprocessed bytes we'll tolerate without a newline.
-    // Protects against an attacker (or buggy writer) emitting a giant single
-    // line — without this cap, every notify event re-reads the entire pending
-    // tail, growing without bound.
-    const MAX_PENDING_BYTES: u64 = 1 << 20; // 1 MiB
+    const MAX_PENDING_BYTES: u64 = 1 << 20;
 
     let cursor_now: u64 = {
         let cursors_g = cursors.lock().await;
         *cursors_g.get(path).unwrap_or(&0)
     };
     if cursor_now > file_len {
-        // File shrank (truncation / rotation). Reset cursor; treat as fresh.
         warn!(
             "{} truncated below cursor ({} < {}), resetting cursor",
             path.display(),
@@ -202,7 +274,7 @@ async fn walk_jsonl(
         return;
     }
     if cursor_now == file_len {
-        return; // nothing new
+        return;
     }
     if file_len - cursor_now > MAX_PENDING_BYTES {
         warn!(
@@ -231,15 +303,12 @@ async fn walk_jsonl(
         return;
     }
 
-    // Consume only up to the last complete (newline-terminated) line; any
-    // partial trailing line stays buffered until the next notify event
-    // completes it. `safe_end_relative` is within `new_chunk`.
     let safe_end_relative = match new_chunk.iter().rposition(|&b| b == b'\n') {
         Some(i) => i + 1,
         None => 0,
     };
     if safe_end_relative == 0 {
-        return; // only a partial line — wait for more
+        return;
     }
     let new_cursor = cursor_now + safe_end_relative as u64;
     {
@@ -250,27 +319,34 @@ async fn walk_jsonl(
     let new_bytes = &new_chunk[..safe_end_relative];
     let transcript_path_str = path.to_string_lossy().into_owned();
 
-    // Emit SessionStart on first sight of this transcript.
     {
         let mut seen = seen.lock().await;
         if seen.insert(path.to_path_buf(), true).is_none() {
-            let id = AgentId::from_transcript_path(&transcript_path_str);
+            let id = AgentId::from_parts(source, &transcript_path_str);
             let session_id = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            // Try to extract cwd from the first parseable line; harmless if it fails.
-            // First-sight only: cursor_now==0 here, so new_bytes is the
-            // entire transcript prefix — fine to scan for cwd.
             let cwd = extract_cwd(new_bytes).unwrap_or_default();
             let _ = tx
                 .send((
                     Transport::Jsonl,
                     AgentEvent::SessionStart {
                         agent_id: id,
-                        source: SOURCE_NAME.into(),
-                        session_id,
-                        cwd,
+                        source: source.to_string(),
+                        session_id: session_id.clone(),
+                        cwd: cwd.clone(),
+                    },
+                ))
+                .await;
+
+            let label = derive_label(path, source, &cwd);
+            let _ = tx
+                .send((
+                    Transport::Jsonl,
+                    AgentEvent::Rename {
+                        agent_id: id,
+                        label,
                     },
                 ))
                 .await;
@@ -295,7 +371,7 @@ async fn walk_jsonl(
                 continue;
             }
         };
-        match decode_jsonl_line(&transcript_path_str, v) {
+        match decode_line(&transcript_path_str, source, v) {
             Ok(events) => {
                 for ev in events {
                     if tx.send((Transport::Jsonl, ev)).await.is_err() {
@@ -306,6 +382,33 @@ async fn walk_jsonl(
             Err(e) => warn!("decode error in {}: {e}", path.display()),
         }
     }
+}
+
+/// Read the tail of a file and delegate to the source-specific checker.
+async fn check_session_ended(path: &Path, checker: SessionEndChecker) -> bool {
+    const TAIL_BYTES: u64 = 8192;
+    let Ok(meta) = tokio::fs::metadata(path).await else {
+        return false;
+    };
+    let file_len = meta.len();
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let start = file_len.saturating_sub(TAIL_BYTES);
+    if tokio::io::AsyncSeekExt::seek(&mut file, SeekFrom::Start(start))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = Vec::with_capacity(TAIL_BYTES as usize);
+    if tokio::io::AsyncReadExt::read_to_end(&mut file, &mut buf)
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    checker(&buf)
 }
 
 fn extract_cwd(bytes: &[u8]) -> Option<PathBuf> {

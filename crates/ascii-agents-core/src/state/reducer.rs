@@ -195,14 +195,17 @@ impl Reducer {
                     return;
                 };
                 self.next_label_n += 1;
-                let label: Arc<str> = cwd
+                let has_cwd = cwd
                     .file_name()
                     .and_then(|n| n.to_str())
                     .filter(|s| !s.is_empty())
-                    .map(Arc::<str>::from)
-                    .unwrap_or_else(|| {
-                        Arc::<str>::from(format!("cc#{}", self.next_label_n).as_str())
-                    });
+                    .is_some();
+                let label: Arc<str> = if has_cwd {
+                    Arc::<str>::from(cwd.file_name().and_then(|n| n.to_str()).unwrap_or(&source))
+                } else {
+                    let prefix: String = source.chars().take(2).collect();
+                    Arc::<str>::from(format!("{prefix}#{}", self.next_label_n).as_str())
+                };
                 // Disambiguation for multiple sessions sharing a cwd happens
                 // at render time, not here — we don't want to suffix unique
                 // sessions with a noisy `·xxxx` they don't need.
@@ -223,6 +226,7 @@ impl Reducer {
                         desk_index,
                         tool_call_count: 0,
                         active_ms: 0,
+                        unknown_cwd: !has_cwd,
                     },
                 );
             }
@@ -314,12 +318,17 @@ impl Reducer {
                 .duration_since(pending)
                 .is_ok_and(|d| d >= ACTIVE_GRACE_WINDOW)
             {
-                if matches!(slot.state, ActivityState::Active { .. }) {
-                    let elapsed = pending
-                        .duration_since(slot.state_started_at)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    slot.active_ms += elapsed;
+                if matches!(
+                    slot.state,
+                    ActivityState::Active { .. } | ActivityState::Waiting { .. }
+                ) {
+                    if matches!(slot.state, ActivityState::Active { .. }) {
+                        let elapsed = pending
+                            .duration_since(slot.state_started_at)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        slot.active_ms += elapsed;
+                    }
                     slot.state = ActivityState::Idle;
                     slot.state_started_at = now;
                 }
@@ -343,7 +352,7 @@ impl Reducer {
             let age = now
                 .duration_since(slot.last_event_at)
                 .unwrap_or(Duration::ZERO);
-            let unknown_cwd = slot.label.starts_with("cc#");
+            let unknown_cwd = slot.unknown_cwd;
             let threshold = if unknown_cwd {
                 STALE_UNKNOWN_CWD_TIMEOUT
             } else {

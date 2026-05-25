@@ -1,4 +1,6 @@
-use ascii_agents_core::source::decoder::{decode_hook_payload, decode_jsonl_line};
+use ascii_agents_core::source::antigravity;
+use ascii_agents_core::source::claude_code::decode_cc_line;
+use ascii_agents_core::source::decoder::decode_hook_payload;
 use ascii_agents_core::source::{Activity, AgentEvent};
 use ascii_agents_core::AgentId;
 
@@ -26,6 +28,19 @@ fn decode_session_start() {
             assert_eq!(agent_id, expected_id);
             assert_eq!(session_id, "ses-abc");
             assert_eq!(source, "claude-code");
+        }
+        other => panic!("expected SessionStart, got {other:?}"),
+    }
+}
+
+#[test]
+fn decode_session_start_with_custom_source() {
+    let mut payload = load("session_start");
+    payload["source"] = serde_json::Value::String("antigravity".into());
+    let ev = decode_hook_payload(payload).unwrap();
+    match ev {
+        AgentEvent::SessionStart { source, .. } => {
+            assert_eq!(source, "antigravity");
         }
         other => panic!("expected SessionStart, got {other:?}"),
     }
@@ -74,9 +89,10 @@ fn decode_unknown_event_returns_err() {
 }
 
 #[test]
-fn jsonl_assistant_tool_use_is_activity_start_with_tool_use_id() {
+fn cc_jsonl_assistant_tool_use_is_activity_start() {
     let transcript = "/Users/me/.claude/projects/x/ses-abc.jsonl";
-    let events = decode_jsonl_line(transcript, load_jsonl("assistant_tool_use")).unwrap();
+    let events =
+        decode_cc_line(transcript, "claude-code", load_jsonl("assistant_tool_use")).unwrap();
     assert_eq!(events.len(), 1);
     match &events[0] {
         AgentEvent::ActivityStart {
@@ -94,9 +110,9 @@ fn jsonl_assistant_tool_use_is_activity_start_with_tool_use_id() {
 }
 
 #[test]
-fn jsonl_tool_result_is_activity_end() {
+fn cc_jsonl_tool_result_is_activity_end() {
     let transcript = "/Users/me/.claude/projects/x/ses-abc.jsonl";
-    let events = decode_jsonl_line(transcript, load_jsonl("tool_result")).unwrap();
+    let events = decode_cc_line(transcript, "claude-code", load_jsonl("tool_result")).unwrap();
     assert_eq!(events.len(), 1);
     match &events[0] {
         AgentEvent::ActivityEnd { tool_use_id, .. } => {
@@ -108,8 +124,6 @@ fn jsonl_tool_result_is_activity_end() {
 
 #[test]
 fn decode_hook_payload_with_multibyte_tool_input_does_not_panic() {
-    // Regression: describe_tool_target used to call String::truncate(40),
-    // which panics if byte 40 lands mid-UTF-8-character (e.g. Chinese path).
     let payload = serde_json::json!({
         "hook_event_name": "PreToolUse",
         "session_id": "ses-zh",
@@ -125,7 +139,6 @@ fn decode_hook_payload_with_multibyte_tool_input_does_not_panic() {
         AgentEvent::ActivityStart { detail, .. } => {
             let d = detail.expect("detail set");
             assert!(d.display().contains("Bash"), "got: {}", d.display());
-            // Should end with ellipsis if truncated; either way no panic.
         }
         other => panic!("expected ActivityStart, got {other:?}"),
     }
@@ -133,9 +146,6 @@ fn decode_hook_payload_with_multibyte_tool_input_does_not_panic() {
 
 #[test]
 fn decode_pre_tool_use_carries_tool_use_id_from_payload() {
-    // Current CC PreToolUse payloads include a `tool_use_id` field. The
-    // decoder must surface it so the reducer can pair hook events with the
-    // matching JSONL line and track in-flight Task tool_use_ids.
     let payload = serde_json::json!({
         "hook_event_name": "PreToolUse",
         "session_id": "ses-abc",
@@ -153,10 +163,7 @@ fn decode_pre_tool_use_carries_tool_use_id_from_payload() {
             ..
         } => {
             assert_eq!(tool_use_id.as_deref(), Some("toolu_01ABC"));
-            assert!(
-                detail.expect("detail set").is_task(),
-                "Task tool should produce Task variant"
-            );
+            assert!(detail.expect("detail set").is_task());
         }
         other => panic!("got {other:?}"),
     }
@@ -182,11 +189,7 @@ fn decode_post_tool_use_carries_tool_use_id_from_payload() {
 }
 
 #[test]
-fn jsonl_subagent_line_with_attribution_emits_rename() {
-    // CC tags subagent assistant lines with `attributionAgent` like
-    // "feature-dev:code-explorer". The decoder must surface this as a
-    // Rename event so the sprite label reads as the real subagent name
-    // instead of "cc#N".
+fn cc_jsonl_subagent_line_with_attribution_emits_rename() {
     let transcript = "/Users/me/.claude/projects/x/sess/subagents/agent-abc.jsonl";
     let v = serde_json::json!({
         "type": "assistant",
@@ -201,8 +204,7 @@ fn jsonl_subagent_line_with_attribution_emits_rename() {
             ]
         }
     });
-    let events = decode_jsonl_line(transcript, v).unwrap();
-    // Plugin prefix is stripped so the 18-cell slot can fit the name.
+    let events = decode_cc_line(transcript, "claude-code", v).unwrap();
     let has_rename = events.iter().any(|e| {
         matches!(
             e,
@@ -213,8 +215,106 @@ fn jsonl_subagent_line_with_attribution_emits_rename() {
 }
 
 #[test]
-fn jsonl_plain_user_message_yields_no_events() {
+fn cc_jsonl_plain_user_message_yields_no_events() {
     let transcript = "/Users/me/.claude/projects/x/ses-abc.jsonl";
-    let events = decode_jsonl_line(transcript, load_jsonl("user_message")).unwrap();
+    let events = decode_cc_line(transcript, "claude-code", load_jsonl("user_message")).unwrap();
     assert!(events.is_empty());
+}
+
+#[test]
+fn ag_planner_response_emits_activity_start_with_indexed_tool_use_id() {
+    let transcript = "/Users/me/.gemini/antigravity-cli/brain/sess/transcript.jsonl";
+    let v = serde_json::json!({
+        "step_index": 2,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [
+            { "name": "list_dir", "args": { "DirectoryPath": "\"/repo/src\"" } },
+            { "name": "read_file", "args": { "AbsolutePath": "\"/repo/README.md\"" } }
+        ]
+    });
+    let events = antigravity::decode_ag_line(transcript, "antigravity", v).unwrap();
+    assert_eq!(events.len(), 2);
+    match &events[0] {
+        AgentEvent::ActivityStart { tool_use_id, .. } => {
+            assert_eq!(tool_use_id.as_deref(), Some("ag-2-0"));
+        }
+        other => panic!("got {other:?}"),
+    }
+    match &events[1] {
+        AgentEvent::ActivityStart { tool_use_id, .. } => {
+            assert_eq!(tool_use_id.as_deref(), Some("ag-2-1"));
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn ag_tool_result_emits_activity_end() {
+    let transcript = "/Users/me/.gemini/antigravity-cli/brain/sess/transcript.jsonl";
+    let v = serde_json::json!({
+        "step_index": 3,
+        "type": "LIST_DIRECTORY",
+        "content": "output"
+    });
+    let events = antigravity::decode_ag_line(transcript, "antigravity", v).unwrap();
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        AgentEvent::ActivityEnd { tool_use_id, .. } => {
+            assert_eq!(tool_use_id.as_deref(), Some("ag-2"));
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn ag_uses_source_namespaced_agent_id() {
+    let transcript = "/shared/path.jsonl";
+    let v = serde_json::json!({ "step_index": 1, "type": "PLANNER_RESPONSE", "tool_calls": [] });
+    let _events = antigravity::decode_ag_line(transcript, "antigravity", v).unwrap();
+    let ag_id = AgentId::from_parts("antigravity", transcript);
+    let cc_id = AgentId::from_parts("claude-code", transcript);
+    assert_ne!(
+        ag_id, cc_id,
+        "different sources must produce different AgentIds"
+    );
+}
+
+#[test]
+fn ag_ask_permission_and_question_emits_waiting() {
+    let transcript = "/Users/me/.gemini/antigravity-cli/brain/sess/transcript.jsonl";
+
+    // ask_permission tool call
+    let v_perm = serde_json::json!({
+        "step_index": 4,
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [
+            { "name": "ask_permission", "args": { "Reason": "read a file" } }
+        ]
+    });
+    let events_perm = antigravity::decode_ag_line(transcript, "antigravity", v_perm).unwrap();
+    assert_eq!(events_perm.len(), 1);
+    match &events_perm[0] {
+        AgentEvent::Waiting { reason, .. } => {
+            assert_eq!(reason, "asking permission");
+        }
+        other => panic!("expected Waiting, got {other:?}"),
+    }
+
+    // ask_question tool call
+    let v_quest = serde_json::json!({
+        "step_index": 5,
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [
+            { "name": "ask_question", "args": { "questions": [] } }
+        ]
+    });
+    let events_quest = antigravity::decode_ag_line(transcript, "antigravity", v_quest).unwrap();
+    assert_eq!(events_quest.len(), 1);
+    match &events_quest[0] {
+        AgentEvent::Waiting { reason, .. } => {
+            assert_eq!(reason, "asking permission");
+        }
+        other => panic!("expected Waiting, got {other:?}"),
+    }
 }

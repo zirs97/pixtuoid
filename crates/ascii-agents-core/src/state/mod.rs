@@ -58,6 +58,7 @@ pub struct AgentSlot {
     pub desk_index: usize,
     pub tool_call_count: u32,
     pub active_ms: u64,
+    pub unknown_cwd: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -115,6 +116,7 @@ mod tests {
                     desk_index: i,
                     tool_call_count: 0,
                     active_ms: 0,
+                    unknown_cwd: false,
                 },
             );
         }

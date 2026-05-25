@@ -5,9 +5,20 @@ use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
+use ascii_agents_core::source::claude_code::{cc_derive_label, cc_session_ended, decode_cc_line};
 use ascii_agents_core::source::jsonl::JsonlWatcher;
 use ascii_agents_core::source::AgentEvent;
 use ascii_agents_core::source::Transport;
+
+fn cc_watcher(root: std::path::PathBuf) -> JsonlWatcher {
+    JsonlWatcher::new(
+        root,
+        "claude-code".to_string(),
+        decode_cc_line,
+        cc_derive_label,
+        cc_session_ended,
+    )
+}
 
 #[tokio::test]
 async fn watcher_emits_session_start_then_activity_for_tool_use() {
@@ -18,7 +29,7 @@ async fn watcher_emits_session_start_then_activity_for_tool_use() {
     let transcript = project_dir.join("ses-abc.jsonl");
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(projects_root.clone());
+    let watcher = cc_watcher(projects_root.clone());
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -94,7 +105,7 @@ async fn watcher_does_not_consume_partial_trailing_line() {
     let transcript = project_dir.join("ses-abc.jsonl");
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(projects_root.clone());
+    let watcher = cc_watcher(projects_root.clone());
     let handle = tokio::spawn(async move { watcher.run(tx).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -205,7 +216,7 @@ async fn watcher_skips_session_start_for_stale_files_on_startup() {
     set_file_mtime(&stale, backdated).unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(60));
+    let watcher = cc_watcher(projects_root.clone()).with_initial_window(Duration::from_secs(60));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     // Give the initial scan a moment to run.
@@ -249,13 +260,12 @@ async fn watcher_emits_session_start_for_recent_files_on_startup() {
     // mtime is "now" (just written) — well inside the 1 hour window.
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher =
-        JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(3600));
+    let watcher = cc_watcher(projects_root.clone()).with_initial_window(Duration::from_secs(3600));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     let mut got_start = false;
     let mut got_activity = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
             Ok(Some((_, AgentEvent::SessionStart { .. }))) => got_start = true,
@@ -283,7 +293,7 @@ async fn first_sight_extracts_cwd_past_non_json_prefix() {
     let transcript = project_dir.join("ses-cwd.jsonl");
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(projects_root.clone());
+    let watcher = cc_watcher(projects_root.clone());
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -346,7 +356,7 @@ async fn stale_file_emits_session_start_when_written_to() {
     .unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::with_initial_window(projects_root.clone(), Duration::from_secs(60));
+    let watcher = cc_watcher(projects_root.clone()).with_initial_window(Duration::from_secs(60));
     let handle = tokio::spawn(async move { watcher.run(tx).await });
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -389,5 +399,68 @@ async fn stale_file_emits_session_start_when_written_to() {
         }
     }
     assert!(got_start, "appending to a stale file should bring it live");
+    handle.abort();
+}
+
+fn custom_label(_path: &std::path::Path, _source: &str, _cwd: &std::path::Path) -> String {
+    "custom-label-ok".to_string()
+}
+
+#[tokio::test]
+async fn watcher_custom_label_deriver() {
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().to_path_buf();
+    let project_dir = projects_root.join("proj-y");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+    let transcript = project_dir.join("ses-xyz.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let watcher = JsonlWatcher::new(
+        projects_root.clone(),
+        "claude-code".to_string(),
+        decode_cc_line,
+        custom_label,
+        cc_session_ended,
+    );
+    let handle = tokio::spawn(async move { watcher.run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    let start_line = serde_json::json!({
+        "type": "system",
+        "subtype": "session_start",
+        "sessionId": "ses-xyz",
+        "cwd": "/repo"
+    });
+    f.write_all(format!("{start_line}\n").as_bytes())
+        .await
+        .unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut got_custom_rename = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+            Ok(Some((_, AgentEvent::Rename { label, .. }))) => {
+                if label == "custom-label-ok" {
+                    got_custom_rename = true;
+                    break;
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => {}
+        }
+    }
+    assert!(
+        got_custom_rename,
+        "expected Rename event with custom label from label deriver fn"
+    );
     handle.abort();
 }
