@@ -39,6 +39,7 @@ fn tui_renderer_render_paints_a_full_frame() {
             pending_idle_at: None,
 
             desk_index: 0,
+            floor_idx: 0,
             tool_call_count: 0,
             active_ms: 0,
             unknown_cwd: false,

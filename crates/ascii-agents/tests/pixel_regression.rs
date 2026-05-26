@@ -66,6 +66,7 @@ fn fixture_scene(now: SystemTime) -> SceneState {
                 pending_idle_at: None,
 
                 desk_index: i,
+                floor_idx: 0,
                 tool_call_count: 0,
                 active_ms: 0,
                 unknown_cwd: false,

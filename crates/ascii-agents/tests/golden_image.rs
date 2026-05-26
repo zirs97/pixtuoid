@@ -64,6 +64,7 @@ fn populated_scene(now: SystemTime) -> SceneState {
                 cwd: std::path::PathBuf::from(format!("/tmp/test/{label}")).into(),
                 label: (*label).into(),
                 desk_index: i,
+                floor_idx: 0,
                 state,
                 created_at: now - age_offset,
                 state_started_at: now,

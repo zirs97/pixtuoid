@@ -125,28 +125,25 @@ fn ease_out(t: f32) -> f32 {
 
 /// How many floors are needed to seat all agents?
 pub fn num_floors(scene: &SceneState) -> usize {
-    if scene.agents.is_empty() || scene.floor_capacities.iter().all(|&c| c == 0) {
-        return 1;
-    }
-    let max_idx = scene
+    scene
         .agents
         .values()
-        .map(|a| a.desk_index)
+        .map(|a| a.floor_idx + 1)
         .max()
-        .unwrap_or(0);
-    (scene.floor_of(max_idx) + 1).max(1)
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// Extract agents belonging to `floor_idx`, remapping their `desk_index`
 /// into the `[0..capacity)` range so the layout engine sees a
-/// self-contained floor.
+/// self-contained floor. Uses the stored `floor_idx` on each slot so
+/// capacity growth never migrates agents between floors.
 pub fn build_floor_scene(scene: &SceneState, floor_idx: usize) -> Vec<AgentSlot> {
-    let range = scene.floor_range(floor_idx);
-    let offset = range.start;
+    let offset = scene.floor_range(floor_idx).start;
     scene
         .agents
         .values()
-        .filter(|a| range.contains(&a.desk_index))
+        .filter(|a| a.floor_idx == floor_idx)
         .map(|a| {
             let mut slot = a.clone();
             slot.desk_index = a.desk_index - offset;
@@ -169,6 +166,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         for i in 0..n {
             let id = AgentId::from_transcript_path(&format!("/p/{i}.jsonl"));
+            let floor_idx = s.floor_of(i);
             s.agents.insert(
                 id,
                 AgentSlot {
@@ -185,6 +183,7 @@ mod tests {
                     pending_idle_at: None,
 
                     desk_index: i,
+                    floor_idx,
                     tool_call_count: 0,
                     active_ms: 0,
                     unknown_cwd: false,
@@ -260,6 +259,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         for i in 0..6 {
             let id = AgentId::from_transcript_path(&format!("/p/{i}.jsonl"));
+            let floor_idx = s.floor_of(i);
             s.agents.insert(
                 id,
                 AgentSlot {
@@ -275,6 +275,7 @@ mod tests {
                     exiting_at: None,
                     pending_idle_at: None,
                     desk_index: i,
+                    floor_idx,
                     tool_call_count: 0,
                     active_ms: 0,
                     unknown_cwd: false,
