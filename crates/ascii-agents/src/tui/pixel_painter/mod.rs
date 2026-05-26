@@ -57,6 +57,26 @@ use background::{
 use drawable::{cat_position, paint_drawable, Drawable, DrawableKind};
 use palette::{agent_palette, recolor_frame};
 
+/// Bundled input for the pixel-painting pass. Constructed from `DrawCtx`
+/// fields + per-frame inputs at the `draw_scene` call site.
+pub struct PixelCtx<'a> {
+    pub scene: &'a SceneState,
+    pub layout: &'a Layout,
+    pub pack: &'a Pack,
+    pub now: SystemTime,
+    pub buf: &'a mut RgbBuffer,
+    pub cache: &'a mut FrameCache,
+    pub router: &'a mut dyn Router,
+    pub overlay: &'a mut OccupancyOverlay,
+    pub history: &'a mut pose::PoseHistory,
+    pub theme: &'a crate::tui::theme::Theme,
+    pub floor: crate::tui::floor::FloorMeta,
+    pub cat_pet: Option<&'a crate::tui::renderer::CatPetState>,
+    pub chitchat_state: &'a mut HashMap<(usize, usize), ActiveChitchat>,
+    pub coffee_holders: &'a std::collections::HashSet<ascii_agents_core::AgentId>,
+    pub coffee_fetched_at: &'a HashMap<ascii_agents_core::AgentId, SystemTime>,
+}
+
 /// Paint a character at an arbitrary anchor with per-agent recolor. `flip_x`
 /// mirrors the sprite horizontally — used to make walkers face the direction
 /// they're moving. `glow_tint` should carry the tool-derived monitor color
@@ -99,31 +119,10 @@ pub(super) fn paint_character_at(
     blit_frame(cached, anchor.x, anchor.y, buf);
 }
 
-/// Pure pixel painting — no ratatui types, no terminal I/O. The signature
-/// is what any future non-terminal renderer (web canvas, PNG export, GIF
-/// capture) would call. Lives behind the `Renderer` trait in core if you
-/// want to swap impls; the binary uses this concrete function directly.
-#[allow(clippy::too_many_arguments)]
-pub fn render_to_rgb_buffer(
-    scene: &SceneState,
-    layout: &Layout,
-    pack: &Pack,
-    now: SystemTime,
-    buf: &mut RgbBuffer,
-    cache: &mut FrameCache,
-    router: &mut dyn Router,
-    overlay: &mut OccupancyOverlay,
-    history: &mut pose::PoseHistory,
-    theme: &crate::tui::theme::Theme,
-    floor: crate::tui::floor::FloorMeta,
-    cat_pet: Option<&crate::tui::renderer::CatPetState>,
-    chitchat_state: &mut HashMap<(usize, usize), ActiveChitchat>,
-    coffee_holders: &std::collections::HashSet<ascii_agents_core::AgentId>,
-    coffee_fetched_at: &HashMap<ascii_agents_core::AgentId, SystemTime>,
-) -> PixelPassResult {
-    let agents: Vec<_> = scene.agents.values().cloned().collect();
-    let buf_w = layout.buf_w;
-    let buf_h = layout.buf_h;
+pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
+    let agents: Vec<_> = ctx.scene.agents.values().cloned().collect();
+    let buf_w = ctx.layout.buf_w;
+    let buf_h = ctx.layout.buf_h;
     let mut resolved_cat_pos: Option<(Point, &'static str)> = None;
     let mut new_coffee_carriers: Vec<ascii_agents_core::AgentId> = Vec::new();
 
@@ -133,66 +132,66 @@ pub fn render_to_rgb_buffer(
     // Compute time-of-day once per frame and pass to every paint
     // helper that depends on it. Avoids recomputing the chrono local
     // hour for each window + ceiling pool + lamp halo.
-    let look = time_of_day_look(now, theme);
+    let look = time_of_day_look(ctx.now, ctx.theme);
     // Wall band height tracks layout.top_margin (which is buf_h/4 with
     // a floor) — leaves a 4-px buffer between wall trim and cubicles.
-    let top_wall_h = layout.top_margin.saturating_sub(4);
+    let top_wall_h = ctx.layout.top_margin.saturating_sub(4);
     // The elevator door replaces the rightmost window — pass its x-range
     // so `paint_floor_and_walls` skips drawing a window that would
     // otherwise bleed through behind the elevator frame.
-    let door_x_range = layout.door.map(|d| (d.x, d.x + 16));
+    let door_x_range = ctx.layout.door.map(|d| (d.x, d.x + 16));
     paint_floor_and_walls(
-        buf,
+        ctx.buf,
         buf_w,
         buf_h,
-        now,
+        ctx.now,
         &look,
         top_wall_h,
         door_x_range,
-        theme,
-        floor.altitude,
+        ctx.theme,
+        ctx.floor.altitude,
     );
 
-    let dim_strength = (0.45 - floor.sunlight_boost).max(0.1);
-    dim_floor_overlay(buf, top_wall_h, buf_h, look.darkness * dim_strength, theme);
+    let dim_strength = (0.45 - ctx.floor.sunlight_boost).max(0.1);
+    dim_floor_overlay(ctx.buf, top_wall_h, buf_h, look.darkness * dim_strength, ctx.theme);
     let pool_strength = 0.15 + 0.30 * look.darkness;
-    for desk in &layout.home_desks {
+    for desk in &ctx.layout.home_desks {
         paint_ceiling_pool(
-            buf,
+            ctx.buf,
             desk.x + DESK_W / 2,
             desk.y.saturating_sub(2),
             10,
             5,
             pool_strength,
-            theme,
+            ctx.theme,
         );
     }
     // Two ceiling fluorescents over the pantry and a third over the
     // corridor so the floor is lit consistently with the lounge_band gone.
-    if let Some(pr) = layout.pantry_room {
+    if let Some(pr) = ctx.layout.pantry_room {
         paint_ceiling_pool(
-            buf,
+            ctx.buf,
             pr.x + pr.width / 2,
             pr.y + pr.height / 2,
             12,
             6,
             pool_strength,
-            theme,
+            ctx.theme,
         );
     }
-    if let Some(corridor) = layout.corridor {
+    if let Some(corridor) = ctx.layout.corridor {
         paint_ceiling_pool(
-            buf,
+            ctx.buf,
             corridor.x + corridor.width / 2,
             corridor.y + corridor.height / 2,
             14,
             5,
             pool_strength,
-            theme,
+            ctx.theme,
         );
     }
-    if let Some(lamp) = layout.floor_lamp {
-        paint_floor_lamp_halo(buf, lamp.x, lamp.y, look.darkness * 0.55, theme);
+    if let Some(lamp) = ctx.layout.floor_lamp {
+        paint_floor_lamp_halo(ctx.buf, lamp.x, lamp.y, look.darkness * 0.55, ctx.theme);
     }
 
     // Neon sign panel in the wall band — dark bg with glow border.
@@ -200,16 +199,16 @@ pub fn render_to_rgb_buffer(
     // widget pass in renderer.rs::paint_wall_display.
     let neon_w = 30u16;
     let neon_h = 8u16;
-    paint_neon_panel(buf, 1, 1, neon_w, neon_h, now, theme);
+    paint_neon_panel(ctx.buf, 1, 1, neon_w, neon_h, ctx.now, ctx.theme);
 
     // Live wall clock painted after the wall (so hands sit on top of it)
     // but before wall decor — the bookshelf etc. shouldn't cover it.
     let clock_x = buf_w / 2 - 2;
-    paint_clock(buf, clock_x, 1, now, theme);
+    paint_clock(ctx.buf, clock_x, 1, ctx.now, ctx.theme);
     // Corridor runner — painted over the floor but BEFORE walls/decor
     // so walls cleanly overlap it where they cross.
-    if let Some(corridor) = layout.corridor {
-        paint_corridor_runner(buf, corridor, theme);
+    if let Some(corridor) = ctx.layout.corridor {
+        paint_corridor_runner(ctx.buf, corridor, ctx.theme);
     }
     // Room dividers. Stardew-style fake-3D perspective:
     //   • horizontal walls (E-W) show the wall face — 4 px tall with
@@ -219,10 +218,10 @@ pub fn render_to_rgb_buffer(
     // Must match `WALL_THICK_V` / `WALL_THICK_H` in build_walkable_mask.
     const WALL_THICK_V_PX: u16 = 3;
     const WALL_THICK_H_PX: u16 = 4;
-    let wall_body = theme.office.room_wall_body;
-    let wall_trim_light = theme.office.room_wall_trim_light;
-    let wall_trim_dark = theme.office.room_wall_trim_dark;
-    for (start, end) in &layout.room_walls {
+    let wall_body = ctx.theme.office.room_wall_body;
+    let wall_trim_light = ctx.theme.office.room_wall_trim_light;
+    let wall_trim_dark = ctx.theme.office.room_wall_trim_dark;
+    for (start, end) in &ctx.layout.room_walls {
         if start.x == end.x {
             for y in start.y..=end.y.min(buf_h - 1) {
                 for dx in 0..WALL_THICK_V_PX {
@@ -235,7 +234,7 @@ pub fn render_to_rgb_buffer(
                         } else {
                             wall_body
                         };
-                        buf.put(x, y, color);
+                        ctx.buf.put(x, y, color);
                     }
                 }
             }
@@ -253,7 +252,7 @@ pub fn render_to_rgb_buffer(
                     } else {
                         wall_body
                     };
-                    buf.put(x, y, color);
+                    ctx.buf.put(x, y, color);
                 }
             }
         }
@@ -274,11 +273,11 @@ pub fn render_to_rgb_buffer(
     // Procedural room fill — small pixel items that make rooms feel lived-in.
     // Ground footprint rule: walkable mask is NOT affected by these (they're
     // small items characters can walk around or over).
-    if let Some(mr) = layout.meeting_room {
-        let wall_color = theme.office.room_wall_trim_dark;
-        let accent = theme.furniture.rug_accent;
-        let wood = theme.furniture.wood_top;
-        let wood_dark = theme.furniture.wood_trim;
+    if let Some(mr) = ctx.layout.meeting_room {
+        let wall_color = ctx.theme.office.room_wall_trim_dark;
+        let accent = ctx.theme.furniture.rug_accent;
+        let wood = ctx.theme.furniture.wood_top;
+        let wood_dark = ctx.theme.furniture.wood_trim;
 
         // Notice board on the south wall (8×5)
         if mr.height > 20 && mr.width > 15 {
@@ -290,7 +289,7 @@ pub fn render_to_rgb_buffer(
                     let py = by + dy;
                     if px < buf_w && py < buf_h {
                         let on_edge = dx == 0 || dx == 7 || dy == 0 || dy == 4;
-                        buf.put(px, py, if on_edge { wall_color } else { accent });
+                        ctx.buf.put(px, py, if on_edge { wall_color } else { accent });
                     }
                 }
             }
@@ -307,7 +306,7 @@ pub fn render_to_rgb_buffer(
             for dy in 0..8u16 {
                 let py = cy + dy;
                 if py < buf_h && cx < buf_w {
-                    buf.put(cx, py, pole);
+                    ctx.buf.put(cx, py, pole);
                 }
             }
             // Base (3px wide)
@@ -315,7 +314,7 @@ pub fn render_to_rgb_buffer(
             for dx in 0..3u16 {
                 let px = cx.saturating_sub(1) + dx;
                 if px < buf_w && by < buf_h {
-                    buf.put(px, by, base);
+                    ctx.buf.put(px, by, base);
                 }
             }
             // Coat blobs (2×2 colored blocks hanging from hooks)
@@ -328,7 +327,7 @@ pub fn render_to_rgb_buffer(
                         let px = hx.wrapping_add(if side < 0 { dx.wrapping_sub(1) } else { dx });
                         let py = hook_y + dy;
                         if px < buf_w && py < buf_h {
-                            buf.put(px, py, coat_color);
+                            ctx.buf.put(px, py, coat_color);
                         }
                     }
                 }
@@ -339,22 +338,22 @@ pub fn render_to_rgb_buffer(
         if mr.width > 10 {
             let mat_x = mr.x + mr.width;
             let mat_y = mr.y + mr.height / 2 - 2;
-            let mat_color = theme.furniture.rug_trim;
-            let mat_accent = theme.furniture.rug_field;
+            let mat_color = ctx.theme.furniture.rug_trim;
+            let mat_accent = ctx.theme.furniture.rug_field;
             for dy in 0..5u16 {
                 for dx in 0..4u16 {
                     let px = mat_x + dx + 1;
                     let py = mat_y + dy;
                     if px < buf_w && py < buf_h {
                         let on_border = dx == 0 || dx == 3 || dy == 0 || dy == 4;
-                        buf.put(px, py, if on_border { mat_color } else { mat_accent });
+                        ctx.buf.put(px, py, if on_border { mat_color } else { mat_accent });
                     }
                 }
             }
         }
     }
-    if let Some(pr) = layout.pantry_room {
-        let cooler_body = theme.office.building_light;
+    if let Some(pr) = ctx.layout.pantry_room {
+        let cooler_body = ctx.theme.office.building_light;
         let cooler_water = Rgb(100, 180, 230);
 
         // Water cooler near the pantry wall (3×6)
@@ -367,7 +366,7 @@ pub fn render_to_rgb_buffer(
                     let py = wy + dy;
                     if px < buf_w && py < buf_h {
                         let color = if dy < 2 { cooler_water } else { cooler_body };
-                        buf.put(px, py, color);
+                        ctx.buf.put(px, py, color);
                     }
                 }
             }
@@ -404,7 +403,7 @@ pub fn render_to_rgb_buffer(
                             // Bin body
                             bin_outer
                         };
-                        buf.put(px, py, color);
+                        ctx.buf.put(px, py, color);
                     }
                 }
             }
@@ -417,25 +416,25 @@ pub fn render_to_rgb_buffer(
     // function of daylight so noon shadows are crisp and night shadows
     // are subtle.
     let shadow_strength = 0.5 - 0.3 * look.darkness;
-    for desk in &layout.home_desks {
+    for desk in &ctx.layout.home_desks {
         paint_shadow(
-            buf,
+            ctx.buf,
             desk.x + DESK_W / 2,
             desk.y + 7,
             DESK_W / 2 + 1,
             3,
             shadow_strength,
-            theme,
+            ctx.theme,
         );
     }
-    for wp in &layout.waypoints {
-        paint_shadow(buf, wp.pos.x, wp.pos.y + 2, 7, 2, shadow_strength, theme);
+    for wp in &ctx.layout.waypoints {
+        paint_shadow(ctx.buf, wp.pos.x, wp.pos.y + 2, 7, 2, shadow_strength, ctx.theme);
     }
-    for (_, p) in &layout.plants {
-        paint_shadow(buf, p.x, p.y + 3, 3, 1, shadow_strength, theme);
+    for (_, p) in &ctx.layout.plants {
+        paint_shadow(ctx.buf, p.x, p.y + 3, 3, 1, shadow_strength, ctx.theme);
     }
-    if let Some(lamp) = layout.floor_lamp {
-        paint_shadow(buf, lamp.x, lamp.y + 5, 2, 1, shadow_strength, theme);
+    if let Some(lamp) = ctx.layout.floor_lamp {
+        paint_shadow(ctx.buf, lamp.x, lamp.y + 5, 2, 1, shadow_strength, ctx.theme);
     }
 
     // Build per-frame occupancy from STATIONARY agent positions only.
@@ -446,14 +445,14 @@ pub fn render_to_rgb_buffer(
     // covered by the static desk mask. Only waypoint visitors
     // contribute here — they have stable positions across frames,
     // so the signature is stable and the cache hits.
-    overlay.clear();
+    ctx.overlay.clear();
     for agent in &agents {
-        let Some(pose) = pose::derive(agent, now, layout) else {
+        let Some(pose) = pose::derive(agent, ctx.now, ctx.layout) else {
             continue;
         };
         if let Pose::AtWaypoint { wp, .. } = pose {
-            if let Some(w) = layout.waypoints.get(wp) {
-                overlay.add(w.pos.x.saturating_sub(4), w.pos.y.saturating_sub(6), 8, 12);
+            if let Some(w) = ctx.layout.waypoints.get(wp) {
+                ctx.overlay.add(w.pos.x.saturating_sub(4), w.pos.y.saturating_sub(6), 8, 12);
             }
         }
     }
@@ -472,32 +471,32 @@ pub fn render_to_rgb_buffer(
     // the seated worker visually behind the desk like it always was.
     let seated_agents: HashMap<usize, bool> = agents
         .iter()
-        .filter(|a| a.desk_index < layout.home_desks.len() && a.exiting_at.is_none())
+        .filter(|a| a.desk_index < ctx.layout.home_desks.len() && a.exiting_at.is_none())
         .map(|a| {
-            let p = pose::derive_with_routing(a, now, layout, router, overlay, history);
+            let p = pose::derive_with_routing(a, ctx.now, ctx.layout, ctx.router, ctx.overlay, ctx.history);
             let seated = matches!(p, Some(Pose::SeatedTyping { .. } | Pose::SeatedThinking));
             (a.desk_index, seated)
         })
         .collect();
-    for (i, &desk) in layout.home_desks.iter().enumerate() {
+    for (i, &desk) in ctx.layout.home_desks.iter().enumerate() {
         let is_last_col =
-            desk.x + DESK_W + 2 + DESK_W >= layout.cubicle_band.x + layout.cubicle_band.width;
+            desk.x + DESK_W + 2 + DESK_W >= ctx.layout.cubicle_band.x + ctx.layout.cubicle_band.width;
         let occupant = agents
             .iter()
             .find(|a| a.desk_index == i && a.exiting_at.is_none());
         let screen_glow = occupant
             .filter(|_| seated_agents.get(&i).copied().unwrap_or(false))
-            .and_then(|a| palette::tool_glow_tint(a, &theme.tool_glow));
+            .and_then(|a| palette::tool_glow_tint(a, &ctx.theme.tool_glow));
         let session_age_secs = occupant
-            .and_then(|a| now.duration_since(a.created_at).ok())
+            .and_then(|a| ctx.now.duration_since(a.created_at).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let has_coffee = occupant.is_some_and(|a| coffee_holders.contains(&a.agent_id));
+        let has_coffee = occupant.is_some_and(|a| ctx.coffee_holders.contains(&a.agent_id));
         let coffee_steam = has_coffee
             && occupant.is_some_and(|a| {
-                coffee_fetched_at
+                ctx.coffee_fetched_at
                     .get(&a.agent_id)
-                    .and_then(|t| now.duration_since(*t).ok())
+                    .and_then(|t| ctx.now.duration_since(*t).ok())
                     .is_some_and(|d| d.as_secs() < COFFEE_STEAM_WINDOW_SECS)
             });
         drawables.push(Drawable {
@@ -519,18 +518,18 @@ pub fn render_to_rgb_buffer(
     // it before the furniture sitting on top of it.
     // Meeting-room area rugs + sofas + tables. For dual-meeting layouts,
     // sofas come in pairs (2 per room), tables 1 per room.
-    let sofas_per_room = if layout.meeting_tables.len() > 1 {
+    let sofas_per_room = if ctx.layout.meeting_tables.len() > 1 {
         2
     } else {
-        layout.meeting_sofas.len()
+        ctx.layout.meeting_sofas.len()
     };
-    for (room_idx, &table) in layout.meeting_tables.iter().enumerate() {
+    for (room_idx, &table) in ctx.layout.meeting_tables.iter().enumerate() {
         let sofa_start = room_idx * sofas_per_room;
-        let top_sofa = layout.meeting_sofas.get(sofa_start);
-        let bot_sofa = layout.meeting_sofas.get(sofa_start + 1);
+        let top_sofa = ctx.layout.meeting_sofas.get(sofa_start);
+        let bot_sofa = ctx.layout.meeting_sofas.get(sofa_start + 1);
         if let (Some(&ts), Some(&bs)) = (top_sofa, bot_sofa) {
             let rug_w = 18u16;
-            let rug_h = (bs.y - ts.y + 8).min(layout.buf_h - table.y + 8);
+            let rug_h = (bs.y - ts.y + 8).min(ctx.layout.buf_h - table.y + 8);
             drawables.push(Drawable {
                 anchor_y: table.y.saturating_sub(rug_h / 2),
                 kind: DrawableKind::AreaRug {
@@ -541,7 +540,7 @@ pub fn render_to_rgb_buffer(
             });
         }
     }
-    for (i, &sofa) in layout.meeting_sofas.iter().enumerate() {
+    for (i, &sofa) in ctx.layout.meeting_sofas.iter().enumerate() {
         let mirrored = i % 2 != 0;
         drawables.push(Drawable {
             anchor_y: sofa.y + 2,
@@ -551,7 +550,7 @@ pub fn render_to_rgb_buffer(
             },
         });
     }
-    for &table in &layout.meeting_tables {
+    for &table in &ctx.layout.meeting_tables {
         drawables.push(Drawable {
             anchor_y: table.y + 2,
             kind: DrawableKind::MeetingTable { pos: table },
@@ -559,14 +558,14 @@ pub fn render_to_rgb_buffer(
     }
 
     // Pantry bistro table (7×4 centered).
-    if let Some(table) = layout.pantry_table {
+    if let Some(table) = ctx.layout.pantry_table {
         drawables.push(Drawable {
             anchor_y: table.y + 2,
             kind: DrawableKind::PantryTable { pos: table },
         });
     }
     // Pantry stools (2×2 anchored at center → bottom = pos.y).
-    for chair in &layout.pantry_chairs {
+    for chair in &ctx.layout.pantry_chairs {
         drawables.push(Drawable {
             anchor_y: chair.y,
             kind: DrawableKind::PantryChair { pos: *chair },
@@ -578,7 +577,7 @@ pub fn render_to_rgb_buffer(
     // StandingDesk waypoints are visually rendered via the
     // `pod_decor` drawables below (they ARE the decor); they don't
     // get a duplicate Drawable here.
-    for wp in &layout.waypoints {
+    for wp in &ctx.layout.waypoints {
         use crate::tui::layout::WaypointKind;
         match wp.kind {
             WaypointKind::Couch => {
@@ -602,7 +601,7 @@ pub fn render_to_rgb_buffer(
                     anchor_y: wp.pos.y + 3,
                     kind: DrawableKind::WaypointCouch { pos: wp.pos },
                 });
-                if let Some(table) = layout.lounge_side_table {
+                if let Some(table) = ctx.layout.lounge_side_table {
                     drawables.push(Drawable {
                         anchor_y: table.y + 1,
                         kind: DrawableKind::LoungeSideTable { pos: table },
@@ -610,7 +609,7 @@ pub fn render_to_rgb_buffer(
                 }
             }
             WaypointKind::Pantry => {
-                let (cw, ch) = layout.pantry_counter_size;
+                let (cw, ch) = ctx.layout.pantry_counter_size;
                 drawables.push(Drawable {
                     anchor_y: wp.pos.y + ch / 2,
                     kind: DrawableKind::WaypointPantry {
@@ -639,7 +638,7 @@ pub fn render_to_rgb_buffer(
     // standing desk). All centered at `pos`; anchor at the bottom of
     // the sprite footprint so y-sort places them correctly against
     // walkers and characters in the aisles.
-    for (kind, pos) in &layout.pod_decor {
+    for (kind, pos) in &ctx.layout.pod_decor {
         let (_, h) = kind.size();
         drawables.push(Drawable {
             anchor_y: pos.y + h / 2,
@@ -652,7 +651,7 @@ pub fn render_to_rgb_buffer(
 
     // Plants — height varies by sprite, anchor = pos.y + h/2 (center
     // pos convention).
-    for (kind, p) in &layout.plants {
+    for (kind, p) in &ctx.layout.plants {
         use crate::tui::layout::PlantKind;
         let h: u16 = match kind {
             PlantKind::Ficus => 7,
@@ -670,7 +669,7 @@ pub fn render_to_rgb_buffer(
     }
 
     // Floor lamp (4×10 centered).
-    if let Some(lamp) = layout.floor_lamp {
+    if let Some(lamp) = ctx.layout.floor_lamp {
         drawables.push(Drawable {
             anchor_y: lamp.y + 5,
             kind: DrawableKind::FloorLamp { pos: lamp },
@@ -684,8 +683,8 @@ pub fn render_to_rgb_buffer(
     // over the final DOOR_TRANSITION_MS. With multiple agents in
     // flight we take the MAX frame so the door is at least as open
     // as the most-in-progress agent needs.
-    if let Some(door_pos) = layout.door {
-        let frame_idx = compute_door_frame_idx(&agents, now);
+    if let Some(door_pos) = ctx.layout.door {
+        let frame_idx = compute_door_frame_idx(&agents, ctx.now);
         drawables.push(Drawable {
             anchor_y: door_pos.y + 14,
             kind: DrawableKind::Door {
@@ -696,7 +695,7 @@ pub fn render_to_rgb_buffer(
     }
 
     // Wall decor — hung on walls (top-left anchored), bottom = pos.y + h.
-    for (kind, pos) in &layout.wall_decor {
+    for (kind, pos) in &ctx.layout.wall_decor {
         use crate::tui::layout::WallDecor;
         let h: u16 = match kind {
             WallDecor::Bookshelf => 12,
@@ -718,7 +717,7 @@ pub fn render_to_rgb_buffer(
         .iter()
         .filter(|a| {
             matches!(a.state, ActivityState::Idle)
-                && a.desk_index < layout.home_desks.len()
+                && a.desk_index < ctx.layout.home_desks.len()
                 && a.exiting_at.is_none()
         })
         .map(|a| a.desk_index)
@@ -728,7 +727,7 @@ pub fn render_to_rgb_buffer(
         .all(|a| matches!(a.state, ActivityState::Idle));
 
     {
-        let active_pet = cat_pet.filter(|p| p.is_active(now));
+        let active_pet = ctx.cat_pet.filter(|p| p.is_active(ctx.now));
         let cat_data = if let Some(pet) = active_pet {
             // Freeze the cat at the pet position with sit sprite.
             Some((
@@ -736,16 +735,16 @@ pub fn render_to_rgb_buffer(
                 false,
                 "cat_sit",
                 0usize,
-                Some(pet.elapsed_ms(now)),
+                Some(pet.elapsed_ms(ctx.now)),
             ))
         } else {
             cat_position(
-                layout,
-                pack,
-                now,
+                ctx.layout,
+                ctx.pack,
+                ctx.now,
                 &idle_desk_indices,
                 all_idle,
-                floor.floor_seed,
+                ctx.floor.floor_seed,
             )
             .map(|(pos, flip, anim_name, frame_idx)| (pos, flip, anim_name, frame_idx, None))
         };
@@ -770,16 +769,16 @@ pub fn render_to_rgb_buffer(
     let mut wp_rank: HashMap<usize, usize> = HashMap::new();
     let mut waypoint_visitors: Vec<(usize, ascii_agents_core::AgentId, Point)> = Vec::new();
     for agent in &agents {
-        let Some(desk) = layout.home_desks.get(agent.desk_index).copied() else {
+        let Some(desk) = ctx.layout.home_desks.get(agent.desk_index).copied() else {
             continue;
         };
-        let Some(p) = pose::derive_with_routing(agent, now, layout, router, overlay, history)
+        let Some(p) = pose::derive_with_routing(agent, ctx.now, ctx.layout, ctx.router, ctx.overlay, ctx.history)
         else {
             continue;
         };
         match p {
             Pose::SeatedIdle => {
-                let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
+                let anchor = with_breath(seated_anchor(desk), agent.agent_id, ctx.now);
                 let sleep_variant = if agent.agent_id.raw() % 2 == 0 {
                     "seated_sleeping"
                 } else {
@@ -802,7 +801,7 @@ pub fn render_to_rgb_buffer(
                 });
             }
             Pose::SeatedThinking => {
-                let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
+                let anchor = with_breath(seated_anchor(desk), agent.agent_id, ctx.now);
                 drawables.push(Drawable {
                     anchor_y: anchor.y + 12,
                     kind: DrawableKind::Character {
@@ -811,7 +810,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: 0,
                         anchor,
                         flip_x: false,
-                        glow_tint: Some(theme.tool_glow.default),
+                        glow_tint: Some(ctx.theme.tool_glow.default),
                         sleep_z_seed: None,
                         waiting_bubble: false,
                         thinking_dots: true,
@@ -820,7 +819,7 @@ pub fn render_to_rgb_buffer(
                 });
             }
             Pose::SeatedTyping { frame } => {
-                let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
+                let anchor = with_breath(seated_anchor(desk), agent.agent_id, ctx.now);
                 drawables.push(Drawable {
                     anchor_y: anchor.y + 12,
                     kind: DrawableKind::Character {
@@ -829,7 +828,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: frame,
                         anchor,
                         flip_x: false,
-                        glow_tint: palette::tool_glow_tint(agent, &theme.tool_glow),
+                        glow_tint: palette::tool_glow_tint(agent, &ctx.theme.tool_glow),
                         sleep_z_seed: None,
                         waiting_bubble: false,
                         thinking_dots: false,
@@ -838,7 +837,7 @@ pub fn render_to_rgb_buffer(
                 });
             }
             Pose::StandingAtDesk => {
-                let anchor = with_breath(standing_at_desk_anchor(desk), agent.agent_id, now);
+                let anchor = with_breath(standing_at_desk_anchor(desk), agent.agent_id, ctx.now);
                 let is_waiting = matches!(agent.state, ActivityState::Waiting { .. });
                 drawables.push(Drawable {
                     anchor_y: anchor.y + 12,
@@ -857,7 +856,7 @@ pub fn render_to_rgb_buffer(
                 });
             }
             Pose::AtWaypoint { wp, kind } => {
-                if let Some(wp_obj) = layout.waypoints.get(wp) {
+                if let Some(wp_obj) = ctx.layout.waypoints.get(wp) {
                     let rank = *wp_rank.entry(wp).or_insert(0);
                     wp_rank.insert(wp, rank + 1);
                     let dx = waypoint_rank_offset_x(kind, rank);
@@ -883,7 +882,7 @@ pub fn render_to_rgb_buffer(
                     if chitchat::supports_chitchat(kind) {
                         waypoint_visitors.push((wp, agent.agent_id, anchor_no_breath));
                     }
-                    let anchor = with_breath(anchor_no_breath, agent.agent_id, now);
+                    let anchor = with_breath(anchor_no_breath, agent.agent_id, ctx.now);
                     drawables.push(Drawable {
                         anchor_y: anchor.y + sprite_h,
                         kind: DrawableKind::Character {
@@ -902,7 +901,7 @@ pub fn render_to_rgb_buffer(
                 }
             }
             Pose::AimlessAt { dest } => {
-                let anchor = with_breath(waypoint_anchor(dest), agent.agent_id, now);
+                let anchor = with_breath(waypoint_anchor(dest), agent.agent_id, ctx.now);
                 drawables.push(Drawable {
                     anchor_y: anchor.y + 12,
                     kind: DrawableKind::Character {
@@ -928,7 +927,7 @@ pub fn render_to_rgb_buffer(
             } => {
                 // Exit walks: core sets carrying_coffee=false (no
                 // render-side state), but we know from coffee_holders.
-                if agent.exiting_at.is_some() && coffee_holders.contains(&agent.agent_id) {
+                if agent.exiting_at.is_some() && ctx.coffee_holders.contains(&agent.agent_id) {
                     carrying_coffee = true;
                 }
                 if carrying_coffee {
@@ -943,7 +942,7 @@ pub fn render_to_rgb_buffer(
                 // walking_back always wins (no back-facing coffee sprite).
                 let anim_name: &'static str = if going_back {
                     "walking_back"
-                } else if carrying_coffee && pack.animation("walking_coffee").is_some() {
+                } else if carrying_coffee && ctx.pack.animation("walking_coffee").is_some() {
                     "walking_coffee"
                 } else {
                     "walking"
@@ -974,11 +973,11 @@ pub fn render_to_rgb_buffer(
     // → pass-2 layering for waypoint couch / pantry counter).
     drawables.sort_by_key(|d| d.anchor_y);
     for d in &drawables {
-        paint_drawable(d, buf, pack, cache, now, theme);
+        paint_drawable(d, ctx.buf, ctx.pack, ctx.cache, ctx.now, ctx.theme);
     }
 
     let chitchat_bubbles =
-        chitchat::update_and_collect(chitchat_state, floor.floor_idx, &waypoint_visitors, now);
+        chitchat::update_and_collect(ctx.chitchat_state, ctx.floor.floor_idx, &waypoint_visitors, ctx.now);
 
     PixelPassResult {
         cat_pos: resolved_cat_pos,

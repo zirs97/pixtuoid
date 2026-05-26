@@ -28,7 +28,7 @@ use ratatui::Terminal;
 use crate::tui::frame_cache::FrameCache;
 use crate::tui::layout::{Layout, Point};
 use crate::tui::pathfind::Router;
-use crate::tui::pixel_painter::render_to_rgb_buffer;
+use crate::tui::pixel_painter::{render_to_rgb_buffer, PixelCtx};
 use crate::tui::pose;
 
 // Re-exports from sibling modules for backwards compatibility.
@@ -203,23 +203,23 @@ pub fn draw_scene<B: Backend>(
 
     ctx.router.set_preferred_zone(layout.corridor);
 
-    let pixel_result = render_to_rgb_buffer(
+    let pixel_result = render_to_rgb_buffer(&mut PixelCtx {
         scene,
-        &layout,
+        layout: &layout,
         pack,
         now,
-        ctx.buf,
-        ctx.cache,
-        ctx.router,
-        ctx.overlay,
-        ctx.history,
+        buf: ctx.buf,
+        cache: ctx.cache,
+        router: ctx.router,
+        overlay: ctx.overlay,
+        history: ctx.history,
         theme,
         floor,
-        ctx.cat_pet,
-        ctx.chitchat_state,
-        ctx.coffee_holders,
-        ctx.coffee_fetched_at,
-    );
+        cat_pet: ctx.cat_pet,
+        chitchat_state: ctx.chitchat_state,
+        coffee_holders: ctx.coffee_holders,
+        coffee_fetched_at: ctx.coffee_fetched_at,
+    });
     ctx.last_cat_pos = pixel_result.cat_pos;
     ctx.chitchat_bubbles = pixel_result.chitchat_bubbles;
     ctx.new_coffee_carriers = pixel_result.new_coffee_carriers;
