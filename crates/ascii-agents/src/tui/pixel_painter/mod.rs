@@ -480,6 +480,12 @@ pub fn render_to_rgb_buffer(
             .and_then(|a| now.duration_since(a.created_at).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let coffee = occupant
+            .map(|a| ascii_agents_core::pose::has_desk_coffee(a, now, layout))
+            .unwrap_or(ascii_agents_core::pose::DeskCoffee {
+                has_cup: false,
+                has_steam: false,
+            });
         drawables.push(Drawable {
             anchor_y: desk.y + 8,
             kind: DrawableKind::DeskCubicle {
@@ -488,6 +494,8 @@ pub fn render_to_rgb_buffer(
                 has_cabinet: i % 2 == 0,
                 screen_glow,
                 session_age_secs,
+                has_coffee: coffee.has_cup,
+                coffee_steam: coffee.has_steam,
             },
         });
     }
@@ -902,15 +910,21 @@ pub fn render_to_rgb_buffer(
                 to,
                 t_x1000,
                 frame,
+                carrying_coffee,
             } => {
                 let pos = walking_position(from, to, t_x1000);
                 let walker_anchor = walking_anchor(pos);
                 let dx = to.x as i32 - from.x as i32;
                 let dy = to.y as i32 - from.y as i32;
-                let (anim_name, flip) = if dy.unsigned_abs() > dx.unsigned_abs() && dy < 0 {
-                    ("walking_back", to.x < from.x)
+                let going_back = dy.unsigned_abs() > dx.unsigned_abs() && dy < 0;
+                let flip = to.x < from.x;
+                // walking_back always wins (no back-facing coffee sprite).
+                let anim_name: &'static str = if going_back {
+                    "walking_back"
+                } else if carrying_coffee && pack.animation("walking_coffee").is_some() {
+                    "walking_coffee"
                 } else {
-                    ("walking", to.x < from.x)
+                    "walking"
                 };
                 drawables.push(Drawable {
                     anchor_y: walker_anchor.y + 12,
@@ -971,6 +985,7 @@ mod tests {
             last_event_at: now,
             exiting_at: None,
             pending_idle_at: None,
+            last_idle_at: None,
             desk_index: 0,
             tool_call_count: 0,
             active_ms: 0,
