@@ -353,8 +353,13 @@ fn idle_pose(slot: &AgentSlot, desk: Point, layout: &SceneLayout, elapsed_ms: u6
         let span = cycle_ms - at_wp_end;
         let t = ((phase_t - at_wp_end) * 1000 / span) as u16;
         let frame = ((elapsed_ms / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
-        let carrying_coffee =
-            matches!(at_dest_pose, Pose::AtWaypoint { kind: WaypointKind::Pantry, .. });
+        let carrying_coffee = matches!(
+            at_dest_pose,
+            Pose::AtWaypoint {
+                kind: WaypointKind::Pantry,
+                ..
+            }
+        );
         Pose::Walking {
             from: dest,
             to: desk,
@@ -711,12 +716,10 @@ mod tests {
         target_kind: WaypointKind,
     ) -> Option<u64> {
         (0u64..2000).find(|n| {
-            takes_trip(agent_id, *n)
-                && !is_aimless_cycle(agent_id, *n)
-                && {
-                    let idx = waypoint_index_for_cycle(agent_id, *n, layout.waypoints.len());
-                    layout.waypoints[idx].kind == target_kind
-                }
+            takes_trip(agent_id, *n) && !is_aimless_cycle(agent_id, *n) && {
+                let idx = waypoint_index_for_cycle(agent_id, *n, layout.waypoints.len());
+                layout.waypoints[idx].kind == target_kind
+            }
         })
     }
 
@@ -735,10 +738,7 @@ mod tests {
             Pose::Walking {
                 carrying_coffee, ..
             } => {
-                assert!(
-                    carrying_coffee,
-                    "walk-back from Pantry must carry coffee"
-                );
+                assert!(carrying_coffee, "walk-back from Pantry must carry coffee");
             }
             other => panic!("expected Walking, got {other:?}"),
         }
@@ -753,16 +753,10 @@ mod tests {
         // Find a trip cycle to a non-Pantry waypoint.
         let trip_n = (0u64..2000)
             .find(|n| {
-                takes_trip(test_slot.agent_id, *n)
-                    && !is_aimless_cycle(test_slot.agent_id, *n)
-                    && {
-                        let idx = waypoint_index_for_cycle(
-                            test_slot.agent_id,
-                            *n,
-                            l.waypoints.len(),
-                        );
-                        l.waypoints[idx].kind != WaypointKind::Pantry
-                    }
+                takes_trip(test_slot.agent_id, *n) && !is_aimless_cycle(test_slot.agent_id, *n) && {
+                    let idx = waypoint_index_for_cycle(test_slot.agent_id, *n, l.waypoints.len());
+                    l.waypoints[idx].kind != WaypointKind::Pantry
+                }
             })
             .expect("agent should visit a non-Pantry waypoint within 2000 cycles");
         let midpoint = trip_n * cycle + at_wp_end + (cycle - at_wp_end) / 2;

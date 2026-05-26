@@ -912,8 +912,16 @@ pub fn render_to_rgb_buffer(
                 let flip = to.x < from.x;
                 let anim_name: &'static str = if carrying_coffee {
                     if pack.animation("walking_coffee").is_some() {
-                        if going_back { "walking_back" } else { "walking_coffee" }
-                    } else if going_back { "walking_back" } else { "walking" }
+                        if going_back {
+                            "walking_back"
+                        } else {
+                            "walking_coffee"
+                        }
+                    } else if going_back {
+                        "walking_back"
+                    } else {
+                        "walking"
+                    }
                 } else if going_back {
                     "walking_back"
                 } else {
