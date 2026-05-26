@@ -67,12 +67,24 @@ pub async fn run_tui(
             renderer.set_theme_picker(theme_picker);
             renderer.render(&snapshot, &pack, now)?;
 
-            // Auto-compute max_desks from layout capacity. Use fetch_max
-            // so capacity only grows within a session — a transient terminal
-            // shrink won't orphan agents on phantom floors.
-            if let Some(capacity) = renderer.cached_layout().map(|l| l.home_desks.len()) {
-                if capacity > 0 {
-                    max_desks.fetch_max(capacity, std::sync::atomic::Ordering::Relaxed);
+            // Auto-compute max_desks as the minimum desk capacity across
+            // all 5 floor variants. This ensures every floor variant can
+            // fit its assigned agents — a Standard floor (8 desks) and an
+            // OpenPlan floor (16 desks) both work with max_desks = 8.
+            if let Some(layout) = renderer.cached_layout() {
+                use ascii_agents_core::layout::{SceneLayout, MAX_VISIBLE_DESKS};
+                let buf_w = layout.buf_w;
+                let buf_h = layout.buf_h;
+                let min_capacity = (0..5u64)
+                    .filter_map(|seed| {
+                        SceneLayout::compute_with_seed(buf_w, buf_h, MAX_VISIBLE_DESKS, seed)
+                    })
+                    .map(|l| l.home_desks.len())
+                    .filter(|&n| n > 0)
+                    .min()
+                    .unwrap_or(MAX_VISIBLE_DESKS);
+                if min_capacity > 0 {
+                    max_desks.fetch_max(min_capacity, std::sync::atomic::Ordering::Relaxed);
                 }
             }
 
