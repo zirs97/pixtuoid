@@ -167,7 +167,6 @@ pub async fn run_tui(
                                     renderer.set_cat_pet(Some(renderer::CatPetState {
                                         petted_at: now,
                                         pet_pos: cat_pos,
-                                        pre_pet_anim: anim,
                                     }));
                                 } else {
                                     let pinned = renderer.pinned_agent();

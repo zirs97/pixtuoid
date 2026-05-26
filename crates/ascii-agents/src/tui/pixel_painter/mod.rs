@@ -103,11 +103,11 @@ pub fn render_to_rgb_buffer(
     theme: &crate::tui::theme::Theme,
     floor: crate::tui::floor::FloorMeta,
     cat_pet: Option<&crate::tui::renderer::CatPetState>,
-    out_cat_pos: &mut Option<(Point, &'static str)>,
-) {
+) -> Option<(Point, &'static str)> {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     let buf_w = layout.buf_w;
     let buf_h = layout.buf_h;
+    let mut resolved_cat_pos: Option<(Point, &'static str)> = None;
 
     // Compute time-of-day once per frame and pass to every paint
     // helper that depends on it. Avoids recomputing the chrono local
@@ -719,7 +719,7 @@ pub fn render_to_rgb_buffer(
             .map(|(pos, flip, anim_name, frame_idx)| (pos, flip, anim_name, frame_idx, None))
         };
         if let Some((pos, flip, anim_name, frame_idx, pet_elapsed)) = cat_data {
-            *out_cat_pos = Some((pos, anim_name));
+            resolved_cat_pos = Some((pos, anim_name));
             drawables.push(Drawable {
                 anchor_y: pos.y + 3,
                 kind: DrawableKind::Cat {
@@ -930,6 +930,8 @@ pub fn render_to_rgb_buffer(
     for d in &drawables {
         paint_drawable(d, buf, pack, cache, now, theme);
     }
+
+    resolved_cat_pos
 }
 
 #[cfg(test)]

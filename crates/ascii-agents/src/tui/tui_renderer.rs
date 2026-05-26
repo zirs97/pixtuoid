@@ -263,12 +263,11 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             let from_meta = FloorMeta::for_floor(from_floor, nf);
             let to_meta = FloorMeta::for_floor(to_floor, nf);
 
-            let mut _discard_cat_pos: Option<(Point, &'static str)> = None;
             if let Some(layout) =
                 Layout::compute_with_seed(buf_w, buf_h, from_scene.max_desks, from_meta.floor_seed)
             {
                 from_ctx.router.set_preferred_zone(layout.corridor);
-                render_to_rgb_buffer(
+                let _ = render_to_rgb_buffer(
                     &from_scene,
                     &layout,
                     pack,
@@ -281,7 +280,6 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                     self.theme,
                     from_meta,
                     None,
-                    &mut _discard_cat_pos,
                 );
             }
 
@@ -289,7 +287,7 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                 Layout::compute_with_seed(buf_w, buf_h, to_scene.max_desks, to_meta.floor_seed)
             {
                 to_ctx.router.set_preferred_zone(layout.corridor);
-                render_to_rgb_buffer(
+                let _ = render_to_rgb_buffer(
                     &to_scene,
                     &layout,
                     pack,
@@ -302,7 +300,6 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                     self.theme,
                     to_meta,
                     None,
-                    &mut _discard_cat_pos,
                 );
             }
 

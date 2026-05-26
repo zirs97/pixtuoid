@@ -160,25 +160,28 @@ pub(super) fn paint_thinking_dots(
 }
 
 /// Floating heart particles for the "pet the cat" interaction.
-/// 4 hearts, staggered 200ms apart, each rising 6px over 2s and
-/// fading via alpha blend toward the background.
+/// 4 hearts, staggered 150ms apart, each rising 6px over 1550ms and
+/// fading via alpha blend toward the background. Last heart starts at
+/// 450ms so all 4 complete within PET_DURATION_MS (2000ms).
 pub(super) fn paint_pet_hearts(
     buf: &mut RgbBuffer,
     cat_pos: Point,
     elapsed_ms: u64,
     _theme: &Theme,
 ) {
+    const STAGGER_MS: u64 = 150;
+    const HEART_LIFE_MS: u64 = 1550;
     let heart_color = Rgb(255, 100, 100);
     for i in 0..4u64 {
-        let stagger = i * 200;
+        let stagger = i * STAGGER_MS;
         if elapsed_ms < stagger {
             continue;
         }
         let local_ms = elapsed_ms - stagger;
-        if local_ms >= 2000 {
+        if local_ms >= HEART_LIFE_MS {
             continue;
         }
-        let t = local_ms as f32 / 2000.0;
+        let t = local_ms as f32 / HEART_LIFE_MS as f32;
         let rise = (t * 6.0) as u16;
         let alpha = 1.0 - t;
         if alpha < 0.05 {

@@ -52,7 +52,6 @@ pub const PET_DURATION_MS: u64 = 2000;
 pub struct CatPetState {
     pub petted_at: SystemTime,
     pub pet_pos: Point,
-    pub pre_pet_anim: &'static str,
 }
 
 impl CatPetState {
@@ -192,7 +191,7 @@ pub fn draw_scene<B: Backend>(
 
     ctx.router.set_preferred_zone(layout.corridor);
 
-    render_to_rgb_buffer(
+    ctx.last_cat_pos = render_to_rgb_buffer(
         scene,
         &layout,
         pack,
@@ -205,7 +204,6 @@ pub fn draw_scene<B: Backend>(
         theme,
         floor,
         ctx.cat_pet,
-        &mut ctx.last_cat_pos,
     );
 
     let mouse_pos = ctx.mouse_pos;
