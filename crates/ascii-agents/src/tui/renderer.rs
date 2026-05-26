@@ -33,7 +33,9 @@ use crate::tui::pose;
 
 // Re-exports from sibling modules for backwards compatibility.
 pub(crate) use crate::tui::hit_test::hit_test_agent;
-pub use crate::tui::hit_test::{hit_test_coffee_machine, hit_test_from_tui, hit_test_furniture};
+pub use crate::tui::hit_test::{
+    hit_test_cat, hit_test_coffee_machine, hit_test_from_tui, hit_test_furniture,
+};
 pub(crate) use crate::tui::widgets::paint_hover_tooltip;
 pub use crate::tui::widgets::TickerQueue;
 pub(super) use crate::tui::widgets::{
