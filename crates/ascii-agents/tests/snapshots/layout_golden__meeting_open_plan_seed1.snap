@@ -1,0 +1,6 @@
+---
+source: crates/ascii-agents/tests/layout_golden.rs
+assertion_line: 86
+expression: l.meeting_room
+---
+None

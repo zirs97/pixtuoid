@@ -1,0 +1,21 @@
+---
+source: crates/ascii-agents/tests/layout_golden.rs
+assertion_line: 80
+expression: l.waypoints
+---
+[
+    Waypoint {
+        pos: Point {
+            x: 74,
+            y: 39,
+        },
+        kind: Couch,
+    },
+    Waypoint {
+        pos: Point {
+            x: 16,
+            y: 86,
+        },
+        kind: Pantry,
+    },
+]
