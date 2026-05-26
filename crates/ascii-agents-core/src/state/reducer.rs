@@ -289,6 +289,8 @@ impl Reducer {
                         slot.exiting_at = Some(now);
                     }
                 }
+                let mut visited = HashSet::new();
+                visited.insert(agent_id);
                 let mut frontier = vec![agent_id];
                 while let Some(parent) = frontier.pop() {
                     let children: Vec<AgentId> = scene
@@ -297,12 +299,14 @@ impl Reducer {
                         .filter(|s| s.parent_id == Some(parent) && s.exiting_at.is_none())
                         .map(|s| s.agent_id)
                         .collect();
-                    for cid in &children {
-                        if let Some(slot) = scene.agents.get_mut(cid) {
-                            slot.exiting_at = Some(now);
+                    for cid in children {
+                        if visited.insert(cid) {
+                            if let Some(slot) = scene.agents.get_mut(&cid) {
+                                slot.exiting_at = Some(now);
+                            }
+                            frontier.push(cid);
                         }
                     }
-                    frontier.extend(children);
                 }
             }
         }
