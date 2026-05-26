@@ -39,8 +39,9 @@ pub use crate::tui::hit_test::{
 pub(crate) use crate::tui::widgets::paint_hover_tooltip;
 pub use crate::tui::widgets::TickerQueue;
 pub(super) use crate::tui::widgets::{
-    paint_cat_tooltip, paint_coffee_tooltip, paint_elevator_indicator, paint_footer,
-    paint_furniture_tooltip, paint_label_widgets, paint_theme_picker, paint_wall_display,
+    paint_cat_tooltip, paint_chitchat_bubbles, paint_coffee_tooltip, paint_elevator_indicator,
+    paint_footer, paint_furniture_tooltip, paint_label_widgets, paint_theme_picker,
+    paint_wall_display,
 };
 
 /// Duration (ms) the cat stays frozen in place after being petted.
@@ -232,6 +233,7 @@ pub fn draw_scene<B: Backend>(
     let buf = &ctx.buf;
     let ticker = ctx.ticker;
     let theme_picker = ctx.theme_picker;
+    let chitchat_bubbles = &ctx.chitchat_bubbles;
     term.draw(|f| {
         paint_footer(f, scene, full_rect, theme, floor_info);
         flush_buffer_to_term(f, buf, scene_rect);
@@ -247,6 +249,7 @@ pub fn draw_scene<B: Backend>(
             hovered,
             theme,
         );
+        paint_chitchat_bubbles(f, chitchat_bubbles, scene_rect, theme);
         paint_wall_display(f, scene, scene_rect, now, ticker, theme, floor_info);
         if let Some(door) = layout.door {
             let (current, _) = floor_info.unwrap_or((1, 1));
