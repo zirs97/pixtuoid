@@ -1,6 +1,7 @@
 pub mod embedded_pack;
 pub mod floor;
 pub mod frame_cache;
+pub mod hit_test;
 pub mod layout;
 pub mod pathfind;
 pub mod pixel_painter;
@@ -8,6 +9,7 @@ pub mod pose;
 pub mod renderer;
 pub mod theme;
 pub mod tui_renderer;
+pub mod widgets;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -154,13 +156,9 @@ pub async fn run_tui(
                             renderer.set_mouse_pos(Some((m.column, m.row)));
                             if m.row <= 1 && m.column >= 1 && m.column < 31 {
                                 let _ = open::that("https://github.com/IvanWng97/ascii-agents");
-                            } else if renderer::hit_test_coffee_machine(
-                                renderer.buf(),
-                                max_desks.load(std::sync::atomic::Ordering::Relaxed),
-                                m.column,
-                                m.row,
-                                renderer.current_floor_seed(),
-                            ) {
+                            } else if renderer.cached_layout().is_some_and(|layout| {
+                                renderer::hit_test_coffee_machine(layout, m.column, m.row)
+                            }) {
                                 let _ = open::that("https://buymeacoffee.com/IvanWng97");
                             } else {
                                 let pinned = renderer.pinned_agent();
@@ -168,13 +166,9 @@ pub async fn run_tui(
                                     renderer.set_pinned_agent(None);
                                 } else {
                                     let snap = scene_rx.borrow().clone();
-                                    let hit = renderer::hit_test_from_tui(
-                                        &snap,
-                                        snap.max_desks,
-                                        m.column,
-                                        m.row,
-                                        renderer.buf(),
-                                    );
+                                    let hit = renderer.cached_layout().and_then(|layout| {
+                                        renderer::hit_test_from_tui(&snap, layout, m.column, m.row)
+                                    });
                                     renderer.set_pinned_agent(hit);
                                 }
                             }

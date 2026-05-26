@@ -1,0 +1,23 @@
+---
+source: crates/ascii-agents/tests/layout_golden.rs
+assertion_line: 74
+expression: l.home_desks
+---
+[
+    Point {
+        x: 43,
+        y: 53,
+    },
+    Point {
+        x: 67,
+        y: 53,
+    },
+    Point {
+        x: 43,
+        y: 71,
+    },
+    Point {
+        x: 67,
+        y: 71,
+    },
+]
