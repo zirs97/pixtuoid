@@ -409,7 +409,7 @@ pub(crate) fn paint_hover_tooltip(
     )));
     lines.push(ratatui::text::Line::from(Span::styled(
         format!(
-            " \u{23f1} {} \u{00b7} {} calls \u{00b7} {}% active",
+            " \u{23f1} {} \u{00b7} {} calls \u{00b7} {} active",
             duration_str, agent.tool_call_count, active_str
         ),
         Style::default().fg(to_color(theme.ui.tooltip_dim)),
@@ -458,7 +458,6 @@ pub(crate) fn paint_hover_tooltip(
 pub(super) fn paint_wall_display(
     f: &mut ratatui::Frame<'_>,
     scene: &SceneState,
-    _layout: &Layout,
     scene_rect: Rect,
     now: SystemTime,
     ticker: &TickerQueue,

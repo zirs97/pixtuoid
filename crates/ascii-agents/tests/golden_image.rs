@@ -2,9 +2,9 @@
 //!
 //! Render deterministic scenes and snapshot the pixel hash. Any visual
 //! regression (missing sprite, wrong color, broken layout) changes the
-//! hash. Unlike binary PNG snapshots, pixel hashes are platform-independent
-//! as long as the render pipeline avoids timezone-dependent code paths —
-//! we use a fixed UTC noon timestamp where `sunset_strength` ≈ 0.
+//! hash. Tests only compare same-machine renders against each other
+//! (eq/ne assertions), so timezone-dependent code paths like
+//! `sunset_strength` don't cause cross-platform failures.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

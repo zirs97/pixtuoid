@@ -208,9 +208,7 @@ pub fn draw_scene<B: Backend>(
             hovered,
             theme,
         );
-        paint_wall_display(
-            f, scene, &layout, scene_rect, now, ticker, theme, floor_info,
-        );
+        paint_wall_display(f, scene, scene_rect, now, ticker, theme, floor_info);
         if let Some(door) = layout.door {
             let (current, _) = floor_info.unwrap_or((1, 1));
             paint_elevator_indicator(f, door, current, scene_rect, theme);

@@ -6,8 +6,8 @@
 //! overlay + terminal lifecycle.
 //!
 //! `render_to_rgb_buffer` is the public entry point. Everything else is
-//! private to this module except `character_anchor`, which `renderer.rs`
-//! uses for label placement and mouse hit-testing.
+//! private to this module except `character_anchor`, which `widgets.rs`
+//! uses for label placement and `hit_test.rs` for mouse hit-testing.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
