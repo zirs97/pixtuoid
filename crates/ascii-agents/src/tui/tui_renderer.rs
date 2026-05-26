@@ -23,7 +23,7 @@ use ratatui::layout::Rect;
 use crate::tui::floor::{build_floor_scene, num_floors, FloorCtx, FloorMeta, FloorTransition};
 use crate::tui::layout::{Layout, Point, MAX_VISIBLE_DESKS};
 use crate::tui::pathfind::Router;
-use crate::tui::pixel_painter::render_to_rgb_buffer;
+use crate::tui::pixel_painter::{render_to_rgb_buffer, PixelCtx};
 use crate::tui::renderer::{draw_scene, flush_buffer_to_term_at_offset, CatPetState, DrawCtx};
 
 pub struct TuiRenderer<B: Backend> {
@@ -285,46 +285,46 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                 Layout::compute_with_seed(buf_w, buf_h, MAX_VISIBLE_DESKS, from_meta.floor_seed)
             {
                 from_ctx.router.set_preferred_zone(layout.corridor);
-                let _ = render_to_rgb_buffer(
-                    &from_scene,
-                    &layout,
+                let _ = render_to_rgb_buffer(&mut PixelCtx {
+                    scene: &from_scene,
+                    layout: &layout,
                     pack,
                     now,
-                    from_buf,
-                    &mut from_ctx.cache,
-                    &mut from_ctx.router,
-                    &mut from_ctx.overlay,
-                    &mut from_ctx.history,
-                    self.theme,
-                    from_meta,
-                    None,
-                    &mut transition_chitchat,
-                    &empty_coffee,
-                    &empty_fetched,
-                );
+                    buf: from_buf,
+                    cache: &mut from_ctx.cache,
+                    router: &mut from_ctx.router,
+                    overlay: &mut from_ctx.overlay,
+                    history: &mut from_ctx.history,
+                    theme: self.theme,
+                    floor: from_meta,
+                    cat_pet: None,
+                    chitchat_state: &mut transition_chitchat,
+                    coffee_holders: &empty_coffee,
+                    coffee_fetched_at: &empty_fetched,
+                });
             }
 
             if let Some(layout) =
                 Layout::compute_with_seed(buf_w, buf_h, MAX_VISIBLE_DESKS, to_meta.floor_seed)
             {
                 to_ctx.router.set_preferred_zone(layout.corridor);
-                let _ = render_to_rgb_buffer(
-                    &to_scene,
-                    &layout,
+                let _ = render_to_rgb_buffer(&mut PixelCtx {
+                    scene: &to_scene,
+                    layout: &layout,
                     pack,
                     now,
-                    to_buf,
-                    &mut to_ctx.cache,
-                    &mut to_ctx.router,
-                    &mut to_ctx.overlay,
-                    &mut to_ctx.history,
-                    self.theme,
-                    to_meta,
-                    None,
-                    &mut transition_chitchat,
-                    &empty_coffee,
-                    &empty_fetched,
-                );
+                    buf: to_buf,
+                    cache: &mut to_ctx.cache,
+                    router: &mut to_ctx.router,
+                    overlay: &mut to_ctx.overlay,
+                    history: &mut to_ctx.history,
+                    theme: self.theme,
+                    floor: to_meta,
+                    cat_pet: None,
+                    chitchat_state: &mut transition_chitchat,
+                    coffee_holders: &empty_coffee,
+                    coffee_fetched_at: &empty_fetched,
+                });
             }
 
             // Compute y-offsets for vertical slide with divider gap.
