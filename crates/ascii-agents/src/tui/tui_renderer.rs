@@ -263,6 +263,7 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             let from_meta = FloorMeta::for_floor(from_floor, nf);
             let to_meta = FloorMeta::for_floor(to_floor, nf);
 
+            let mut _discard_cat_pos: Option<(Point, &'static str)> = None;
             if let Some(layout) =
                 Layout::compute_with_seed(buf_w, buf_h, from_scene.max_desks, from_meta.floor_seed)
             {
@@ -279,6 +280,8 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                     &mut from_ctx.history,
                     self.theme,
                     from_meta,
+                    None,
+                    &mut _discard_cat_pos,
                 );
             }
 
@@ -298,6 +301,8 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                     &mut to_ctx.history,
                     self.theme,
                     to_meta,
+                    None,
+                    &mut _discard_cat_pos,
                 );
             }
 

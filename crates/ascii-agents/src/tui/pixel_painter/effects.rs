@@ -159,6 +159,57 @@ pub(super) fn paint_thinking_dots(
     }
 }
 
+/// Floating heart particles for the "pet the cat" interaction.
+/// 4 hearts, staggered 200ms apart, each rising 6px over 2s and
+/// fading via alpha blend toward the background.
+pub(super) fn paint_pet_hearts(
+    buf: &mut RgbBuffer,
+    cat_pos: Point,
+    elapsed_ms: u64,
+    _theme: &Theme,
+) {
+    let heart_color = Rgb(255, 100, 100);
+    for i in 0..4u64 {
+        let stagger = i * 200;
+        if elapsed_ms < stagger {
+            continue;
+        }
+        let local_ms = elapsed_ms - stagger;
+        if local_ms >= 2000 {
+            continue;
+        }
+        let t = local_ms as f32 / 2000.0;
+        let rise = (t * 6.0) as u16;
+        let alpha = 1.0 - t;
+        if alpha < 0.05 {
+            continue;
+        }
+        // Spread hearts horizontally: offsets -3, -1, +1, +3
+        let dx: i16 = (i as i16) * 2 - 3;
+        let hx = (cat_pos.x as i32 + dx as i32).max(0) as u16;
+        let hy = cat_pos.y.saturating_sub(4 + rise);
+        // 2x2 pixel heart
+        for dy in 0..2u16 {
+            for ddx in 0..2u16 {
+                let px = hx + ddx;
+                let py = hy + dy;
+                if px < buf.width && py < buf.height {
+                    let cur = buf.get(px, py);
+                    buf.put(
+                        px,
+                        py,
+                        Rgb(
+                            blend(cur.0, heart_color.0, alpha * 0.8),
+                            blend(cur.1, heart_color.1, alpha * 0.8),
+                            blend(cur.2, heart_color.2, alpha * 0.8),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point, theme: &Theme) {
     let fg = theme.effects.waiting_bubble;
     const GLYPH: &[&[u8]] = &[b".YYY.", b"...Y.", b"..Y..", b"..Y.."];

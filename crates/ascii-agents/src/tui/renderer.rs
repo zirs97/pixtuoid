@@ -202,6 +202,8 @@ pub fn draw_scene<B: Backend>(
         ctx.history,
         theme,
         floor,
+        ctx.cat_pet,
+        &mut ctx.last_cat_pos,
     );
 
     let mouse_pos = ctx.mouse_pos;
