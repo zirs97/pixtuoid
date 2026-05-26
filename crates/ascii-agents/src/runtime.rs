@@ -30,6 +30,7 @@ pub fn run(
     max_desks: usize,
     headless: bool,
     theme_name: String,
+    config_path: PathBuf,
 ) -> Result<()> {
     let theme = crate::tui::theme::theme_by_name(&theme_name)
         .ok_or_else(|| anyhow::anyhow!("unknown theme: {theme_name}"))?;
@@ -37,7 +38,16 @@ pub fn run(
         .enable_all()
         .build()?;
     rt.block_on(async move {
-        run_async(socket, projects_root, pack_dir, max_desks, headless, theme).await
+        run_async(
+            socket,
+            projects_root,
+            pack_dir,
+            max_desks,
+            headless,
+            theme,
+            config_path,
+        )
+        .await
     })
 }
 
@@ -48,6 +58,7 @@ async fn run_async(
     max_desks: usize,
     headless: bool,
     theme: &'static crate::tui::theme::Theme,
+    config_path: PathBuf,
 ) -> Result<()> {
     let mut cc_src = ClaudeCodeSource::default_paths();
     if let Some(s) = socket {
@@ -75,7 +86,7 @@ async fn run_async(
     if headless {
         headless_loop(scene_rx).await
     } else {
-        crate::tui::run_tui(scene_rx, pack_dir, floor_caps, theme).await
+        crate::tui::run_tui(scene_rx, pack_dir, floor_caps, theme, config_path).await
     }
 }
 

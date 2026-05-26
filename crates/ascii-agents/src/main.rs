@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use ascii_agents::cli::{Cli, Cmd};
-use ascii_agents::{install, runtime};
+use ascii_agents::{config, install, runtime};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
     install_crash_hook();
-    let (log_level, theme_name, cmd) = Cli::parse().cmd_or_default();
+    let (log_level, cli_theme, cmd) = Cli::parse().cmd_or_default();
     let make_filter =
         || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&log_level));
 
@@ -49,16 +49,22 @@ fn main() -> Result<()> {
             socket,
             projects_root,
             pack_dir,
-            max_desks,
+            max_desks: cli_max_desks,
             headless,
-        } => runtime::run(
-            socket,
-            projects_root,
-            pack_dir,
-            max_desks,
-            headless,
-            theme_name,
-        ),
+        } => {
+            let cfg_path = config::config_path();
+            let cfg = config::load(&cfg_path);
+            let (theme_name, max_desks) = config::resolve(cfg, cli_theme, cli_max_desks);
+            runtime::run(
+                socket,
+                projects_root,
+                pack_dir,
+                max_desks,
+                headless,
+                theme_name,
+                cfg_path,
+            )
+        }
         Cmd::InstallHooks {
             hook_path,
             settings,

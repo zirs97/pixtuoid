@@ -29,6 +29,7 @@ pub async fn run_tui(
     pack_dir: Option<std::path::PathBuf>,
     floor_caps: Arc<[std::sync::atomic::AtomicUsize; ascii_agents_core::state::MAX_FLOORS]>,
     theme: &'static theme::Theme,
+    config_path: std::path::PathBuf,
 ) -> Result<()> {
     let pack = embedded_pack::load_sprite_pack(pack_dir)?;
     let term = setup_terminal()?;
@@ -105,8 +106,13 @@ pub async fn run_tui(
                                     renderer.set_theme(theme::ALL_THEMES[*idx]);
                                 }
                                 KeyCode::Enter => {
-                                    saved_theme_idx = *idx;
+                                    let chosen = *idx;
+                                    saved_theme_idx = chosen;
                                     theme_picker = None;
+                                    let name = theme::ALL_THEMES[chosen].name;
+                                    if let Err(e) = crate::config::save(&config_path, name) {
+                                        tracing::warn!("failed to persist theme: {e}");
+                                    }
                                 }
                                 KeyCode::Esc => {
                                     renderer.set_theme(theme::ALL_THEMES[saved_theme_idx]);
