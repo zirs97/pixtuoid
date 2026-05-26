@@ -119,30 +119,13 @@ impl FloorTransition {
 // Pure arithmetic helpers
 // ---------------------------------------------------------------------------
 
-/// Which floor does `desk_index` belong to?
-/// Quadratic ease-out: fast start, smooth deceleration.
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t) * (1.0 - t)
 }
 
-pub fn floor_of(desk_index: usize, desks_per_floor: usize) -> usize {
-    if desks_per_floor == 0 {
-        return 0;
-    }
-    desk_index / desks_per_floor
-}
-
-/// Local desk offset within the floor (for layout remapping).
-pub fn floor_local_desk(desk_index: usize, desks_per_floor: usize) -> usize {
-    if desks_per_floor == 0 {
-        return 0;
-    }
-    desk_index % desks_per_floor
-}
-
 /// How many floors are needed to seat all agents?
 pub fn num_floors(scene: &SceneState) -> usize {
-    if scene.agents.is_empty() || scene.max_desks == 0 {
+    if scene.agents.is_empty() || scene.floor_capacities.iter().all(|&c| c == 0) {
         return 1;
     }
     let max_idx = scene
@@ -151,27 +134,25 @@ pub fn num_floors(scene: &SceneState) -> usize {
         .map(|a| a.desk_index)
         .max()
         .unwrap_or(0);
-    max_idx / scene.max_desks + 1
+    (scene.floor_of(max_idx) + 1).max(1)
 }
 
 /// Extract agents belonging to `floor_idx`, remapping their `desk_index`
-/// into the `[0..desks_per_floor)` range so the layout engine sees a
-/// self-contained floor. Returns `(agents, desks_per_floor)`.
-pub fn build_floor_scene(scene: &SceneState, floor_idx: usize) -> (Vec<AgentSlot>, usize) {
-    let dpf = scene.max_desks;
-    let lo = floor_idx * dpf;
-    let hi = lo + dpf;
-    let agents: Vec<AgentSlot> = scene
+/// into the `[0..capacity)` range so the layout engine sees a
+/// self-contained floor.
+pub fn build_floor_scene(scene: &SceneState, floor_idx: usize) -> Vec<AgentSlot> {
+    let range = scene.floor_range(floor_idx);
+    let offset = range.start;
+    scene
         .agents
         .values()
-        .filter(|a| a.desk_index >= lo && a.desk_index < hi)
+        .filter(|a| range.contains(&a.desk_index))
         .map(|a| {
             let mut slot = a.clone();
-            slot.desk_index = a.desk_index - lo;
+            slot.desk_index = a.desk_index - offset;
             slot
         })
-        .collect();
-    (agents, dpf)
+        .collect()
 }
 
 #[cfg(test)]
@@ -184,7 +165,7 @@ mod tests {
     use std::time::Duration;
 
     fn make_scene(n: usize, max_desks: usize) -> SceneState {
-        let mut s = SceneState::new(max_desks);
+        let mut s = SceneState::uniform(max_desks);
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         for i in 0..n {
             let id = AgentId::from_transcript_path(&format!("/p/{i}.jsonl"));
@@ -216,19 +197,21 @@ mod tests {
 
     #[test]
     fn floor_of_maps_desk_to_floor() {
-        assert_eq!(floor_of(0, 16), 0);
-        assert_eq!(floor_of(15, 16), 0);
-        assert_eq!(floor_of(16, 16), 1);
-        assert_eq!(floor_of(31, 16), 1);
-        assert_eq!(floor_of(32, 16), 2);
+        let s = SceneState::uniform(16);
+        assert_eq!(s.floor_of(0), 0);
+        assert_eq!(s.floor_of(15), 0);
+        assert_eq!(s.floor_of(16), 1);
+        assert_eq!(s.floor_of(31), 1);
+        assert_eq!(s.floor_of(32), 2);
     }
 
     #[test]
     fn floor_local_desk_remaps_to_floor_range() {
-        assert_eq!(floor_local_desk(0, 16), 0);
-        assert_eq!(floor_local_desk(16, 16), 0);
-        assert_eq!(floor_local_desk(17, 16), 1);
-        assert_eq!(floor_local_desk(31, 16), 15);
+        let s = SceneState::uniform(16);
+        assert_eq!(s.floor_local_desk(0), 0);
+        assert_eq!(s.floor_local_desk(16), 0);
+        assert_eq!(s.floor_local_desk(17), 1);
+        assert_eq!(s.floor_local_desk(31), 15);
     }
 
     #[test]
@@ -253,8 +236,7 @@ mod tests {
     fn build_floor_scene_filters_and_remaps() {
         let scene = make_scene(20, 16);
 
-        let (floor0, dpf0) = build_floor_scene(&scene, 0);
-        assert_eq!(dpf0, 16);
+        let floor0 = build_floor_scene(&scene, 0);
         assert_eq!(floor0.len(), 16);
         for a in &floor0 {
             assert!(
@@ -264,8 +246,7 @@ mod tests {
             );
         }
 
-        let (floor1, dpf1) = build_floor_scene(&scene, 1);
-        assert_eq!(dpf1, 16);
+        let floor1 = build_floor_scene(&scene, 1);
         assert_eq!(floor1.len(), 4);
         let mut indices: Vec<usize> = floor1.iter().map(|a| a.desk_index).collect();
         indices.sort();

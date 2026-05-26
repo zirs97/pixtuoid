@@ -150,7 +150,7 @@ impl<B: Backend> TuiRenderer<B> {
     }
 
     /// Invalidate all floors' router path caches. Call when the static
-    /// walkable mask changes (terminal resize, max_desks change).
+    /// walkable mask changes (terminal resize, floor capacity change).
     pub fn invalidate_routes(&mut self) {
         for ctx in &mut self.floor_ctxs {
             ctx.router.invalidate();
@@ -212,14 +212,14 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             let going_down = to_floor > from_floor;
 
             // Build floor-scoped scenes for both floors.
-            let (from_agents, from_dpf) = build_floor_scene(scene, from_floor);
-            let mut from_scene = SceneState::new(from_dpf);
+            let from_agents = build_floor_scene(scene, from_floor);
+            let mut from_scene = SceneState::new(scene.floor_capacities);
             for a in from_agents {
                 from_scene.agents.insert(a.agent_id, a);
             }
 
-            let (to_agents, to_dpf) = build_floor_scene(scene, to_floor);
-            let mut to_scene = SceneState::new(to_dpf);
+            let to_agents = build_floor_scene(scene, to_floor);
+            let mut to_scene = SceneState::new(scene.floor_capacities);
             for a in to_agents {
                 to_scene.agents.insert(a.agent_id, a);
             }
@@ -365,8 +365,8 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
         }
 
         // --- Normal path: single floor ------------------------------------
-        let (floor_agents, desks_per_floor) = build_floor_scene(scene, self.current_floor);
-        let mut floor_scene = SceneState::new(desks_per_floor);
+        let floor_agents = build_floor_scene(scene, self.current_floor);
+        let mut floor_scene = SceneState::new(scene.floor_capacities);
         for agent in floor_agents {
             floor_scene.agents.insert(agent.agent_id, agent);
         }

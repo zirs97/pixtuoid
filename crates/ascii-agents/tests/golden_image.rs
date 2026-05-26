@@ -30,11 +30,11 @@ fn now() -> SystemTime {
 }
 
 fn empty_scene() -> SceneState {
-    SceneState::new(12)
+    SceneState::uniform(12)
 }
 
 fn populated_scene(now: SystemTime) -> SceneState {
-    let mut s = SceneState::new(12);
+    let mut s = SceneState::uniform(12);
     let age_offset = Duration::from_secs(60);
     let labels = ["alice", "bob", "carol", "dave"];
     let states = [

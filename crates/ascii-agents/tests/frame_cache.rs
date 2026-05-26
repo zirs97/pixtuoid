@@ -111,7 +111,7 @@ fn evict_missing_drops_entries_for_absent_agents() {
     assert_eq!(cache.len(), 3);
 
     // Scene now contains only `kept`.
-    let mut scene = SceneState::new(4);
+    let mut scene = SceneState::uniform(4);
     scene.agents.insert(kept, make_slot(kept));
 
     cache.evict_missing(&scene);

@@ -199,7 +199,7 @@ impl Reducer {
                         ?agent_id,
                         cwd = %cwd.display(),
                         session_id = %session_id,
-                        max_desks = scene.max_desks,
+                        total_capacity = scene.total_capacity(),
                         "dropped SessionStart — all desks occupied; bump --max-desks"
                     );
                     return;
