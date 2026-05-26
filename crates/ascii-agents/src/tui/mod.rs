@@ -33,7 +33,7 @@ pub async fn run_tui(
     let pack = embedded_pack::load_sprite_pack(pack_dir)?;
     let term = setup_terminal()?;
     let mut renderer = TuiRenderer::new(term, theme);
-    let mut last_layout_sig: Option<(u16, u16, usize)> = None;
+    let mut last_layout_sig: Option<(u16, u16)> = None;
     let mut paused = false;
     let mut frozen_now: Option<SystemTime> = None;
     let mut theme_picker: Option<usize> = None;
@@ -58,11 +58,7 @@ pub async fn run_tui(
                 Arc::new(s)
             };
             renderer.evict_missing(&snapshot);
-            let sig = (
-                renderer.buf().width,
-                renderer.buf().height,
-                snapshot.max_desks,
-            );
+            let sig = (renderer.buf().width, renderer.buf().height);
             if last_layout_sig != Some(sig) {
                 renderer.invalidate_routes();
                 renderer.cancel_transition();
@@ -70,6 +66,27 @@ pub async fn run_tui(
             }
             renderer.set_theme_picker(theme_picker);
             renderer.render(&snapshot, &pack, now)?;
+
+            // Auto-compute max_desks as the minimum desk capacity across
+            // all 5 floor variants. This ensures every floor variant can
+            // fit its assigned agents — a Standard floor (8 desks) and an
+            // OpenPlan floor (16 desks) both work with max_desks = 8.
+            if let Some(layout) = renderer.cached_layout() {
+                use ascii_agents_core::layout::{SceneLayout, MAX_VISIBLE_DESKS};
+                let buf_w = layout.buf_w;
+                let buf_h = layout.buf_h;
+                let min_capacity = (0..5u64)
+                    .filter_map(|seed| {
+                        SceneLayout::compute_with_seed(buf_w, buf_h, MAX_VISIBLE_DESKS, seed)
+                    })
+                    .map(|l| l.home_desks.len())
+                    .filter(|&n| n > 0)
+                    .min()
+                    .unwrap_or(MAX_VISIBLE_DESKS);
+                if min_capacity > 0 {
+                    max_desks.fetch_max(min_capacity, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
 
             let start = Instant::now();
             let mut polled = event::poll(tick)?;
@@ -113,20 +130,6 @@ pub async fn run_tui(
                                 }
                                 (KeyCode::Char('t'), _) => {
                                     theme_picker = Some(saved_theme_idx);
-                                }
-                                (KeyCode::Char('+') | KeyCode::Char('='), _) => {
-                                    let cur = max_desks.load(std::sync::atomic::Ordering::Relaxed);
-                                    if cur < 16 {
-                                        max_desks
-                                            .store(cur + 1, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                }
-                                (KeyCode::Char('-'), _) => {
-                                    let cur = max_desks.load(std::sync::atomic::Ordering::Relaxed);
-                                    if cur > 1 {
-                                        max_desks
-                                            .store(cur - 1, std::sync::atomic::Ordering::Relaxed);
-                                    }
                                 }
                                 (KeyCode::PageUp, _)
                                 | (KeyCode::Up, _)
