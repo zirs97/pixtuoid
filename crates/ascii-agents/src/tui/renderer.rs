@@ -87,10 +87,8 @@ pub struct DrawCtx<'a> {
     pub floor: crate::tui::floor::FloorMeta,
     pub cat_pet: Option<&'a CatPetState>,
     pub last_cat_pos: Option<(Point, &'static str)>,
-    pub chitchat_state: &'a mut std::collections::HashMap<
-        (usize, usize),
-        crate::tui::chitchat::ActiveChitchat,
-    >,
+    pub chitchat_state:
+        &'a mut std::collections::HashMap<(usize, usize), crate::tui::chitchat::ActiveChitchat>,
     pub chitchat_bubbles: Vec<crate::tui::chitchat::ChitchatBubble>,
 }
 

@@ -63,11 +63,7 @@ impl ActiveChitchat {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let seed = agent_a
-            .raw()
-            .wrapping_mul(0x9e3779b97f4a7c15)
-            ^ agent_b.raw()
-            ^ ms;
+        let seed = agent_a.raw().wrapping_mul(0x9e3779b97f4a7c15) ^ agent_b.raw() ^ ms;
         // Stable speaker assignment: lower raw id = agent_a.
         let (a, b) = if agent_a.raw() <= agent_b.raw() {
             (agent_a, agent_b)
@@ -154,12 +150,9 @@ pub fn update_and_collect(
         let key = (floor_idx, *wp_idx);
 
         // Create new conversation if none exists for this waypoint.
-        if !state.contains_key(&key) {
-            state.insert(
-                key,
-                ActiveChitchat::new(key, agents[0].0, agents[1].0, now),
-            );
-        }
+        state
+            .entry(key)
+            .or_insert_with(|| ActiveChitchat::new(key, agents[0].0, agents[1].0, now));
 
         // Generate bubble for active conversation.
         if let Some(chat) = state.get(&key) {

@@ -40,8 +40,7 @@ pub struct TuiRenderer<B: Backend> {
     cached_layout: Option<Layout>,
     cat_pet: Option<CatPetState>,
     last_cat_pos: Option<(Point, &'static str)>,
-    chitchat_state:
-        std::collections::HashMap<(usize, usize), crate::tui::chitchat::ActiveChitchat>,
+    chitchat_state: std::collections::HashMap<(usize, usize), crate::tui::chitchat::ActiveChitchat>,
 }
 
 impl<B: Backend> TuiRenderer<B> {

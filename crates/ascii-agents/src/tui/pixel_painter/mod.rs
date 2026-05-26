@@ -944,12 +944,8 @@ pub fn render_to_rgb_buffer(
         paint_drawable(d, buf, pack, cache, now, theme);
     }
 
-    let chitchat_bubbles = chitchat::update_and_collect(
-        chitchat_state,
-        floor.floor_idx,
-        &waypoint_visitors,
-        now,
-    );
+    let chitchat_bubbles =
+        chitchat::update_and_collect(chitchat_state, floor.floor_idx, &waypoint_visitors, now);
 
     PixelPassResult {
         cat_pos: resolved_cat_pos,
