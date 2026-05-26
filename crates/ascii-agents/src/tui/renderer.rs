@@ -39,8 +39,8 @@ pub use crate::tui::hit_test::{
 pub(crate) use crate::tui::widgets::paint_hover_tooltip;
 pub use crate::tui::widgets::TickerQueue;
 pub(super) use crate::tui::widgets::{
-    paint_coffee_tooltip, paint_elevator_indicator, paint_footer, paint_furniture_tooltip,
-    paint_label_widgets, paint_theme_picker, paint_wall_display,
+    paint_cat_tooltip, paint_coffee_tooltip, paint_elevator_indicator, paint_footer,
+    paint_furniture_tooltip, paint_label_widgets, paint_theme_picker, paint_wall_display,
 };
 
 /// Duration (ms) the cat stays frozen in place after being petted.
@@ -265,6 +265,13 @@ pub fn draw_scene<B: Backend>(
             if let Some((mx, my)) = mouse_pos {
                 if hit_test_coffee_machine(&layout, mx, my) {
                     paint_coffee_tooltip(f, mx, my, scene_rect, theme);
+                } else if let Some((cat_pos, anim)) = ctx.last_cat_pos {
+                    if hit_test_cat(cat_pos, anim, mx, my) {
+                        let on_cooldown = ctx.cat_pet.is_some_and(|p| p.is_active(now));
+                        paint_cat_tooltip(f, anim, on_cooldown, mx, my, scene_rect, theme);
+                    } else if let Some(label) = hit_test_furniture(&layout, mx, my) {
+                        paint_furniture_tooltip(f, label, mx, my, scene_rect, theme);
+                    }
                 } else if let Some(label) = hit_test_furniture(&layout, mx, my) {
                     paint_furniture_tooltip(f, label, mx, my, scene_rect, theme);
                 }
