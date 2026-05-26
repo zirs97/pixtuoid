@@ -67,11 +67,12 @@ pub async fn run_tui(
             renderer.set_theme_picker(theme_picker);
             renderer.render(&snapshot, &pack, now)?;
 
-            // Auto-compute max_desks from the layout capacity so it tracks
-            // terminal size without manual +/- toggling.
+            // Auto-compute max_desks from layout capacity. Use fetch_max
+            // so capacity only grows within a session — a transient terminal
+            // shrink won't orphan agents on phantom floors.
             if let Some(capacity) = renderer.cached_layout().map(|l| l.home_desks.len()) {
                 if capacity > 0 {
-                    max_desks.store(capacity, std::sync::atomic::Ordering::Relaxed);
+                    max_desks.fetch_max(capacity, std::sync::atomic::Ordering::Relaxed);
                 }
             }
 

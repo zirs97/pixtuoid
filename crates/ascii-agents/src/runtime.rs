@@ -87,8 +87,8 @@ async fn reducer_task(
     let mut sweep_interval = tokio::time::interval(Duration::from_secs(1));
     sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        // Sync max_desks from the shared atomic so TUI +/- key changes
-        // are visible to next_free_desk() inside the reducer.
+        // Sync max_desks from the shared atomic so the auto-computed
+        // layout capacity propagates to next_free_desk().
         scene.max_desks = max_desks.load(Ordering::Relaxed);
         tokio::select! {
             event = rx.recv() => {
