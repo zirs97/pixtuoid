@@ -910,20 +910,11 @@ pub fn render_to_rgb_buffer(
                 let dy = to.y as i32 - from.y as i32;
                 let going_back = dy.unsigned_abs() > dx.unsigned_abs() && dy < 0;
                 let flip = to.x < from.x;
-                let anim_name: &'static str = if carrying_coffee {
-                    if pack.animation("walking_coffee").is_some() {
-                        if going_back {
-                            "walking_back"
-                        } else {
-                            "walking_coffee"
-                        }
-                    } else if going_back {
-                        "walking_back"
-                    } else {
-                        "walking"
-                    }
-                } else if going_back {
+                // walking_back always wins (no back-facing coffee sprite).
+                let anim_name: &'static str = if going_back {
                     "walking_back"
+                } else if carrying_coffee && pack.animation("walking_coffee").is_some() {
+                    "walking_coffee"
                 } else {
                     "walking"
                 };
