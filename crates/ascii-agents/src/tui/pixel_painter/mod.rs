@@ -709,6 +709,7 @@ pub fn render_to_rgb_buffer(
                 flip,
                 anim_name,
                 frame_idx,
+                pet_elapsed_ms: None,
             },
         });
     }

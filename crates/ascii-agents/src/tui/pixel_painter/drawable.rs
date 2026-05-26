@@ -143,6 +143,7 @@ pub(super) enum DrawableKind<'a> {
         flip: bool,
         anim_name: &'static str,
         frame_idx: usize,
+        pet_elapsed_ms: Option<u64>,
     },
 }
 
@@ -550,6 +551,7 @@ pub(super) fn paint_drawable(
             flip,
             anim_name,
             frame_idx,
+            pet_elapsed_ms: _pet_elapsed_ms,
         } => {
             let Some(anim) = pack.animation(anim_name) else {
                 return;
