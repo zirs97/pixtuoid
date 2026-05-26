@@ -46,8 +46,10 @@ Running multiple AI agents in the terminal is like managing a sweatshop you can'
 | 🌧️ | **Weather effects** | Rain, storm, snow, fog, overcast, windy — cycles every 10 min + sunset golden hour |
 | 📊 | **Tooltip stats** | Hover any agent to see session duration, tool call count, and active time % |
 | 🏷️ | **Furniture tooltips** | Hover any item — desks, sofas, plants, vending machine, printer — to see its name |
-| 🐱 | **Office cat** | Roams desks, pantry, sofas; sleeps near idle agents with z's |
-| ☕ | **Desk personalization** | Coffee cup (10min), plant (30min), photo frame (1hr) appear over time |
+| 🐱 | **Office cat** | Roams desks, pantry, sofas; sleeps near idle agents. Click to pet — pixel-art hearts float up |
+| ☕ | **Coffee run** | Idle agents visit the pantry, carry a cup back to their desk. Cup stays while you work; taken on exit |
+| 💬 | **Pantry chitchat** | 2+ idle agents at the same waypoint trigger speech bubbles with dev-humor snippets |
+| 🪴 | **Desk personalization** | Plant (30min), photo frame (1hr) appear over time |
 | 🛡️ | **Hook-safe** | The shim always exits 0 — a stuck visualizer can never block Claude Code |
 
 ## Supported Tools
