@@ -320,25 +320,29 @@ pub fn has_desk_coffee(slot: &AgentSlot, now: SystemTime, layout: &SceneLayout) 
         has_steam: false,
     };
 
-    // Only Idle agents that have passed the thinking window participate in
-    // the wander cycle (and therefore in coffee trips).
-    if !matches!(slot.state, crate::state::ActivityState::Idle) {
-        return no_coffee;
-    }
-    let was_active = slot.last_event_at > slot.created_at;
-    let since_last_event = now
-        .duration_since(slot.last_event_at)
-        .unwrap_or(Duration::ZERO)
-        .as_secs();
-    if was_active && since_last_event < THINKING_WINDOW_SECS {
-        return no_coffee;
-    }
     if layout.waypoints.is_empty() {
         return no_coffee;
     }
 
+    // For Active/Waiting agents, check coffee from their last Idle epoch
+    // using state_started_at as the Idle-start anchor. For Idle agents
+    // in the thinking window, use the same anchor (they just became Idle).
+    // This preserves the desk cup across Active tool calls.
+    let idle_anchor = if matches!(slot.state, crate::state::ActivityState::Idle) {
+        slot.state_started_at
+    } else {
+        // Non-idle: the previous Idle epoch started at the state_started_at
+        // BEFORE the current state. We don't have that timestamp directly,
+        // but we can approximate: the agent was idle before their current
+        // active state, so use created_at as a stable base. The wander
+        // cycle is deterministic from agent_id, so the cycle history is
+        // the same regardless of which epoch anchor we use — only the
+        // phase within a cycle changes. For cup persistence we only care
+        // about "did any past cycle visit the pantry", not the exact phase.
+        slot.created_at
+    };
     let elapsed_ms = now
-        .duration_since(slot.state_started_at)
+        .duration_since(idle_anchor)
         .unwrap_or(Duration::ZERO)
         .as_millis() as u64;
     let cycle_ms = cycle_ms_for(slot.agent_id);
