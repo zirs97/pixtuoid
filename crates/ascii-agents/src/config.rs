@@ -15,10 +15,7 @@ pub struct AppConfig {
     pub pack_dir: Option<String>,
 }
 
-pub fn resolve_pack_dir(
-    config: &AppConfig,
-    cli_pack_dir: Option<PathBuf>,
-) -> Option<PathBuf> {
+pub fn resolve_pack_dir(config: &AppConfig, cli_pack_dir: Option<PathBuf>) -> Option<PathBuf> {
     cli_pack_dir.or_else(|| {
         config.pack_dir.as_ref().map(|p| {
             let expanded = if p.starts_with('~') {

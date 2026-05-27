@@ -319,11 +319,9 @@ pub fn validate_pack_animations(pack: &Pack) -> ValidationReport {
     for &(name, min_frames) in MULTI_FRAME_REQUIREMENTS {
         if let Some(anim) = pack.animation(name) {
             if anim.frames.len() < min_frames {
-                report.insufficient_frames.push((
-                    name.to_string(),
-                    min_frames,
-                    anim.frames.len(),
-                ));
+                report
+                    .insufficient_frames
+                    .push((name.to_string(), min_frames, anim.frames.len()));
             }
         }
     }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use ascii_agents::cli::{Cli, Cmd};
-use ascii_agents::{config, install, runtime};
+use ascii_agents::{config, init_pack, install, runtime, validate};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
@@ -72,6 +72,8 @@ fn main() -> Result<()> {
             settings,
         } => install::install(hook_path, settings),
         Cmd::UninstallHooks { settings } => install::uninstall(settings),
+        Cmd::ValidatePack { pack_dir } => validate::validate_pack(&pack_dir),
+        Cmd::InitPack { dest, force } => init_pack::init_pack(&dest, force),
     }
 }
 
