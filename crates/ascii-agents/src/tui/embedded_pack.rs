@@ -39,19 +39,21 @@ fn xdg_pack_dir() -> Option<PathBuf> {
 }
 
 pub fn load_sprite_pack(pack_dir: Option<PathBuf>) -> Result<Pack> {
+    let base = load_embedded_pack()?;
+
     if let Some(dir) = pack_dir {
-        return load_pack(&dir)
-            .inspect(
-                |_| tracing::info!(path = %dir.display(), "loaded sprite pack from --pack-dir"),
-            )
-            .map_err(|e| {
-                anyhow::anyhow!("failed to load sprite pack from {}: {e}", dir.display())
-            });
+        let mut custom = load_pack(&dir).map_err(|e| {
+            anyhow::anyhow!("failed to load sprite pack from {}: {e}", dir.display())
+        })?;
+        tracing::info!(path = %dir.display(), "loaded sprite pack from --pack-dir");
+        custom.merge_from(&base);
+        return Ok(custom);
     }
     if let Some(dir) = xdg_pack_dir() {
         match load_pack(&dir) {
-            Ok(p) => {
+            Ok(mut p) => {
                 tracing::info!(path = %dir.display(), "loaded user sprite pack");
+                p.merge_from(&base);
                 return Ok(p);
             }
             Err(e) => {
@@ -63,7 +65,7 @@ pub fn load_sprite_pack(pack_dir: Option<PathBuf>) -> Result<Pack> {
             }
         }
     }
-    load_embedded_pack()
+    Ok(base)
 }
 
 fn load_embedded_pack() -> Result<Pack> {
@@ -95,21 +97,11 @@ fn load_embedded_pack() -> Result<Pack> {
     let cat_1 = include_str!("../../sprites/default/cat_walk_1.sprite");
     let cat_sit = include_str!("../../sprites/default/cat_sit.sprite");
     let cat_sleep = include_str!("../../sprites/default/cat_sleep.sprite");
-    let floor_seat = include_str!("../../sprites/default/seated_floor.sprite");
-    let floor_slp = include_str!("../../sprites/default/seated_floor_sleeping.sprite");
-    let working_couch_0 = include_str!("../../sprites/default/working_couch_0.sprite");
-    let working_couch_1 = include_str!("../../sprites/default/working_couch_1.sprite");
-    let working_floor_0 = include_str!("../../sprites/default/working_floor_0.sprite");
-    let working_floor_1 = include_str!("../../sprites/default/working_floor_1.sprite");
-    let couch = include_str!("../../sprites/default/couch.sprite");
     let meeting_sofa = include_str!("../../sprites/default/meeting_sofa.sprite");
     let meeting_screen = include_str!("../../sprites/default/meeting_screen.sprite");
-    let coffee = include_str!("../../sprites/default/coffee.sprite");
-    let sitting = include_str!("../../sprites/default/sitting_couch.sprite");
     let back_couch = include_str!("../../sprites/default/back_couch.sprite");
     let sleeping_seat = include_str!("../../sprites/default/seated_sleeping.sprite");
     let sleeping_alt = include_str!("../../sprites/default/seated_sleeping_alt.sprite");
-    let sleeping_cch = include_str!("../../sprites/default/sitting_couch_sleeping.sprite");
     let holding = include_str!("../../sprites/default/holding_coffee.sprite");
     let pantry = include_str!("../../sprites/default/pantry.sprite");
     let pantry_small = include_str!("../../sprites/default/pantry_small.sprite");
@@ -149,21 +141,11 @@ fn load_embedded_pack() -> Result<Pack> {
             ("cat_walk_1.sprite", cat_1),
             ("cat_sit.sprite", cat_sit),
             ("cat_sleep.sprite", cat_sleep),
-            ("seated_floor.sprite", floor_seat),
-            ("seated_floor_sleeping.sprite", floor_slp),
-            ("working_couch_0.sprite", working_couch_0),
-            ("working_couch_1.sprite", working_couch_1),
-            ("working_floor_0.sprite", working_floor_0),
-            ("working_floor_1.sprite", working_floor_1),
-            ("couch.sprite", couch),
             ("meeting_sofa.sprite", meeting_sofa),
             ("meeting_screen.sprite", meeting_screen),
-            ("coffee.sprite", coffee),
-            ("sitting_couch.sprite", sitting),
             ("back_couch.sprite", back_couch),
             ("seated_sleeping.sprite", sleeping_seat),
             ("seated_sleeping_alt.sprite", sleeping_alt),
-            ("sitting_couch_sleeping.sprite", sleeping_cch),
             ("holding_coffee.sprite", holding),
             ("pantry.sprite", pantry),
             ("pantry_small.sprite", pantry_small),

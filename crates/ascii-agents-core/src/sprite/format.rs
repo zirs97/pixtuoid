@@ -129,6 +129,20 @@ impl Pack {
     pub fn animation_names(&self) -> Vec<String> {
         self.animations.keys().cloned().collect()
     }
+
+    /// Merge furniture/environment animations from `base` into self.
+    /// Only fills animations listed in OPTIONAL_FURNITURE_ANIMATIONS —
+    /// character animations are never inherited so a robot pack doesn't
+    /// accidentally show human sprites for missing optional poses.
+    pub fn merge_from(&mut self, base: &Pack) {
+        for &name in OPTIONAL_FURNITURE_ANIMATIONS {
+            if !self.animations.contains_key(name) {
+                if let Some(sprite) = base.animations.get(name) {
+                    self.animations.insert(name.to_string(), sprite.clone());
+                }
+            }
+        }
+    }
 }
 
 pub fn load_pack(dir: &Path) -> Result<Pack> {
@@ -251,15 +265,7 @@ pub const REQUIRED_CHARACTER_ANIMATIONS: &[&str] = &[
     "back_couch",
 ];
 
-pub const OPTIONAL_CHARACTER_ANIMATIONS: &[&str] = &[
-    "walking_coffee",
-    "sitting_couch",
-    "sitting_couch_sleeping",
-    "seated_floor",
-    "seated_floor_sleeping",
-    "working_couch",
-    "working_floor",
-];
+pub const OPTIONAL_CHARACTER_ANIMATIONS: &[&str] = &["walking_coffee"];
 
 pub const OPTIONAL_FURNITURE_ANIMATIONS: &[&str] = &[
     "desk",
@@ -276,8 +282,6 @@ pub const OPTIONAL_FURNITURE_ANIMATIONS: &[&str] = &[
     "cat_sleep",
     "meeting_sofa",
     "meeting_screen",
-    "coffee",
-    "couch",
     "pantry",
     "pantry_small",
     "whiteboard",
@@ -296,8 +300,6 @@ const MULTI_FRAME_REQUIREMENTS: &[(&str, usize)] = &[
     ("walking_back", 2),
     ("door", 3),
     ("cat_walk", 2),
-    ("working_couch", 2),
-    ("working_floor", 2),
 ];
 
 #[derive(Debug, Default)]
