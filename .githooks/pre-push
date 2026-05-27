@@ -1,22 +1,10 @@
 #!/usr/bin/env bash
-# Pre-push hook: runs the same checks as GitHub Actions ci.yml before
-# letting the push reach the remote. Set up once per clone with:
+# Pre-push hook: runs the full preflight (mirrors CI) before pushing.
+# Pre-commit only checks formatting; this is the gate for everything else.
 #
+# Set up once per clone with:
 #   git config core.hooksPath .githooks
 #
-# Bypass for emergencies with `--no-verify` or `SKIP_PREFLIGHT=1`.
+# Bypass with `--no-verify` or `SKIP_PREFLIGHT=1`.
 set -euo pipefail
-
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-STAMP="${REPO_ROOT}/target/.preflight/passed"
-
-# Skip if pre-commit already ran preflight within the last 120 seconds.
-if [[ -f "$STAMP" ]]; then
-    AGE=$(( $(date +%s) - $(stat -f %m "$STAMP") ))
-    if (( AGE < 120 )); then
-        printf '\033[32m[pre-push] preflight passed %ds ago — skipping\033[0m\n' "$AGE" >&2
-        exit 0
-    fi
-fi
-
-exec "${REPO_ROOT}/scripts/preflight.sh"
+exec "$(git rev-parse --show-toplevel)/scripts/preflight.sh"

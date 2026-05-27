@@ -88,9 +88,8 @@ See `.claude/skills/beautify-decoration/SKILL.md` for the full iteration loop, s
 cargo-deny + clippy with `-D warnings` + workspace tests). Run it locally to avoid
 the round-trip of "push → wait for CI → red → fix → push again."
 
-`.githooks/pre-commit` runs the full preflight before every commit.
-`.githooks/pre-push` re-runs it only if the last pass was more than 120s ago
-(touch-based stampfile in `target/.preflight/passed`).
+`.githooks/pre-commit` runs `cargo fmt --all --check` only (sub-second).
+`.githooks/pre-push` runs the full preflight before pushing.
 
 Activate hooks **once per clone**:
 

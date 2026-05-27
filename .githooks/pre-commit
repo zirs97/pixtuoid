@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
-# Pre-commit hook: runs rustfmt + clippy + tests before allowing a commit.
-# Set up once per clone with:
+# Pre-commit hook: fast format check only (~sub-second).
+# Full preflight (clippy, tests, deny, machete) runs in pre-push.
 #
+# Set up once per clone with:
 #   git config core.hooksPath .githooks
 #
-# Bypass for emergencies with `--no-verify` or `SKIP_PREFLIGHT=1`.
+# Bypass with `--no-verify` or `SKIP_PREFLIGHT=1`.
 set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/scripts/preflight.sh"
+
+if [[ "${SKIP_PREFLIGHT:-0}" == "1" ]]; then
+    printf '\033[33m[pre-commit] SKIP_PREFLIGHT=1 — skipping\033[0m\n' >&2
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+printf '\033[36m[pre-commit] cargo fmt --all --check\033[0m\n' >&2
+# shellcheck disable=SC2016
+cargo fmt --all --check || {
+    printf '\033[31m[pre-commit] FAILED: run `cargo fmt --all` and recommit\033[0m\n' >&2
+    exit 1
+}
