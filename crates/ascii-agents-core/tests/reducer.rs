@@ -1007,6 +1007,45 @@ fn active_ms_preserved_when_task_arrives_during_active_tool() {
 }
 
 #[test]
+fn active_ms_preserved_when_waiting_interrupts_active() {
+    let mut scene = SceneState::uniform(4);
+    let mut r = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/waiting.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    start(&mut r, &mut scene, id);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("t1".into()),
+            detail: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+
+    let t1 = t0 + Duration::from_secs(3);
+    r.apply(
+        &mut scene,
+        AgentEvent::Waiting {
+            agent_id: id,
+            reason: "permission".into(),
+        },
+        t1,
+        Transport::Hook,
+    );
+
+    let slot = scene.agents.get(&id).unwrap();
+    assert!(
+        slot.active_ms >= 3000,
+        "expected >= 3000ms active before Waiting, got {}",
+        slot.active_ms
+    );
+}
+
+#[test]
 fn session_end_cascades_to_children() {
     let mut scene = SceneState::uniform(8);
     let mut r = Reducer::new();

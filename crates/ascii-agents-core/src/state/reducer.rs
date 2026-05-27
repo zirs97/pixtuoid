@@ -297,6 +297,13 @@ impl Reducer {
             }
             AgentEvent::Waiting { agent_id, reason } => {
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
+                    if matches!(slot.state, ActivityState::Active { .. }) {
+                        let elapsed = now
+                            .duration_since(slot.state_started_at)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        slot.active_ms += elapsed;
+                    }
                     slot.state = ActivityState::Waiting {
                         reason: Arc::<str>::from(reason.as_str()),
                     };
