@@ -24,6 +24,21 @@ impl HookSocketListener {
         if Path::new(&path).exists() {
             let _ = tokio::fs::remove_file(&path).await;
         }
+        // Set umask to 0077 before bind so the socket is created 0700
+        // from the start, closing the TOCTOU window between bind and chmod.
+        #[cfg(unix)]
+        let _restore_umask = {
+            let old = unsafe { libc::umask(0o077) };
+            struct RestoreUmask(libc::mode_t);
+            impl Drop for RestoreUmask {
+                fn drop(&mut self) {
+                    unsafe {
+                        libc::umask(self.0);
+                    }
+                }
+            }
+            RestoreUmask(old)
+        };
         let listener = UnixListener::bind(&path)
             .with_context(|| format!("binding hook socket at {}", path.display()))?;
         Ok(Self { listener, path })

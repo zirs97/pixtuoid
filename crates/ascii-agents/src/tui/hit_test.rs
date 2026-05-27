@@ -195,13 +195,7 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
 
     // Wall decor
     for (kind, pos) in &layout.wall_decor {
-        let (w, h) = match kind {
-            WallDecor::Whiteboard => (14, 11),
-            WallDecor::Bookshelf => (10, 8),
-            WallDecor::BulletinBoard => (8, 6),
-            WallDecor::ExitSign => (6, 3),
-            WallDecor::MeetingScreen => (14, 12),
-        };
+        let (w, h) = kind.size();
         if hit(pos.x, pos.y, w, h) {
             return Some(match kind {
                 WallDecor::Whiteboard => "Whiteboard",
@@ -380,7 +374,7 @@ mod tests {
 
     #[test]
     fn furniture_hit_test_respects_floor_seed() {
-        let layout1 = Layout::compute_with_seed(160, 200, 4, 1).expect("layout");
+        let layout1 = Layout::compute_with_seed(160, 200, 4, 2).expect("layout");
         assert!(layout1.meeting_tables.is_empty());
         let layout0 = Layout::compute(160, 200, 4).expect("layout");
         if let Some(table) = layout0.meeting_tables.first() {

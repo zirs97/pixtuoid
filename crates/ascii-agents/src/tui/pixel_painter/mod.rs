@@ -224,7 +224,8 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
     //     a light top trim (lit cap) and dark bottom trim (shadow).
     //   • vertical walls (N-S) are seen edge-on — drawn as a single
     //     1-px partition line.
-    // Must match `WALL_THICK_V` / `WALL_THICK_H` in build_walkable_mask.
+    // Visual thickness is wider than the walkable mask (WALL_THICK_V=1 in
+    // mask.rs) because this renders the full wall trim, not the ground footprint.
     const WALL_THICK_V_PX: u16 = 3;
     const WALL_THICK_H_PX: u16 = 4;
     let wall_body = ctx.theme.office.room_wall_body;
@@ -564,7 +565,10 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         let bot_sofa = ctx.layout.meeting_sofas.get(sofa_start + 1);
         if let (Some(&ts), Some(&bs)) = (top_sofa, bot_sofa) {
             let rug_w = 18u16;
-            let rug_h = (bs.y - ts.y + 8).min(ctx.layout.buf_h - table.y + 8);
+            let rug_h =
+                bs.y.saturating_sub(ts.y)
+                    .saturating_add(8)
+                    .min(ctx.layout.buf_h.saturating_sub(table.y).saturating_add(8));
             drawables.push(Drawable {
                 anchor_y: table.y.saturating_sub(rug_h / 2),
                 kind: DrawableKind::AreaRug {
@@ -731,14 +735,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
 
     // Wall decor — hung on walls (top-left anchored), bottom = pos.y + h.
     for (kind, pos) in &ctx.layout.wall_decor {
-        use crate::tui::layout::WallDecor;
-        let h: u16 = match kind {
-            WallDecor::Bookshelf => 12,
-            WallDecor::BulletinBoard => 6,
-            WallDecor::ExitSign => 3,
-            WallDecor::Whiteboard => 11,
-            WallDecor::MeetingScreen => 12,
-        };
+        let (_, h) = kind.size();
         drawables.push(Drawable {
             anchor_y: pos.y + h,
             kind: DrawableKind::WallDecor {
