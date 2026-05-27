@@ -1,0 +1,61 @@
+name: claude security review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "crates/ascii-agents-hook/**"
+      - "crates/ascii-agents/install/**"
+      - "crates/ascii-agents/runtime.rs"
+      - "crates/ascii-agents-core/source/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+  actions: read
+
+jobs:
+  security-review:
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: claude-security-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          show_full_output: true
+          prompt: |
+            You are a security reviewer for a Rust CLI tool that integrates with Claude Code
+            via Unix sockets and modifies user config files.
+
+            Read CLAUDE.md first for architecture invariants and known sharp edges.
+
+            Review this PR for security issues. Focus on:
+            1. Hook shim safety: must always exit 0, must never block CC, 200ms timeout non-negotiable
+            2. settings.json writes: must go through write_settings_atomic (advisory lock + atomic rename + symlink resolution)
+            3. Unix socket handling: no path traversal, no symlink attacks
+            4. Input validation on hook payloads and JSONL lines — malformed input must be logged and skipped, never panic
+            5. No raw secrets in command strings or log output
+            6. No unwrap() in non-test code paths
+            7. File path handling: no directory traversal via crafted project names or transcript paths
+
+            Severity levels:
+            - CRITICAL: exploitable vulnerability (path traversal, code injection, data exfiltration)
+            - HIGH: safety invariant violation (hook blocks CC, unwrap in prod, settings.json direct write)
+            - MEDIUM: defense-in-depth gap (missing validation on a boundary that's currently safe)
+
+            Do NOT flag: style, naming, documentation, performance, or theoretical issues without a concrete attack vector.
+
+            For each finding, cite the exact file:line and explain the attack scenario.
+            Post inline comments via mcp__github_inline_comment__create_inline_comment.
+            Always post one summary comment via `gh pr comment`, even if no findings.
+          claude_args: '--max-turns 20 --max-budget-usd 5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep"'
