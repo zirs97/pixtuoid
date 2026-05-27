@@ -9,6 +9,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -53,15 +56,6 @@ jobs:
         run: cargo install cargo-machete
       - run: cargo machete
 
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --features ascii-agents-core/test-renderer
-
   coverage:
     name: coverage
     runs-on: ubuntu-latest
@@ -98,7 +92,7 @@ jobs:
 
   smoke:
     name: smoke
-    needs: [fmt, clippy, test]
+    needs: [fmt, clippy, coverage]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -123,7 +117,7 @@ jobs:
         run: ./target/release/examples/snapshot /tmp/smoke-snapshot.png
       - name: Upload snapshot artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-snapshot
           path: /tmp/smoke-snapshot.png
