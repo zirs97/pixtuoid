@@ -27,6 +27,7 @@ pub type SceneRx = watch::Receiver<Arc<SceneState>>;
 /// auto-computes the real per-floor capacity from terminal dimensions.
 const BOOTSTRAP_DESKS: usize = 16;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     socket: Option<PathBuf>,
     projects_root: Option<PathBuf>,
@@ -35,6 +36,7 @@ pub fn run(
     headless: bool,
     theme_name: String,
     config_path: PathBuf,
+    enabled_pets: Vec<crate::tui::pet::PetKind>,
 ) -> Result<()> {
     let theme = crate::tui::theme::theme_by_name(&theme_name).ok_or_else(|| {
         let valid: Vec<&str> = crate::tui::theme::ALL_THEMES
@@ -55,11 +57,13 @@ pub fn run(
             headless,
             theme,
             config_path,
+            enabled_pets,
         )
         .await
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_async(
     socket: Option<PathBuf>,
     projects_root: Option<PathBuf>,
@@ -68,6 +72,7 @@ async fn run_async(
     headless: bool,
     theme: &'static crate::tui::theme::Theme,
     config_path: PathBuf,
+    enabled_pets: Vec<crate::tui::pet::PetKind>,
 ) -> Result<()> {
     let mut cc_src = ClaudeCodeSource::default_paths();
     if let Some(s) = socket {
@@ -96,7 +101,16 @@ async fn run_async(
     if headless {
         headless_loop(scene_rx).await
     } else {
-        crate::tui::run_tui(scene_rx, pack_dir, floor_caps, theme, config_path, desk_cap).await
+        crate::tui::run_tui(
+            scene_rx,
+            pack_dir,
+            floor_caps,
+            theme,
+            config_path,
+            desk_cap,
+            enabled_pets,
+        )
+        .await
     }
 }
 

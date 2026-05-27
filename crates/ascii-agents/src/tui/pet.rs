@@ -1,0 +1,151 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PetKind {
+    Cat,
+    Dog,
+}
+
+impl PetKind {
+    pub const ALL: &'static [PetKind] = &[PetKind::Cat, PetKind::Dog];
+
+    pub fn config_name(self) -> &'static str {
+        match self {
+            PetKind::Cat => "cat",
+            PetKind::Dog => "dog",
+        }
+    }
+
+    pub fn from_config_name(s: &str) -> Option<Self> {
+        match s {
+            "cat" => Some(PetKind::Cat),
+            "dog" => Some(PetKind::Dog),
+            _ => None,
+        }
+    }
+
+    pub fn walk_anim(self) -> &'static str {
+        match self {
+            PetKind::Cat => "cat_walk",
+            PetKind::Dog => "dog_walk",
+        }
+    }
+
+    pub fn sit_anim(self) -> &'static str {
+        match self {
+            PetKind::Cat => "cat_sit",
+            PetKind::Dog => "dog_sit",
+        }
+    }
+
+    pub fn sleep_anim(self) -> &'static str {
+        match self {
+            PetKind::Cat => "cat_sleep",
+            PetKind::Dog => "dog_sleep",
+        }
+    }
+
+    pub fn sleeps_near_idle(self) -> bool {
+        match self {
+            PetKind::Cat => true,
+            PetKind::Dog => false,
+        }
+    }
+
+    pub fn hitbox(self, anim_name: &str) -> (u16, u16) {
+        if anim_name == self.walk_anim() {
+            (8, 6)
+        } else if anim_name == self.sleep_anim() {
+            (6, 4)
+        } else {
+            (6, 6)
+        }
+    }
+}
+
+pub fn select_pet_for_floor(floor_seed: u64, enabled_pets: &[PetKind]) -> Option<PetKind> {
+    if enabled_pets.is_empty() {
+        return None;
+    }
+    Some(enabled_pets[(floor_seed as usize) % enabled_pets.len()])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_name_roundtrip() {
+        for &kind in PetKind::ALL {
+            assert_eq!(PetKind::from_config_name(kind.config_name()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn from_config_name_unknown_returns_none() {
+        assert_eq!(PetKind::from_config_name("hamster"), None);
+    }
+
+    #[test]
+    fn select_pet_empty_returns_none() {
+        assert_eq!(select_pet_for_floor(42, &[]), None);
+    }
+
+    #[test]
+    fn select_pet_single_always_returns_it() {
+        assert_eq!(select_pet_for_floor(0, &[PetKind::Dog]), Some(PetKind::Dog));
+        assert_eq!(
+            select_pet_for_floor(99, &[PetKind::Dog]),
+            Some(PetKind::Dog)
+        );
+    }
+
+    #[test]
+    fn select_pet_two_pets_alternates_by_seed() {
+        let pets = vec![PetKind::Cat, PetKind::Dog];
+        let floor0 = select_pet_for_floor(0, &pets);
+        let floor1 = select_pet_for_floor(1, &pets);
+        assert_ne!(floor0, floor1);
+    }
+
+    #[test]
+    fn anim_names_match_kind() {
+        assert!(PetKind::Cat.walk_anim().starts_with("cat_"));
+        assert!(PetKind::Dog.walk_anim().starts_with("dog_"));
+    }
+
+    #[test]
+    fn dog_anim_methods() {
+        assert_eq!(PetKind::Dog.walk_anim(), "dog_walk");
+        assert_eq!(PetKind::Dog.sit_anim(), "dog_sit");
+        assert_eq!(PetKind::Dog.sleep_anim(), "dog_sleep");
+    }
+
+    #[test]
+    fn dog_does_not_sleep_near_idle() {
+        assert!(!PetKind::Dog.sleeps_near_idle());
+        assert!(PetKind::Cat.sleeps_near_idle());
+    }
+
+    #[test]
+    fn hitbox_walk_larger_than_sit() {
+        for &kind in PetKind::ALL {
+            let (ww, _) = kind.hitbox(kind.walk_anim());
+            let (sw, _) = kind.hitbox(kind.sit_anim());
+            assert!(ww > sw, "{:?} walk should be wider than sit", kind);
+        }
+    }
+
+    #[test]
+    fn hitbox_sleep_shorter_than_sit() {
+        for &kind in PetKind::ALL {
+            let (_, sh) = kind.hitbox(kind.sit_anim());
+            let (_, slh) = kind.hitbox(kind.sleep_anim());
+            assert!(slh < sh, "{:?} sleep should be shorter than sit", kind);
+        }
+    }
+
+    #[test]
+    fn hitbox_unknown_anim_returns_default() {
+        assert_eq!(PetKind::Cat.hitbox("unknown"), (6, 6));
+        assert_eq!(PetKind::Dog.hitbox("unknown"), (6, 6));
+    }
+}

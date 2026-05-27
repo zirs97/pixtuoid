@@ -12,6 +12,7 @@ use ratatui::widgets::Paragraph;
 use super::to_color;
 use crate::tui::layout::{Layout, DESK_W};
 use crate::tui::pathfind::Router;
+use crate::tui::pet::PetKind;
 use crate::tui::pixel_painter::character_anchor;
 use crate::tui::pose;
 use crate::tui::renderer::clip_widget_rect;
@@ -211,8 +212,9 @@ pub(crate) fn paint_hover_tooltip(
     f.render_widget(para, clipped);
 }
 
-pub(crate) fn paint_coffee_tooltip(
+fn paint_simple_tooltip(
     f: &mut ratatui::Frame<'_>,
+    text: &str,
     mx: u16,
     my: u16,
     scene_rect: Rect,
@@ -221,7 +223,6 @@ pub(crate) fn paint_coffee_tooltip(
     use ratatui::text::Line;
     use ratatui::widgets::Block;
 
-    let text = " \u{2615} Buy Ivan a coffee ";
     let tip_w = text.len() as u16;
     let tip_h = 1u16;
     let mut tx = mx.saturating_add(2);
@@ -248,6 +249,16 @@ pub(crate) fn paint_coffee_tooltip(
         ));
         f.render_widget(Paragraph::new(line).block(block), r);
     }
+}
+
+pub(crate) fn paint_coffee_tooltip(
+    f: &mut ratatui::Frame<'_>,
+    mx: u16,
+    my: u16,
+    scene_rect: Rect,
+    theme: &crate::tui::theme::Theme,
+) {
+    paint_simple_tooltip(f, " \u{2615} Buy Ivan a coffee ", mx, my, scene_rect, theme);
 }
 
 pub(crate) fn paint_furniture_tooltip(
@@ -258,42 +269,16 @@ pub(crate) fn paint_furniture_tooltip(
     scene_rect: Rect,
     theme: &crate::tui::theme::Theme,
 ) {
-    use ratatui::text::Line;
-    use ratatui::widgets::Block;
-
     let text = format!(" {} ", label);
-    let tip_w = text.len() as u16;
-    let tip_h = 1u16;
-    let mut tx = mx.saturating_add(2);
-    if tx.saturating_add(tip_w) > scene_rect.x + scene_rect.width {
-        tx = mx.saturating_sub(tip_w + 1);
-    }
-    let mut ty = my.saturating_sub(1);
-    if ty < scene_rect.y {
-        ty = my.saturating_add(1);
-    }
-    if let Some(r) = clip_widget_rect(
-        Rect {
-            x: tx,
-            y: ty,
-            width: tip_w,
-            height: tip_h,
-        },
-        scene_rect,
-    ) {
-        let block = Block::default().style(Style::default().bg(to_color(theme.ui.tooltip_bg)));
-        let line = Line::from(Span::styled(
-            text,
-            Style::default().fg(to_color(theme.ui.tooltip_title)),
-        ));
-        f.render_widget(Paragraph::new(line).block(block), r);
-    }
+    paint_simple_tooltip(f, &text, mx, my, scene_rect, theme);
 }
 
-/// Cat tooltip — state-dependent text rendered near the cursor.
+/// Pet tooltip — state-dependent text rendered near the cursor.
 /// Same visual style as furniture tooltips (dark bg, light text).
-pub(crate) fn paint_cat_tooltip(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_pet_tooltip(
     f: &mut ratatui::Frame<'_>,
+    kind: PetKind,
     anim_name: &str,
     is_on_cooldown: bool,
     mx: u16,
@@ -301,45 +286,22 @@ pub(crate) fn paint_cat_tooltip(
     scene_rect: Rect,
     theme: &crate::tui::theme::Theme,
 ) {
-    use ratatui::text::Line;
-    use ratatui::widgets::Block;
-
     let text = if is_on_cooldown {
-        " purr... "
+        match kind {
+            PetKind::Cat => " purr... ",
+            PetKind::Dog => " woof! ",
+        }
+    } else if anim_name == kind.sleep_anim() {
+        " Shhh... sleeping "
+    } else if anim_name == kind.sit_anim() {
+        " Pet me! "
     } else {
-        match anim_name {
-            "cat_sleep" => " Shhh... sleeping ",
-            "cat_sit" => " Pet me! ",
-            "cat_walk" => " Office Cat (walking) ",
-            _ => " Office Cat ",
+        match kind {
+            PetKind::Cat => " Office Cat ",
+            PetKind::Dog => " Office Dog ",
         }
     };
-    let tip_w = text.len() as u16;
-    let tip_h = 1u16;
-    let mut tx = mx.saturating_add(2);
-    if tx.saturating_add(tip_w) > scene_rect.x + scene_rect.width {
-        tx = mx.saturating_sub(tip_w + 1);
-    }
-    let mut ty = my.saturating_sub(1);
-    if ty < scene_rect.y {
-        ty = my.saturating_add(1);
-    }
-    if let Some(r) = clip_widget_rect(
-        Rect {
-            x: tx,
-            y: ty,
-            width: tip_w,
-            height: tip_h,
-        },
-        scene_rect,
-    ) {
-        let block = Block::default().style(Style::default().bg(to_color(theme.ui.tooltip_bg)));
-        let line = Line::from(Span::styled(
-            text,
-            Style::default().fg(to_color(theme.ui.tooltip_title)),
-        ));
-        f.render_widget(Paragraph::new(line).block(block), r);
-    }
+    paint_simple_tooltip(f, text, mx, my, scene_rect, theme);
 }
 
 /// Fit a label into `budget` chars without losing the `·xxxx` session-id
