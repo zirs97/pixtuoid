@@ -173,10 +173,16 @@ pub fn derive_with_routing(
         *last = to;
     }
     if path.len() <= 2 {
-        // Straight-line walk — record the interpolated position for
-        // next frame's snap-back lookup.
+        // Straight-line walk — record the interpolated position for next
+        // frame's snap-back lookup.
         history.record(slot.agent_id, walking_position(from, to, t_x1000), now);
-        return Some(pose);
+        return Some(Pose::Walking {
+            from,
+            to,
+            t_x1000,
+            frame,
+            carrying_coffee,
+        });
     }
     // Map global t to a (segment_idx, t_within_segment) using cumulative
     // octile distance — same metric A* used to plan the path, so timing
@@ -408,17 +414,14 @@ mod tests {
     fn multi_segment_path_maps_t_to_segment_via_octile_distance() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let l = layout();
-        // Entry animation: ENTRY_ANIMATION_MS = 4000, since_spawn = 1000 →
-        // t_x1000 = 250. derive returns Walking { from: door, to: desk, t=250 }.
-        let slot = entry_slot(now - Duration::from_millis(1_000));
+        // Entry animation: ENTRY_ANIMATION_MS = 4000, since_spawn = 400 →
+        // raw t_x1000 = 100. For two ~equal legs, traveled ≈ 10% of total
+        // → agent is on leg 0 (door→mid), seg_t ≈ 20%.
+        let slot = entry_slot(now - Duration::from_millis(400));
         let mut history = PoseHistory::new();
         let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
         let door = l.door_threshold.expect("door");
         let desk = l.home_desks[0];
-        // `mid` placed on the straight line between door and desk so the
-        // two legs have ~equal octile distance after the last-point
-        // substitution. At t=250 (1/4 of the walk), `traveled` lands
-        // about halfway through segment 0 → seg_t ≈ 500.
         let mid = Point {
             x: (door.x + desk.x) / 2,
             y: (door.y + desk.y) / 2,
@@ -431,9 +434,11 @@ mod tests {
             }) => {
                 assert_eq!(from, door, "first segment starts at door, got {from:?}");
                 assert_eq!(to, mid, "first segment ends at mid, got {to:?}");
+                // linear t=0.1 over two equal legs → seg_t of first leg ≈ 0.2 → ~200.
+                // Accept a wider band to tolerate octile rounding.
                 assert!(
-                    (400..=600).contains(&t_x1000),
-                    "expected mid-segment ~500, got t_x1000={t_x1000}"
+                    (100..=400).contains(&t_x1000),
+                    "expected mid-first-segment seg_t in [100,400], got t_x1000={t_x1000}"
                 );
                 assert!(history.recent(slot.agent_id, 1_000, now).is_some());
             }

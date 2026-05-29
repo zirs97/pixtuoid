@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod chitchat;
 pub mod embedded_pack;
 pub mod floor;
@@ -80,7 +81,7 @@ pub async fn run_tui(
                 last_layout_sig = Some(sig);
             }
             renderer.set_theme_picker(theme_picker);
-            renderer.set_version_popup(version_popup);
+            renderer.set_version_popup(version_popup, now);
             renderer.render(&snapshot, &pack, now)?;
 
             // Auto-compute per-floor desk capacity from the current
@@ -194,10 +195,12 @@ pub async fn run_tui(
                             }
                         }
                     }
-                    Event::Mouse(m) if version_popup => {
-                        // While the popup is visible, only the URL link is
-                        // clickable; all other clicks are swallowed so they
-                        // don't fall through to the scene behind.
+                    Event::Mouse(m) if renderer.last_popup_scale() > 0.0 => {
+                        // While the popup is animating or fully visible, only
+                        // the URL link is clickable; all other clicks are
+                        // swallowed so they don't fall through to the scene.
+                        // Uses the painter's frame-scale (last_popup_scale) so
+                        // the click geometry matches what was actually painted.
                         if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
                             if let Ok((cols, rows)) = crossterm::terminal::size() {
                                 let bounds = ratatui::layout::Rect {
@@ -210,8 +213,9 @@ pub async fn run_tui(
                                     crate::version::release_notes(env!("CARGO_PKG_VERSION"))
                                         .map(|n| n.len())
                                         .unwrap_or(0);
+                                let scale = renderer.last_popup_scale();
                                 if let Some(rect) =
-                                    widgets::version_popup_url_rect(notes_len, bounds)
+                                    widgets::version_popup_url_rect(notes_len, bounds, scale)
                                 {
                                     if m.column >= rect.x
                                         && m.column < rect.x + rect.width

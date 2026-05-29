@@ -50,6 +50,15 @@ pub struct TuiRenderer<B: Backend<Error: Send + Sync + 'static>> {
     /// Timestamp when each agent first returned with coffee (for steam).
     coffee_fetched_at: std::collections::HashMap<pixtuoid_core::AgentId, SystemTime>,
     version_popup: bool,
+    version_popup_started_at: Option<SystemTime>,
+    /// Scale captured at the moment of the last visible↔hidden edge so that
+    /// an interrupted animation continues from its current position instead
+    /// of snapping back to the start/end.
+    version_popup_scale_at_edge: f32,
+    /// Scale computed during the most recent `render()` call. The mouse
+    /// handler reads this instead of re-computing with a fresh `SystemTime`
+    /// so both sides always agree on whether the popup is above a threshold.
+    last_popup_scale: f32,
 }
 
 impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
@@ -77,6 +86,9 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
             coffee_holders: std::collections::HashSet::new(),
             coffee_fetched_at: std::collections::HashMap::new(),
             version_popup: false,
+            version_popup_started_at: None,
+            version_popup_scale_at_edge: 0.0,
+            last_popup_scale: 0.0,
         }
     }
 
@@ -144,8 +156,54 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
         self.theme_picker = picker;
     }
 
-    pub fn set_version_popup(&mut self, v: bool) {
-        self.version_popup = v;
+    pub fn set_version_popup(&mut self, v: bool, now: SystemTime) {
+        if v != self.version_popup {
+            // Capture current scale so the new animation starts from the
+            // visible position (no snap-back when interrupting mid-animation).
+            self.version_popup_scale_at_edge = self.version_popup_scale(now);
+            self.version_popup_started_at = Some(now);
+            self.version_popup = v;
+        }
+    }
+
+    pub fn version_popup_started_at(&self) -> Option<SystemTime> {
+        self.version_popup_started_at
+    }
+
+    /// Compute the entrance/dismissal scale for the version popup based on
+    /// the current state and the time since the last edge. Range 0.0..=1.0.
+    ///
+    /// - false → true (entrance): EaseOutCubic over 200ms, scale_at_edge → 1
+    /// - true → false (dismissal): EaseInQuad over 120ms, scale_at_edge → 0
+    /// - steady state: 1.0 if visible, 0.0 if hidden
+    ///
+    /// Using `scale_at_edge` as the interpolation start means an interrupted
+    /// animation continues from its current visual position rather than
+    /// snapping to 0 or 1 and re-animating from scratch.
+    pub fn version_popup_scale(&self, now: SystemTime) -> f32 {
+        use crate::tui::anim::{eased_progress, Easing};
+        match (self.version_popup, self.version_popup_started_at) {
+            (true, Some(start)) => {
+                let progress = eased_progress(start, 200, Easing::EaseOutCubic, now);
+                // Lerp from the scale at edge time to the target (1.0)
+                self.version_popup_scale_at_edge
+                    + (1.0 - self.version_popup_scale_at_edge) * progress
+            }
+            (false, Some(start)) => {
+                let progress = eased_progress(start, 120, Easing::EaseInQuad, now);
+                // Lerp from the scale at edge time to the target (0.0)
+                self.version_popup_scale_at_edge * (1.0 - progress)
+            }
+            (true, None) => 1.0,
+            (false, None) => 0.0,
+        }
+    }
+
+    /// Returns the scale value computed during the most recent `render()`.
+    /// Prefer this over calling `version_popup_scale(SystemTime::now())` in
+    /// the mouse handler to keep click geometry in sync with what was painted.
+    pub fn last_popup_scale(&self) -> f32 {
+        self.last_popup_scale
     }
 
     pub fn set_active_pet(&mut self, pet: Option<PetState>) {
@@ -273,6 +331,8 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
 
             let buf_w = scene_rect.width;
             let buf_h = scene_rect.height.saturating_mul(2);
+            // Compute popup scale before the split_at_mut borrows.
+            let popup_scale = self.version_popup_scale(now);
 
             // Render both floors into their respective buffers.
             // Use split_at_mut to get mutable access to two different indices.
@@ -378,7 +438,6 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
 
             let theme = self.theme;
             let theme_picker = self.theme_picker;
-            let version_popup = self.version_popup;
             // Floor label tracks the destination floor for the duration of the
             // slide so the per-floor agent count in the footer matches the
             // label (otherwise users see "F1/3 ... 5 agents" with floor 2's
@@ -406,7 +465,7 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
                 if let Some(idx) = theme_picker {
                     crate::tui::renderer::paint_theme_picker(f, idx, actual_full, theme);
                 }
-                if version_popup {
+                if popup_scale > 0.0 {
                     if let Some(notes) = crate::version::release_notes(env!("CARGO_PKG_VERSION")) {
                         crate::tui::renderer::paint_version_popup(
                             f,
@@ -414,11 +473,13 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
                             notes,
                             actual_full,
                             theme,
+                            popup_scale,
                         );
                     }
                 }
             })?;
 
+            self.last_popup_scale = popup_scale;
             self.cached_layout = None;
             return Ok(());
         }
@@ -437,6 +498,8 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
             .retain(|id, _| scene.agents.contains_key(id));
 
         let floor_meta = FloorMeta::for_floor(self.current_floor, nf);
+        // Compute popup scale before the mutable borrows below.
+        let popup_scale = self.version_popup_scale(now);
         let fctx = &mut self.floor_ctxs[self.current_floor];
         let mut draw_ctx = DrawCtx {
             buf: &mut self.floor_bufs[self.current_floor],
@@ -463,7 +526,7 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
             coffee_holders: &self.coffee_holders,
             coffee_fetched_at: &self.coffee_fetched_at,
             new_coffee_carriers: Vec::new(),
-            version_popup: self.version_popup,
+            popup_scale,
         };
         let result = draw_scene(&mut self.terminal, &floor_scene, pack, now, &mut draw_ctx);
         self.last_pet_pos = draw_ctx.last_pet_pos;
@@ -476,6 +539,7 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
         if let Ok(ref layout_opt) = result {
             self.cached_layout = layout_opt.clone();
         }
+        self.last_popup_scale = popup_scale;
         result.map(|_| ())
     }
 }

@@ -287,17 +287,21 @@ pub(in crate::tui) fn paint_version_popup(
     notes: &[&str],
     bounds: Rect,
     theme: &crate::tui::theme::Theme,
+    scale: f32,
 ) {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span as TSpan};
     use ratatui::widgets::{Block, Borders, Clear};
 
     let needed_w = 2 + URL_PREFIX.len() as u16 + VERSION_POPUP_URL.len() as u16 + 2;
-    let w = needed_w.min(bounds.width);
-    let h = (notes.len() as u16 + 6).min(bounds.height);
-    if w < 4 || h < 3 {
-        return;
+    let scale = scale.clamp(0.0, 1.0);
+    if scale <= 0.01 {
+        return; // fully dismissed, skip render
     }
+    let w_full = needed_w.min(bounds.width);
+    let h_full = (notes.len() as u16 + 6).min(bounds.height);
+    let w = ((w_full as f32 * scale).round() as u16).max(2);
+    let h = ((h_full as f32 * scale).round() as u16).max(2);
     let x = bounds.x + bounds.width.saturating_sub(w) / 2;
     let y = bounds.y + bounds.height.saturating_sub(h) / 2;
     let area = Rect {
@@ -349,10 +353,24 @@ pub(in crate::tui) fn paint_version_popup(
 /// Returns None if the popup would be too small to render. Mirrors the
 /// geometry inside `paint_version_popup` (kept in sync by sharing the same
 /// width calculation).
-pub(in crate::tui) fn version_popup_url_rect(notes_len: usize, bounds: Rect) -> Option<Rect> {
+pub(in crate::tui) fn version_popup_url_rect(
+    notes_len: usize,
+    bounds: Rect,
+    scale: f32,
+) -> Option<Rect> {
+    let scale = scale.clamp(0.0, 1.0);
+    if scale < 0.7 {
+        return None; // URL not clickable until popup reaches 70% scale
+    }
     let needed_w = 2 + URL_PREFIX.len() as u16 + VERSION_POPUP_URL.len() as u16 + 2;
-    let w = needed_w.min(bounds.width);
-    let h = (notes_len as u16 + 6).min(bounds.height);
+    // Mirror paint_version_popup's geometry exactly: clamp to bounds first,
+    // then scale, then derive popup_x/popup_y from the SCALED w/h. Centering
+    // off the unscaled w/h leaves the click rect offset from the painted
+    // popup at any scale < 1.0.
+    let w_full = needed_w.min(bounds.width);
+    let h_full = (notes_len as u16 + 6).min(bounds.height);
+    let w = ((w_full as f32 * scale).round() as u16).max(2);
+    let h = ((h_full as f32 * scale).round() as u16).max(2);
     if w < 4 || h < 3 {
         return None;
     }
@@ -432,7 +450,7 @@ mod hud_tests {
 
     #[test]
     fn url_rect_fits_inside_normal_popup() {
-        let rect = version_popup_url_rect(4, full_bounds(200, 60)).expect("should fit");
+        let rect = version_popup_url_rect(4, full_bounds(200, 60), 1.0).expect("should fit");
         assert_eq!(rect.width, VERSION_POPUP_URL.len() as u16);
         assert_eq!(rect.height, 1);
     }
@@ -444,7 +462,7 @@ mod hud_tests {
     #[test]
     fn url_rect_does_not_extend_past_clipped_popup_right_edge() {
         let bounds = full_bounds(50, 30);
-        if let Some(rect) = version_popup_url_rect(4, bounds) {
+        if let Some(rect) = version_popup_url_rect(4, bounds, 1.0) {
             let needed_w = 2 + URL_PREFIX.len() as u16 + VERSION_POPUP_URL.len() as u16 + 2;
             let w = needed_w.min(bounds.width);
             let popup_x = bounds.width.saturating_sub(w) / 2;
@@ -459,6 +477,28 @@ mod hud_tests {
         }
     }
 
+    // Regression: at scale < 1.0 the URL click rect must center off the
+    // SCALED width, mirroring paint_version_popup. Centering off unscaled
+    // w shifts the click area ~((1-scale)*needed_w)/2 columns left of the
+    // painted URL.
+    #[test]
+    fn url_rect_centering_matches_painter_at_partial_scale() {
+        let bounds = full_bounds(200, 60);
+        let scale = 0.85; // ≥ 0.7 gate and ≥ 0.8 vertical threshold for notes_len=4
+        let needed_w = 2 + URL_PREFIX.len() as u16 + VERSION_POPUP_URL.len() as u16 + 2;
+        let w_full = needed_w.min(bounds.width);
+        let w_scaled = ((w_full as f32 * scale).round() as u16).max(2);
+        let expected_popup_x = bounds.width.saturating_sub(w_scaled) / 2;
+        let expected_url_x = expected_popup_x + 1 + URL_PREFIX.len() as u16;
+        let rect = version_popup_url_rect(4, bounds, scale)
+            .expect("url rect should exist at scale=0.85 with notes_len=4");
+        assert_eq!(
+            rect.x, expected_url_x,
+            "url click rect x={} must match painter's scaled-centering popup_x+1+prefix={}",
+            rect.x, expected_url_x
+        );
+    }
+
     // Regression for the off-screen URL row bug: on a too-short terminal,
     // the painter clips the popup envelope vertically, and the URL row used
     // to land on or below the clipped bottom border (where ratatui never
@@ -468,7 +508,7 @@ mod hud_tests {
         // notes_len=4 → needed h=10. With bounds.height=8 the popup clips
         // to h=8, leaving room for at most ~3 notes — the URL row at offset
         // (notes_len + 3) = 7 lands on the bottom border.
-        let rect = version_popup_url_rect(4, full_bounds(200, 8));
+        let rect = version_popup_url_rect(4, full_bounds(200, 8), 1.0);
         assert!(
             rect.is_none(),
             "expected None when URL row falls on the clipped popup's bottom border: got {rect:?}"
