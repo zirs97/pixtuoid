@@ -120,7 +120,20 @@ pub async fn run_tui(
             while polled {
                 match event::read()? {
                     Event::Key(k) => {
-                        if version_popup {
+                        if renderer.help_open() {
+                            match (k.code, k.modifiers) {
+                                (KeyCode::Enter, _)
+                                | (KeyCode::Esc, _)
+                                | (KeyCode::Char('?'), _) => {
+                                    renderer.set_help_open(false);
+                                }
+                                (KeyCode::Char('q'), _)
+                                | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                    quit = true;
+                                }
+                                _ => {}
+                            }
+                        } else if version_popup {
                             match (k.code, k.modifiers) {
                                 (KeyCode::Enter, _) => {
                                     version_popup = false;
@@ -174,6 +187,10 @@ pub async fn run_tui(
                                 (KeyCode::Char('t'), _) => {
                                     theme_picker = Some(saved_theme_idx);
                                 }
+                                (KeyCode::Char('?'), _) => {
+                                    let open = renderer.help_open();
+                                    renderer.set_help_open(!open);
+                                }
                                 (KeyCode::PageUp, _)
                                 | (KeyCode::Up, _)
                                 | (KeyCode::Char('k'), _) => {
@@ -193,6 +210,17 @@ pub async fn run_tui(
                                 }
                                 _ => {}
                             }
+                        }
+                    }
+                    Event::Mouse(m) if renderer.help_open() => {
+                        // The help overlay is modal for the mouse: a left
+                        // click dismisses it and every mouse event is
+                        // swallowed so nothing leaks to the scene behind it
+                        // (e.g. coffee-machine / branding clicks launching a
+                        // browser). Placed before the popup guard so help
+                        // wins even mid popup-dismiss animation.
+                        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+                            renderer.set_help_open(false);
                         }
                     }
                     Event::Mouse(m) if renderer.last_popup_scale() > 0.0 => {

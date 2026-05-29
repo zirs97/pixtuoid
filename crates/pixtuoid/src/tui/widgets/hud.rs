@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use pixtuoid_core::sprite::Rgb;
 use pixtuoid_core::state::ActivityState;
 use pixtuoid_core::SceneState;
 use ratatui::layout::Rect;
@@ -10,6 +11,30 @@ use ratatui::widgets::Paragraph;
 
 use super::{to_color, TickerQueue};
 use crate::tui::renderer::clip_widget_rect;
+
+/// The two colors that characterize a theme in the picker swatch: its
+/// accent (`neon_brand`) and its dominant office surface (`carpet_base`).
+fn theme_swatch(t: &crate::tui::theme::Theme) -> (Color, Color) {
+    (to_color(t.ui.neon_brand), to_color(t.surface.carpet_base))
+}
+
+/// Border glow color for the version popup: a ~3s sine pulse that lerps
+/// from 60% to 100% of `brand` toward `bg`, so the frame breathes without
+/// ever dropping so dim it reads as "off". Deterministic in `now`.
+fn pulse_border_color(bg: Rgb, brand: Rgb, now: SystemTime) -> Color {
+    let ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let phase = (ms % 3000) as f32 / 3000.0 * std::f32::consts::TAU;
+    let t = (phase.sin() * 0.5 + 0.5) * 0.4 + 0.6;
+    let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color::Rgb(
+        lerp(bg.0, brand.0),
+        lerp(bg.1, brand.1),
+        lerp(bg.2, brand.2),
+    )
+}
 
 pub(in crate::tui) fn paint_theme_picker(
     f: &mut ratatui::Frame<'_>,
@@ -22,10 +47,17 @@ pub(in crate::tui) fn paint_theme_picker(
     use ratatui::text::{Line, Span as TSpan};
     use ratatui::widgets::{Block, Borders, Clear};
 
-    let w = 30u16;
+    // Clamp to bounds.width: `Clear::render` (unlike Block/Paragraph) does
+    // not intersect with the buffer area, so an over-wide `area` panics on
+    // narrow terminals. The floor-transition paint path has no layout gate,
+    // so this is reachable at widths the normal path rejects.
+    let w = 28u16.min(bounds.width);
     let h = (theme::ALL_THEMES.len() as u16 + 2).min(bounds.height);
-    let x = bounds.width.saturating_sub(w) / 2;
-    let y = bounds.height.saturating_sub(h) / 2;
+    // Center within `bounds`, anchoring off its origin (not 0,0) so a
+    // non-zero-origin rect positions correctly — matches paint_help_overlay
+    // and paint_version_popup.
+    let x = bounds.x + bounds.width.saturating_sub(w) / 2;
+    let y = bounds.y + bounds.height.saturating_sub(h) / 2;
     let area = Rect {
         x,
         y,
@@ -37,19 +69,28 @@ pub(in crate::tui) fn paint_theme_picker(
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let prefix = if i == selected { "▸ " } else { "  " };
-            let style = if i == selected {
+            let prefix = if i == selected { "\u{25b8} " } else { "  " };
+            let name_style = if i == selected {
                 Style::default()
                     .fg(to_color(theme.ui.neon_brand))
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(to_color(theme.ui.label_idle))
             };
-            Line::from(TSpan::styled(format!("{prefix}{}", t.name), style))
+            // Each row previews the theme it would switch to via a 2-cell
+            // swatch (accent + office floor), so the picker reads visually
+            // rather than by name alone.
+            let (brand, surface) = theme_swatch(t);
+            Line::from(vec![
+                TSpan::styled(format!("{prefix}{:<12}", t.name), name_style),
+                TSpan::raw(" "),
+                TSpan::styled("\u{2588}", Style::default().fg(brand)),
+                TSpan::styled("\u{2588}", Style::default().fg(surface)),
+            ])
         })
         .collect();
     let block = Block::default()
-        .title(" Theme [↑↓/jk] Enter/Esc ")
+        .title(" Theme [\u{2191}\u{2193}/jk] Enter/Esc ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(to_color(theme.ui.neon_brand)))
         .style(Style::default().bg(to_color(theme.ui.tooltip_bg)));
@@ -63,9 +104,13 @@ pub(in crate::tui) fn paint_footer(
     theme: &crate::tui::theme::Theme,
     floor_info: Option<crate::tui::renderer::FloorInfo>,
 ) {
-    let summary = build_status_summary(scene, full_rect.width, floor_info);
-    let footer = Paragraph::new(Span::raw(summary))
-        .style(Style::default().fg(to_color(theme.ui.label_idle)));
+    use ratatui::text::Line;
+    let spans = build_status_spans(scene, full_rect.width, floor_info, theme);
+    // Base style on the whole row (label_idle) for parity with the old
+    // single-Span footer: cells past the rendered spans (quit-only tier on a
+    // wide-ish terminal) keep the muted footer tone rather than default.
+    let footer =
+        Paragraph::new(Line::from(spans)).style(Style::default().fg(to_color(theme.ui.label_idle)));
     f.render_widget(
         footer,
         Rect {
@@ -77,10 +122,34 @@ pub(in crate::tui) fn paint_footer(
     );
 }
 
-/// Compose the footer's single-line summary, picking the widest variant
-/// (full / medium / minimal) that fits inside `term_width` alongside the
-/// fixed-right `[q] quit` suffix. Pure function — drives `paint_footer`
-/// and is unit-tested directly.
+/// Per-segment color role for the footer. The counting / tier-selection
+/// logic emits a list of `(text, role)` pieces once; the plain-string and
+/// colored-span renderers both consume that list, so their text is always
+/// byte-identical and only the color differs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SegRole {
+    /// Labels, separators, counts, tools, padding, quit hint — muted.
+    Neutral,
+    Active,
+    Waiting,
+    Idle,
+}
+
+impl SegRole {
+    fn color(self, theme: &crate::tui::theme::Theme) -> Color {
+        match self {
+            SegRole::Neutral | SegRole::Idle => to_color(theme.ui.label_idle),
+            SegRole::Active => to_color(theme.ui.label_active),
+            SegRole::Waiting => to_color(theme.ui.label_waiting),
+        }
+    }
+}
+
+/// Build the footer as an ordered list of `(text, role)` segments, picking
+/// the widest tier (full / medium / minimal) that fits inside `term_width`
+/// alongside the fixed-right quit suffix. Single source of truth for both
+/// the plain-string footer (`build_status_summary`) and the colored footer
+/// (`build_status_spans`).
 ///
 /// Tier breakdown:
 ///   * **full** (~50+ cells) — total count, per-state counts, top tool
@@ -90,11 +159,11 @@ pub(in crate::tui) fn paint_footer(
 ///   * **minimal** — just the total, e.g. `12a`.
 ///   * **fallback** — only the quit hint (any narrower terminal will
 ///     truncate this naturally).
-pub(in crate::tui) fn build_status_summary(
+fn status_segments(
     scene: &SceneState,
     term_width: u16,
     floor_info: Option<crate::tui::renderer::FloorInfo>,
-) -> String {
+) -> Vec<(String, SegRole)> {
     let n = scene.agents.len();
     // Multi-floor view always shows `n/total` so the total stays visible
     // even when an agent migrates and per-floor matches total transiently.
@@ -126,7 +195,7 @@ pub(in crate::tui) fn build_status_summary(
         Some(fi) => format!(" F{}/{} [\u{2191}\u{2193}]", fi.current, fi.total_floors),
         None => String::new(),
     };
-    let quit_base = " [p]ause [t]heme [q]uit ";
+    let quit_base = " [?]help [p]ause [t]heme [q]uit ";
     let quit = format!("{floor_suffix}{quit_base}");
     let tools_str = {
         let mut tools: Vec<(&&str, &usize)> = tool_counts.iter().collect();
@@ -138,37 +207,84 @@ pub(in crate::tui) fn build_status_summary(
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let stats_full = if n == 0 {
-        format!(" {count_str} agents ")
+
+    // Each tier is a list of (text, role) segments whose concatenation is
+    // exactly the old plain-string output for that tier.
+    let seg_full: Vec<(String, SegRole)> = if n == 0 {
+        vec![(format!(" {count_str} agents "), SegRole::Neutral)]
     } else {
-        let mut s =
-            format!(" {count_str} agents · {active} active · {waiting} waiting · {idle} idle");
-        if !tools_str.is_empty() {
-            s.push_str(" · ");
-            s.push_str(&tools_str);
-        }
-        s.push(' ');
-        s
+        let tail = if tools_str.is_empty() {
+            " ".to_string()
+        } else {
+            format!(" · {tools_str} ")
+        };
+        vec![
+            (format!(" {count_str} agents · "), SegRole::Neutral),
+            (format!("{active} active"), SegRole::Active),
+            (" · ".to_string(), SegRole::Neutral),
+            (format!("{waiting} waiting"), SegRole::Waiting),
+            (" · ".to_string(), SegRole::Neutral),
+            (format!("{idle} idle"), SegRole::Idle),
+            (tail, SegRole::Neutral),
+        ]
     };
     // Narrow tiers use bare `n` — "5/12a" parses as "5 slash 12a" at a glance.
-    let stats_medium = format!(" {n}a · {active}A · {waiting}W · {idle}I ");
-    let stats_min = format!(" {n}a ");
+    let seg_medium: Vec<(String, SegRole)> = vec![
+        (format!(" {n}a · "), SegRole::Neutral),
+        (format!("{active}A"), SegRole::Active),
+        (" · ".to_string(), SegRole::Neutral),
+        (format!("{waiting}W"), SegRole::Waiting),
+        (" · ".to_string(), SegRole::Neutral),
+        (format!("{idle}I"), SegRole::Idle),
+        (" ".to_string(), SegRole::Neutral),
+    ];
+    let seg_min: Vec<(String, SegRole)> = vec![(format!(" {n}a "), SegRole::Neutral)];
 
     let w = term_width as usize;
     let q = quit.len();
-    for stats in [&stats_full, &stats_medium, &stats_min] {
-        if stats.len() + q <= w {
-            let pad = w.saturating_sub(stats.len() + q);
-            let mut out = String::with_capacity(w);
-            out.push_str(stats);
-            for _ in 0..pad {
-                out.push(' ');
+    for tier in [seg_full, seg_medium, seg_min] {
+        let stats_len: usize = tier.iter().map(|(s, _)| s.len()).sum();
+        if stats_len + q <= w {
+            let pad = w.saturating_sub(stats_len + q);
+            let mut out = tier;
+            if pad > 0 {
+                out.push((" ".repeat(pad), SegRole::Neutral));
             }
-            out.push_str(&quit);
+            out.push((quit, SegRole::Neutral));
             return out;
         }
     }
-    quit
+    vec![(quit, SegRole::Neutral)]
+}
+
+/// Plain-string footer — renders `status_segments` to text. Test-only: it
+/// is the text-contract oracle (insta snapshots + direct substring asserts)
+/// that locks the exact footer wording, byte-identical to the colored
+/// `build_status_spans` content. Production paints via `build_status_spans`.
+#[cfg(test)]
+pub(in crate::tui) fn build_status_summary(
+    scene: &SceneState,
+    term_width: u16,
+    floor_info: Option<crate::tui::renderer::FloorInfo>,
+) -> String {
+    status_segments(scene, term_width, floor_info)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect()
+}
+
+/// Colored footer — same segments as `build_status_summary`, each tinted by
+/// its state role so active/waiting/idle counts scan by hue.
+pub(in crate::tui) fn build_status_spans<'a>(
+    scene: &SceneState,
+    term_width: u16,
+    floor_info: Option<crate::tui::renderer::FloorInfo>,
+    theme: &crate::tui::theme::Theme,
+) -> Vec<Span<'a>> {
+    status_segments(scene, term_width, floor_info)
+        .into_iter()
+        .map(|(s, role)| Span::styled(s, Style::default().fg(role.color(theme))))
+        .collect()
 }
 
 pub(in crate::tui) fn paint_wall_display(
@@ -288,6 +404,7 @@ pub(in crate::tui) fn paint_version_popup(
     bounds: Rect,
     theme: &crate::tui::theme::Theme,
     scale: f32,
+    now: SystemTime,
 ) {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span as TSpan};
@@ -335,6 +452,10 @@ pub(in crate::tui) fn paint_version_popup(
     ]));
 
     let title = format!(" What's new in v{version} \u{2014} Enter to close ");
+    // Gentle ~3s glow pulse on the border: lerp between 60% and 100% of the
+    // neon_brand toward the popup background, so the frame breathes like a
+    // marketing-shot neon sign without distracting from the notes.
+    let border = pulse_border_color(theme.ui.tooltip_bg, theme.ui.neon_brand, now);
     let block = Block::default()
         .title(TSpan::styled(
             title,
@@ -343,7 +464,7 @@ pub(in crate::tui) fn paint_version_popup(
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(to_color(theme.ui.neon_brand)))
+        .border_style(Style::default().fg(border))
         .style(Style::default().bg(to_color(theme.ui.tooltip_bg)));
 
     f.render_widget(Paragraph::new(items).block(block), area);
@@ -438,6 +559,7 @@ pub(in crate::tui) fn paint_elevator_indicator(
 #[cfg(test)]
 mod hud_tests {
     use super::*;
+    use std::time::Duration;
 
     fn full_bounds(w: u16, h: u16) -> Rect {
         Rect {
@@ -453,6 +575,61 @@ mod hud_tests {
         let rect = version_popup_url_rect(4, full_bounds(200, 60), 1.0).expect("should fit");
         assert_eq!(rect.width, VERSION_POPUP_URL.len() as u16);
         assert_eq!(rect.height, 1);
+    }
+
+    #[test]
+    fn pulse_border_color_breathes_within_bounds() {
+        use crate::tui::theme;
+        let bg = theme::NORMAL.ui.tooltip_bg;
+        let brand = theme::NORMAL.ui.neon_brand;
+        let at = |ms: u64| {
+            pulse_border_color(bg, brand, std::time::UNIX_EPOCH + Duration::from_millis(ms))
+        };
+        // Peak at 750ms (phase = π/2) → full brand.
+        assert_eq!(at(750), Color::Rgb(brand.0, brand.1, brand.2));
+        // Deterministic + 3s-periodic.
+        assert_eq!(at(1234), at(1234 + 3000));
+        // Trough at 2250ms (phase = 3π/2) → dimmer than peak but never fully
+        // dropped to the background.
+        let trough = at(2250);
+        assert_ne!(trough, at(750), "trough should be dimmer than peak");
+        assert_ne!(
+            trough,
+            Color::Rgb(bg.0, bg.1, bg.2),
+            "border never drops fully to background"
+        );
+    }
+
+    // Regression: paint_theme_picker rendered Clear onto an unclamped
+    // 28-wide area; on a narrower buffer (reachable via the gate-less
+    // floor-transition paint path) Clear panics indexing past the buffer.
+    #[test]
+    fn theme_picker_narrow_terminal_does_not_panic() {
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+        let mut term = Terminal::new(TestBackend::new(24, 30)).unwrap();
+        term.draw(|f| {
+            paint_theme_picker(f, 0, Rect::new(0, 0, 24, 30), &crate::tui::theme::NORMAL);
+        })
+        .unwrap();
+        // Reaching here without a panic is the assertion.
+    }
+
+    #[test]
+    fn theme_swatch_distinguishes_themes() {
+        use crate::tui::theme;
+        // Each theme's (accent, surface) pair should reflect that theme's
+        // own palette, not the currently-active one — so the picker rows
+        // preview distinct colors.
+        let cyber = theme_swatch(&theme::CYBERPUNK);
+        let normal = theme_swatch(&theme::NORMAL);
+        assert_ne!(
+            cyber, normal,
+            "distinct themes must yield distinct swatches"
+        );
+        assert_eq!(cyber.0, to_color(theme::CYBERPUNK.ui.neon_brand));
+        assert_eq!(cyber.1, to_color(theme::CYBERPUNK.surface.carpet_base));
     }
 
     // Regression for the phantom-browser-launch bug: on a narrow terminal
