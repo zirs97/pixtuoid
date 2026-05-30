@@ -27,6 +27,7 @@ use ratatui::Terminal;
 
 use crate::tui::frame_cache::FrameCache;
 use crate::tui::layout::{Layout, Point};
+use crate::tui::motion::MotionState;
 use crate::tui::pathfind::Router;
 use crate::tui::pet::PetKind;
 use crate::tui::pixel_painter::{render_to_rgb_buffer, PixelCtx};
@@ -67,6 +68,14 @@ pub struct DrawCtx<'a> {
     pub router: &'a mut dyn Router,
     pub overlay: &'a mut pixtuoid_core::walkable::OccupancyOverlay,
     pub history: &'a mut pose::PoseHistory,
+    /// Per-floor motion state — threaded like `history`. Agents' `MotionState`
+    /// entries are initialized and advanced by `derive_with_routing`.
+    pub motion: &'a mut std::collections::HashMap<pixtuoid_core::AgentId, MotionState>,
+    /// Per-floor max in-flight entry/exit physics duration (ms). Written
+    /// each render tick by `tui_renderer.rs` from `fctx.motion`; read by
+    /// `compute_door_frame_idx` so the door cosmetic scales with actual
+    /// walk physics instead of the old hardcoded `ENTRY_ANIMATION_MS`.
+    pub door_anim_max_ms: u64,
     /// Per-floor lighting fade state. Advanced inside the pixel pass and
     /// read by the indoor-light helpers. Borrowed mutably from the
     /// matching `FloorCtx`.
@@ -225,6 +234,7 @@ pub fn draw_scene<B: Backend<Error: Send + Sync + 'static>>(
         router: ctx.router,
         overlay: ctx.overlay,
         history: ctx.history,
+        motion: ctx.motion,
         theme,
         floor,
         active_pet: ctx.active_pet,
@@ -234,6 +244,7 @@ pub fn draw_scene<B: Backend<Error: Send + Sync + 'static>>(
         coffee_fetched_at: ctx.coffee_fetched_at,
         coffee_stains: ctx.coffee_stains,
         light: ctx.light,
+        door_anim_max_ms: ctx.door_anim_max_ms,
     });
     ctx.last_pet_pos = pixel_result.pet_pos;
     ctx.chitchat_bubbles = pixel_result.chitchat_bubbles;
@@ -249,6 +260,7 @@ pub fn draw_scene<B: Backend<Error: Send + Sync + 'static>>(
             ctx.router,
             ctx.overlay,
             ctx.history,
+            ctx.motion,
             mx,
             my,
         )
@@ -278,6 +290,7 @@ pub fn draw_scene<B: Backend<Error: Send + Sync + 'static>>(
             ctx.router,
             ctx.overlay,
             ctx.history,
+            ctx.motion,
             actual_scene,
             hovered,
             theme,

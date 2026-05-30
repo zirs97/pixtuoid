@@ -207,6 +207,10 @@ fn main() -> Result<()> {
 
     let mut chitchat_state = std::collections::HashMap::new();
     let mut light = pixtuoid::tui::floor::LightingState::new();
+    let mut motion: std::collections::HashMap<
+        pixtuoid_core::AgentId,
+        pixtuoid::tui::motion::MotionState,
+    > = std::collections::HashMap::new();
     // Static snapshots have no time to animate the fade — snap straight
     // to the steady-state level for the chosen scene.
     if args.empty {
@@ -244,6 +248,8 @@ fn main() -> Result<()> {
         router: &mut router,
         overlay: &mut overlay,
         history: &mut history,
+        motion: &mut motion,
+        door_anim_max_ms: 0,
         light: &mut light,
         mouse_pos: None,
         pinned_agent: None,
@@ -696,6 +702,10 @@ fn save_as_gif(
 
     let mut chitchat_state = std::collections::HashMap::new();
     let mut light = pixtuoid::tui::floor::LightingState::new();
+    let mut motion: std::collections::HashMap<
+        pixtuoid_core::AgentId,
+        pixtuoid::tui::motion::MotionState,
+    > = std::collections::HashMap::new();
     for i in 0..frame_count {
         let now = start_now + Duration::from_millis(i as u64 * frame_ms);
         let mut draw_ctx = DrawCtx {
@@ -704,6 +714,8 @@ fn save_as_gif(
             router,
             overlay,
             history,
+            motion: &mut motion,
+            door_anim_max_ms: 0,
             light: &mut light,
             mouse_pos: None,
             pinned_agent: None,

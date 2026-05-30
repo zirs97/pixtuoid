@@ -572,17 +572,25 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
             .retain(|id, _| scene.agents.contains_key(id));
         self.coffee_stains
             .retain(|id, _| scene.agents.contains_key(id));
+        // Evict per-agent motion state for departed agents (mirrors the
+        // coffee/history/cache eviction above).
+        self.floor_ctxs[self.current_floor]
+            .motion
+            .retain(|id, _| scene.agents.contains_key(id));
 
         let floor_meta = FloorMeta::for_floor(self.current_floor, nf);
         // Compute popup scale before the mutable borrows below.
         let popup_scale = self.version_popup_scale(now);
         let fctx = &mut self.floor_ctxs[self.current_floor];
+        let door_anim_max_ms = fctx.door_anim_max_ms;
         let mut draw_ctx = DrawCtx {
             buf: &mut self.floor_bufs[self.current_floor],
             cache: &mut fctx.cache,
             router: &mut fctx.router,
             overlay: &mut fctx.overlay,
             history: &mut fctx.history,
+            motion: &mut fctx.motion,
+            door_anim_max_ms,
             light: &mut fctx.light,
             mouse_pos: self.mouse_pos,
             pinned_agent: self.pinned_agent,
@@ -608,10 +616,17 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
         };
         let result = draw_scene(&mut self.terminal, &floor_scene, pack, now, &mut draw_ctx);
         self.last_pet_pos = draw_ctx.last_pet_pos;
+        // Consume draw_ctx fields before the mutable borrow of floor_ctxs below.
+        // std::mem::take avoids a partial move so drop(draw_ctx) can follow.
+        let new_coffee_carriers = std::mem::take(&mut draw_ctx.new_coffee_carriers);
+        // drop draw_ctx here so we can re-borrow floor_ctxs freely.
+        drop(draw_ctx);
+        // Recompute door_anim_max_ms from the motion map for the NEXT frame.
+        self.floor_ctxs[self.current_floor].recompute_door_anim_max_ms(now);
         // Persist newly detected coffee carriers. The `insert` returns
         // `true` only on the EDGE (first time this agent enters the set
         // for this pantry trip), so stain accrual fires once per trip.
-        for id in draw_ctx.new_coffee_carriers {
+        for id in new_coffee_carriers {
             if self.coffee_holders.insert(id) {
                 self.coffee_fetched_at.insert(id, now);
                 self.note_coffee_stain(id, now);
@@ -662,6 +677,8 @@ fn render_transition_floor(
         router: &mut fctx.router,
         overlay: &mut fctx.overlay,
         history: &mut fctx.history,
+        motion: &mut fctx.motion,
+        door_anim_max_ms: fctx.door_anim_max_ms,
         theme,
         floor: floor_meta,
         active_pet,
@@ -672,4 +689,8 @@ fn render_transition_floor(
         coffee_stains,
         light: &mut fctx.light,
     });
+    // Mirror the normal-path refresh: render_to_rgb_buffer may have
+    // snapshotted new entry/exit profiles into fctx.motion during the
+    // ≤900ms slide, so refresh door_anim_max_ms for the next frame.
+    fctx.recompute_door_anim_max_ms(now);
 }
