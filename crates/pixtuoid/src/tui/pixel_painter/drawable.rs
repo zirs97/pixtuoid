@@ -160,6 +160,14 @@ pub(super) enum DrawableKind<'a> {
         x1: u16,
         y_top: u16,
     },
+    /// Meeting-room coat rack (pole + base + coat blobs), y-sorted at its base
+    /// row so a character walking in front of it occludes it (and one behind
+    /// is occluded BY it) — was painted in the background pass, always under
+    /// every character. `cy` is the pole top; the base sits at `cy + 7`.
+    CoatRack {
+        cx: u16,
+        cy: u16,
+    },
 }
 
 /// Pet roaming the whole office. Each 40s cycle picks a destination
@@ -397,6 +405,13 @@ pub(super) fn paint_drawable(
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 let cx = pos.x.saturating_sub(f.width / 2);
                 let cy = pos.y.saturating_sub(f.height / 2);
+                // NB: no `paint_furniture_back` here. The counter is a wide
+                // (32px) multi-material bank; extruding each column's top pixel
+                // north smears its decorative elements (steam wand, chip-bag,
+                // dividers) into the floor as color streaks. The short counter
+                // also stands ~2px clear below a north-approaching agent, so a
+                // back cap buys almost no real occlusion. Back caps are for
+                // tall, narrow, single-silhouette objects (pods / glass wall).
                 blit_frame(f, cx, cy, buf);
             }
             // Large sprite: coffee machine at sprite cols 11-18 of
@@ -431,7 +446,12 @@ pub(super) fn paint_drawable(
             }
         }
         DrawableKind::MeetingTable { pos } => {
-            paint_coffee_table(buf, pos.x, pos.y, 11, 5, theme);
+            // Sprite size from the table (== footprint for the meeting table) so
+            // the painted coffee table can't drift from the masked obstacle.
+            let (w, h) =
+                crate::tui::layout::furniture_def(crate::tui::layout::Furniture::MeetingTable)
+                    .visual;
+            paint_coffee_table(buf, pos.x, pos.y, w, h, theme);
         }
         DrawableKind::AreaRug { pos, width, height } => {
             paint_area_rug(buf, pos.x, pos.y, *width, *height, theme);
@@ -471,6 +491,11 @@ pub(super) fn paint_drawable(
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 let px = pos.x.saturating_sub(f.width / 2);
                 let py = pos.y.saturating_sub(f.height / 2);
+                // Back-cap policy (which pods occlude a north-stander) lives in
+                // one place: super::back_cap. See paint_furniture_back.
+                if super::back_cap(*kind) {
+                    super::paint_furniture_back(buf, f, px, py);
+                }
                 blit_frame(f, px, py, buf);
             }
         }
@@ -604,6 +629,42 @@ pub(super) fn paint_drawable(
         }
         DrawableKind::RoomWallH { x0, x1, y_top } => {
             super::paint_glass_wall_h(buf, theme, *x0, *x1, *y_top);
+        }
+        DrawableKind::CoatRack { cx, cy } => {
+            let (cx, cy) = (*cx, *cy);
+            let pole = theme.furniture.wood_trim;
+            let base = theme.furniture.wood_top;
+            let coats = [Rgb(200, 60, 60), Rgb(80, 120, 200), Rgb(240, 240, 240)];
+            // Pole (1px wide, 8 tall).
+            for dy in 0..8u16 {
+                let py = cy + dy;
+                if py < buf.height && cx < buf.width {
+                    buf.put(cx, py, pole);
+                }
+            }
+            // Base (3px wide) at the rack's south row.
+            let by = cy + 7;
+            for dx in 0..3u16 {
+                let px = cx.saturating_sub(1) + dx;
+                if px < buf.width && by < buf.height {
+                    buf.put(px, by, base);
+                }
+            }
+            // Coat blobs (2×2 blocks on alternating hooks).
+            for (i, &coat_color) in coats.iter().enumerate() {
+                let hook_y = cy + 1 + (i as u16) * 2;
+                let side: i16 = if i % 2 == 0 { -1 } else { 1 };
+                let hx = (cx as i16 + side) as u16;
+                for dy in 0..2u16 {
+                    for dx in 0..2u16 {
+                        let px = hx.wrapping_add(if side < 0 { dx.wrapping_sub(1) } else { dx });
+                        let py = hook_y + dy;
+                        if px < buf.width && py < buf.height {
+                            buf.put(px, py, coat_color);
+                        }
+                    }
+                }
+            }
         }
     }
 }

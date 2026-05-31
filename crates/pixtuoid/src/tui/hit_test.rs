@@ -110,7 +110,14 @@ pub fn hit_test_coffee_machine(layout: &Layout, mx: u16, my: u16) -> bool {
 /// The coffee machine is handled separately for its click-to-open
 /// behavior — this function covers the remaining decorations.
 pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static str> {
-    use crate::tui::layout::{PlantKind, PodDecor, WallDecor, WaypointKind, DESK_H, DESK_W};
+    use crate::tui::layout::{
+        furniture_def, Furniture, PlantKind, PodDecor, WallDecor, WaypointKind, DESK_H, DESK_W,
+    };
+    // Hover boxes derive from the one furniture table — `.visual` (the visible
+    // sprite) for what the user points at, `.footprint` where the obstacle is
+    // the thing — so a geometry edit can't leave a stale hit box behind.
+    let visual = |f| furniture_def(f).visual;
+    let footprint = |f| furniture_def(f).footprint.unwrap_or((0, 0));
     let px = mx;
     let py = my * 2;
 
@@ -140,12 +147,14 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
             // Couch hovers via the one-time region above (3 seat waypoints).
             WaypointKind::Couch => continue,
             WaypointKind::Pantry => layout.pantry_counter_size,
-            WaypointKind::PhoneBooth => (6, 12),
-            WaypointKind::StandingDesk => (8, 8),
-            WaypointKind::VendingMachine => (4, 6),
-            WaypointKind::Printer => (5, 4),
             // Meeting slots hover via the dedicated meeting_sofas loop below.
             WaypointKind::MeetingSofa | WaypointKind::MeetingStand => continue,
+            // Footprint owned by furniture_def — same shape the mask + stand
+            // point use, so the hover box can't drift from them.
+            other => match furniture_def(other.furniture()).footprint {
+                Some(fp) => fp,
+                None => continue,
+            },
         };
         let wx = wp.pos.x.saturating_sub(w / 2);
         let wy = wp.pos.y.saturating_sub(h / 2);
@@ -166,35 +175,45 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
 
     // Meeting sofas (20px sprite, centred on the sofa point).
     for sofa in &layout.meeting_sofas {
-        if hit(sofa.x.saturating_sub(10), sofa.y.saturating_sub(3), 20, 7) {
+        let (w, h) = visual(Furniture::MeetingSofaBody); // full 20px sprite, not the 16px footprint
+        if hit(
+            sofa.x.saturating_sub(w / 2),
+            sofa.y.saturating_sub(h / 2),
+            w,
+            h,
+        ) {
             return Some("Meeting Sofa");
         }
     }
 
     // Meeting tables
     for t in &layout.meeting_tables {
-        if hit(t.x.saturating_sub(6), t.y.saturating_sub(3), 12, 6) {
+        let (w, h) = visual(Furniture::MeetingTable);
+        if hit(t.x.saturating_sub(w / 2), t.y.saturating_sub(h / 2), w, h) {
             return Some("Meeting Table");
         }
     }
 
     // Pantry table
     if let Some(t) = layout.pantry_table {
-        if hit(t.x.saturating_sub(4), t.y.saturating_sub(2), 8, 5) {
+        let (w, h) = footprint(Furniture::PantryTable);
+        if hit(t.x.saturating_sub(w / 2), t.y.saturating_sub(h / 2), w, h) {
             return Some("Pantry Table");
         }
     }
 
     // Pantry chairs
     for chair in &layout.pantry_chairs {
-        if hit(chair.x.saturating_sub(2), chair.y.saturating_sub(2), 3, 3) {
+        let (w, h) = footprint(Furniture::PantryChair); // left-biased offset 2 matches the mask stamp
+        if hit(chair.x.saturating_sub(2), chair.y.saturating_sub(2), w, h) {
             return Some("Chair");
         }
     }
 
     // Plants
     for (kind, p) in &layout.plants {
-        if hit(p.x.saturating_sub(3), p.y.saturating_sub(3), 6, 6) {
+        let (w, h) = visual(kind.furniture()); // hover the whole visible plant, not just its ground base
+        if hit(p.x.saturating_sub(w / 2), p.y.saturating_sub(h / 2), w, h) {
             return Some(match kind {
                 PlantKind::Ficus => "Ficus",
                 PlantKind::Tall => "Tall Plant",
@@ -206,14 +225,20 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
 
     // Floor lamp
     if let Some(lamp) = layout.floor_lamp {
-        if hit(lamp.x.saturating_sub(2), lamp.y.saturating_sub(3), 4, 6) {
+        let (w, h) = visual(Furniture::FloorLamp); // full 4×10 lamp sprite
+        if hit(
+            lamp.x.saturating_sub(w / 2),
+            lamp.y.saturating_sub(h / 2),
+            w,
+            h,
+        ) {
             return Some("Floor Lamp");
         }
     }
 
     // Wall decor
     for (kind, pos) in &layout.wall_decor {
-        let (w, h) = kind.size();
+        let (w, h) = furniture_def(kind.furniture()).visual;
         if hit(pos.x, pos.y, w, h) {
             return Some(match kind {
                 WallDecor::Whiteboard => "Whiteboard",
@@ -227,7 +252,7 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
 
     // Pod decor (aisle items)
     for (kind, pos) in &layout.pod_decor {
-        let (w, h) = kind.size();
+        let (w, h) = furniture_def(kind.furniture()).visual;
         if hit(
             pos.x.saturating_sub(w / 2),
             pos.y.saturating_sub(h / 2),

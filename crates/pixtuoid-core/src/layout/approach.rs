@@ -15,7 +15,7 @@
 //! destinations stay in lockstep with the render anchor (all three call
 //! this with the same `origin = home desk`).
 
-use super::decor::WaypointKind;
+use super::decor::{furniture_def, Facing, WaypointKind};
 use super::Point;
 use crate::walkable::WalkableMask;
 
@@ -29,36 +29,28 @@ const STAND_SCAN: i32 = 4;
 
 /// Ground-footprint `(w, h)` the walkable mask stamps for a waypoint, or
 /// `None` for slots that add no obstacle (meeting sofa/stand sit on the
-/// sofa/table furniture, already stamped elsewhere). **Single source of
-/// truth** — `mask::build_walkable_mask` and [`stand_point`] both read it,
-/// so the footprint can't drift between the two.
+/// sofa/table furniture, already stamped elsewhere). Reads [`furniture_def`]
+/// — the single source of truth for furniture shape — and special-cases the
+/// one runtime-sized kind (`Pantry`, whose counter scales with terminal width
+/// and so isn't a static table row). Consumed by `mask::build_walkable_mask`
+/// and [`stand_point`], so the footprint can't drift between them.
 pub(super) fn obstacle_footprint(
     kind: WaypointKind,
     pantry_counter_size: (u16, u16),
 ) -> Option<(u16, u16)> {
-    Some(match kind {
-        // 3 seat-waypoints (dx ∈ {-6,0,+6}); 8px each overlaps to the exact
-        // 20px sofa ground footprint. Ground footprint only (top-down rule).
-        WaypointKind::Couch => (8, 7),
-        WaypointKind::Pantry => pantry_counter_size,
-        WaypointKind::PhoneBooth => (6, 12),
-        WaypointKind::StandingDesk => (8, 8),
-        WaypointKind::VendingMachine => (4, 6),
-        WaypointKind::Printer => (5, 4),
-        WaypointKind::MeetingSofa | WaypointKind::MeetingStand => return None,
-    })
+    if matches!(kind, WaypointKind::Pantry) {
+        return Some(pantry_counter_size);
+    }
+    furniture_def(kind.furniture()).footprint
 }
 
 /// Footprint half-extents `(hx, hy)` for stand-cell resolution, or `None` for
-/// seat furniture (couch and meeting slots) whose `pos` is the seat cell the
-/// sprite sits ON — those pass through `pos` unchanged, no stand resolution.
-/// This `None` set is a superset of `obstacle_footprint`'s: the couch HAS an
-/// obstacle footprint yet is still treated as a seat here.
+/// `occupies_pos` furniture (couch and meeting slots) whose `pos` is the cell
+/// the agent occupies ON the furniture — those pass through `pos` unchanged,
+/// no stand resolution. Gated on [`furniture_def`]`.occupies_pos`, a superset
+/// of `footprint.is_none()`: the couch HAS a footprint yet occupies its `pos`.
 fn half_extents(kind: WaypointKind, pantry_counter_size: (u16, u16)) -> Option<(u16, u16)> {
-    if matches!(
-        kind,
-        WaypointKind::Couch | WaypointKind::MeetingSofa | WaypointKind::MeetingStand
-    ) {
+    if furniture_def(kind.furniture()).occupies_pos {
         return None;
     }
     obstacle_footprint(kind, pantry_counter_size).map(|(w, h)| (w / 2, h / 2))
@@ -76,18 +68,78 @@ pub fn stand_point(
     pantry_counter_size: (u16, u16),
     mask: &WalkableMask,
     origin: Point,
+    facing: Facing,
 ) -> Point {
     let Some((hx, hy)) = half_extents(kind, pantry_counter_size) else {
         return pos;
     };
+    let approach = furniture_def(kind.furniture()).approach;
 
     // N, S, W, E unit axes.
     const DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
     let mut best: Option<(u64, Point)> = None;
     for (dx, dy) in DIRS {
+        // Honor the per-furniture approach allowlist (rotated to facing).
+        // All obstacle furniture is `ALL` today, so this is a no-op for them;
+        // editing a kind's `approach` constrains both walk + render here.
+        if !approach.allows(facing, (dx, dy)) {
+            continue;
+        }
         let half = if dx != 0 { hx } else { hy } as i32;
         for step in 0..=STAND_SCAN {
             let dist = half + STAND_CLEARANCE as i32 + step;
+            let cx = pos.x as i32 + dx * dist;
+            let cy = pos.y as i32 + dy * dist;
+            if cx < 0 || cy < 0 {
+                break;
+            }
+            let (cx, cy) = (cx as u16, cy as u16);
+            if mask.is_walkable(cx, cy) {
+                let ex = cx as i64 - origin.x as i64;
+                let ey = cy as i64 - origin.y as i64;
+                let d2 = (ex * ex + ey * ey) as u64;
+                if best.map_or(true, |(bd, _)| d2 < bd) {
+                    best = Some((d2, Point { x: cx, y: cy }));
+                }
+                break; // first walkable cell on this side wins
+            }
+        }
+    }
+    best.map(|(_, p)| p).unwrap_or(pos)
+}
+
+/// A seat body (sofa) is wider than an appliance footprint, so its side
+/// approach cells sit farther out than [`STAND_SCAN`] would reach. Scan this
+/// far from the seat centre to clear the furniture and land on the floor.
+const SEAT_APPROACH_SCAN: i32 = 14;
+
+/// Where an agent WALKS to when visiting `kind` at `pos` with the given
+/// `facing`. For obstacle furniture this is exactly [`stand_point`] (the side
+/// stand cell). For `occupies_pos` seats — whose sprite RENDERS on `pos` — it
+/// is an allowed-side walkable cell ADJACENT to the seat, nearest `origin`, so
+/// the agent approaches from the front/sides and never paths in through the
+/// back. Arrival is therefore a short settle from the approach cell onto the
+/// seat (the render anchor stays `pos`). Falls back to `pos` (router snaps) if
+/// no allowed side is walkable.
+pub fn walk_target(
+    kind: WaypointKind,
+    pos: Point,
+    pantry_counter_size: (u16, u16),
+    mask: &WalkableMask,
+    origin: Point,
+    facing: Facing,
+) -> Point {
+    let def = furniture_def(kind.furniture());
+    if !def.occupies_pos {
+        return stand_point(kind, pos, pantry_counter_size, mask, origin, facing);
+    }
+    const DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+    let mut best: Option<(u64, Point)> = None;
+    for (dx, dy) in DIRS {
+        if !def.approach.allows(facing, (dx, dy)) {
+            continue;
+        }
+        for dist in 1..=SEAT_APPROACH_SCAN {
             let cx = pos.x as i32 + dx * dist;
             let cy = pos.y as i32 + dy * dist;
             if cx < 0 || cy < 0 {
@@ -131,6 +183,7 @@ mod tests {
             (32, 10),
             &m,
             Point { x: 50, y: 8 },
+            Facing::South,
         );
         assert!(m.is_walkable(s.x, s.y), "stand cell must be walkable");
         assert_ne!(s, pos, "must move off the blocked center");
@@ -147,6 +200,7 @@ mod tests {
             (32, 10),
             &m,
             Point { x: 50, y: 95 },
+            Facing::South,
         );
         assert!(south.y > pos.y, "south origin → south stand, got {south:?}");
         let east = stand_point(
@@ -155,6 +209,7 @@ mod tests {
             (32, 10),
             &m,
             Point { x: 98, y: 50 },
+            Facing::South,
         );
         assert!(east.x > pos.x, "east origin → east stand, got {east:?}");
     }
@@ -169,7 +224,7 @@ mod tests {
             WaypointKind::MeetingStand,
         ] {
             assert_eq!(
-                stand_point(kind, pos, (0, 0), &m, Point { x: 10, y: 10 }),
+                stand_point(kind, pos, (0, 0), &m, Point { x: 10, y: 10 }, Facing::South),
                 pos,
                 "{kind:?} pos is already the seat cell"
             );
@@ -190,25 +245,35 @@ mod tests {
                 WaypointKind::Couch | WaypointKind::MeetingSofa | WaypointKind::MeetingStand
             )
         };
-        for seed in 0..5u64 {
-            let l = SceneLayout::compute_with_seed(160, 120, 6, seed).unwrap();
-            let origin = l
-                .home_desks
-                .first()
-                .copied()
-                .unwrap_or(Point { x: 0, y: 0 });
-            for wp in &l.waypoints {
-                let s =
-                    super::stand_point(wp.kind, wp.pos, l.pantry_counter_size, &l.walkable, origin);
-                if seat(wp.kind) {
-                    assert_eq!(s, wp.pos, "seed {seed}: {:?} should pass through", wp.kind);
-                } else {
-                    assert!(
-                        l.walkable.is_walkable(s.x, s.y) && s != wp.pos,
-                        "seed {seed}: {:?} stand {s:?} not a walkable off-center cell (center {:?})",
+        // 160×120 (walkway 8 → no vending/printer) AND 160×150 (walkway ≥10 →
+        // vending + printer spawn) so the appliance stand cells are covered too.
+        for (bw, bh) in [(160u16, 120u16), (160, 150)] {
+            for seed in 0..5u64 {
+                let l = SceneLayout::compute_with_seed(bw, bh, 6, seed).unwrap();
+                let origin = l
+                    .home_desks
+                    .first()
+                    .copied()
+                    .unwrap_or(Point { x: 0, y: 0 });
+                for wp in &l.waypoints {
+                    let s = super::stand_point(
                         wp.kind,
-                        wp.pos
+                        wp.pos,
+                        l.pantry_counter_size,
+                        &l.walkable,
+                        origin,
+                        wp.facing,
                     );
+                    if seat(wp.kind) {
+                        assert_eq!(s, wp.pos, "seed {seed}: {:?} should pass through", wp.kind);
+                    } else {
+                        assert!(
+                            l.walkable.is_walkable(s.x, s.y) && s != wp.pos,
+                            "{bw}x{bh} seed {seed}: {:?} stand {s:?} not a walkable off-center cell (center {:?})",
+                            wp.kind,
+                            wp.pos
+                        );
+                    }
                 }
             }
         }
@@ -235,6 +300,7 @@ mod tests {
             cs,
             &l.walkable,
             Point { x: p.x, y: 0 },
+            Facing::South,
         );
         let south = stand_point(
             WaypointKind::Pantry,
@@ -245,6 +311,7 @@ mod tests {
                 x: p.x,
                 y: l.buf_h - 1,
             },
+            Facing::South,
         );
         assert!(
             north.y <= south.y,
@@ -266,8 +333,171 @@ mod tests {
             (0, 0),
             &m,
             Point { x: 50, y: 5 },
+            Facing::South,
         );
         assert!(m.is_walkable(s.x, s.y));
         assert!(s.y > pos.y, "only south is open, got {s:?}");
+    }
+
+    #[test]
+    fn walk_target_seat_never_approaches_through_the_back() {
+        let pos = Point { x: 50, y: 50 };
+        let m = mask_with_obstacle(100, 100, pos, 20, 7); // sofa-ish body
+                                                          // South-facing sofa: back is north. Even with the origin due north
+                                                          // (which would otherwise pull a north approach), the walk-in must NOT
+                                                          // be due-north of the seat.
+        let south = walk_target(
+            WaypointKind::MeetingSofa,
+            pos,
+            (0, 0),
+            &m,
+            Point { x: 50, y: 5 },
+            Facing::South,
+        );
+        assert!(m.is_walkable(south.x, south.y) && south != pos);
+        assert!(
+            !(south.x == pos.x && south.y < pos.y),
+            "south-facing sofa back is north — must not approach due-north: {south:?}"
+        );
+        // North-facing sofa: back is south. Origin due south must not yield a
+        // due-south approach.
+        let north = walk_target(
+            WaypointKind::MeetingSofa,
+            pos,
+            (0, 0),
+            &m,
+            Point { x: 50, y: 95 },
+            Facing::North,
+        );
+        assert!(m.is_walkable(north.x, north.y) && north != pos);
+        assert!(
+            !(north.x == pos.x && north.y > pos.y),
+            "north-facing sofa back is south — must not approach due-south: {north:?}"
+        );
+    }
+
+    #[test]
+    fn walk_target_for_obstacle_delegates_to_stand_point() {
+        let pos = Point { x: 50, y: 50 };
+        let m = mask_with_obstacle(100, 100, pos, 32, 10);
+        let origin = Point { x: 50, y: 8 };
+        assert_eq!(
+            walk_target(
+                WaypointKind::Pantry,
+                pos,
+                (32, 10),
+                &m,
+                origin,
+                Facing::South
+            ),
+            stand_point(
+                WaypointKind::Pantry,
+                pos,
+                (32, 10),
+                &m,
+                origin,
+                Facing::South
+            ),
+            "obstacle walk_target must equal stand_point",
+        );
+    }
+
+    // ── furniture_def single-source-of-truth invariants ────────────────────
+    // These iterate `WaypointKind::ALL` so re-introducing a hardcoded shape
+    // number or breaking a derivation fails here, not as a silent visual bug.
+
+    #[test]
+    fn def_footprint_matches_obstacle_footprint() {
+        // furniture_def is the SoT; obstacle_footprint must agree for every
+        // non-Pantry kind (Pantry is runtime-sized → special-cased).
+        let dummy = (32u16, 10u16);
+        for &kind in WaypointKind::ALL {
+            if kind == WaypointKind::Pantry {
+                continue;
+            }
+            assert_eq!(
+                furniture_def(kind.furniture()).footprint,
+                obstacle_footprint(kind, dummy),
+                "{kind:?}: furniture_def.footprint must equal obstacle_footprint",
+            );
+        }
+    }
+
+    #[test]
+    fn occupies_pos_is_exactly_the_seat_kinds() {
+        for &kind in WaypointKind::ALL {
+            let expected = matches!(
+                kind,
+                WaypointKind::Couch | WaypointKind::MeetingSofa | WaypointKind::MeetingStand
+            );
+            assert_eq!(
+                furniture_def(kind.furniture()).occupies_pos,
+                expected,
+                "{kind:?}: occupies_pos must be true iff the agent occupies pos directly",
+            );
+        }
+    }
+
+    #[test]
+    fn approachable_obstacle_resolves_half_extents() {
+        let dummy = (32u16, 10u16);
+        for &kind in WaypointKind::ALL {
+            let def = furniture_def(kind.furniture());
+            let has_footprint = def.footprint.is_some() || kind == WaypointKind::Pantry;
+            if has_footprint && !def.occupies_pos {
+                assert!(
+                    half_extents(kind, dummy).is_some(),
+                    "{kind:?}: an approachable obstacle must resolve half-extents",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dwell_range_is_nonzero() {
+        // pose::dwell_ms does `% range.max(1)`; a zero range would silently
+        // collapse the jitter. Keep every row's range positive.
+        for &kind in WaypointKind::ALL {
+            assert!(
+                furniture_def(kind.furniture()).dwell.1 > 0,
+                "{kind:?}: dwell range must be > 0",
+            );
+        }
+    }
+
+    #[test]
+    fn pod_and_waypoint_twins_resolve_to_one_furniture_row() {
+        // PhoneBooth/StandingDesk exist as BOTH a PodDecor and a WaypointKind;
+        // after the fold they must map to the SAME Furniture row, so geometry
+        // cannot drift between the two roles.
+        use crate::layout::PodDecor;
+        for (pod, wp) in [
+            (PodDecor::PhoneBooth, WaypointKind::PhoneBooth),
+            (PodDecor::StandingDesk, WaypointKind::StandingDesk),
+        ] {
+            assert_eq!(
+                pod.furniture(),
+                wp.furniture(),
+                "{pod:?}/{wp:?}: pod + waypoint twins must share one Furniture row",
+            );
+        }
+    }
+
+    #[test]
+    fn waypoint_kind_all_is_unique_and_complete() {
+        use std::collections::HashSet;
+        let set: HashSet<_> = WaypointKind::ALL.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            WaypointKind::ALL.len(),
+            "ALL contains duplicates"
+        );
+        // furniture_def's match is compiler-forced exhaustive; this count
+        // catches a new variant that was added there but not to ALL.
+        assert_eq!(
+            WaypointKind::ALL.len(),
+            8,
+            "a WaypointKind variant was added/removed — update ALL",
+        );
     }
 }

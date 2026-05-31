@@ -44,7 +44,7 @@ pub(super) fn compute_with_seed(
     //        Horizontal wall separates the two rooms. Each gets a door.
     // F4(3): Senior — larger meeting + pantry (like Standard but wider).
     // F5(4): Lounge — pantry only, no vertical wall (open break area).
-    let (mid_x, has_meeting, has_pantry) = match floor_variant {
+    let (mut mid_x, has_meeting, mut has_pantry) = match floor_variant {
         0 => (pct(buf_w, 28), true, true),
         1 => (pct(buf_w, 18), false, true),
         2 => (pct(buf_w, 22), true, false),
@@ -57,6 +57,17 @@ pub(super) fn compute_with_seed(
     // Dense floor (variant 2): two meeting rooms stacked vertically.
     // Only when tall enough for two rooms with furniture + door gaps.
     let has_dual_meeting = floor_variant == 2 && usable_h >= MIN_DUAL_MEETING_H;
+    // Variant 2 (Dense) only earns its narrow 22% left column + no-pantry when
+    // it actually fits TWO meeting rooms. On a terminal too short for that it
+    // degrades fully to the Standard single-meeting+pantry geometry — same 28%
+    // column width and pantry. The old degenerate fallback (22% wide, full-
+    // height meeting, no pantry) was too narrow to enclose a room and sealed a
+    // pocket at 96×70 (surfaced by the dense-variant small-size connectivity
+    // sweep). Keeps the dual-meeting wall branch below for the real dense floor.
+    if floor_variant == 2 && !has_dual_meeting {
+        has_pantry = true;
+        mid_x = pct(buf_w, 28);
+    }
 
     let mid_y_split = top_margin + usable_h / 2;
 
@@ -305,10 +316,14 @@ pub(super) fn compute_with_seed(
     });
 
     // Lounge side table on the OPPOSITE side from the floor lamp
-    // (west of the couch). 5×3 small wood block with a magazine
-    // on top.
+    // (west of the couch). Clamp its x so the footprint's left edge clears the
+    // vertical room wall at `right_x` — at the minimum buffer width couch_x-10
+    // would otherwise drop the 7-wide footprint onto the wall column.
+    let side_half_w = furniture_def(Furniture::LoungeSideTable)
+        .footprint
+        .map_or(0, |(w, _)| w / 2);
     let lounge_side_table = Some(Point {
-        x: couch_x.saturating_sub(10),
+        x: couch_x.saturating_sub(10).max(right_x + side_half_w + 1),
         y: couch_y + 2,
     });
 
@@ -392,8 +407,28 @@ pub(super) fn compute_with_seed(
     }
 
     let (pantry_table, pantry_chairs) = if let Some(pr) = pantry_room {
-        let tx = pr.x + pct(pr.width, 25);
-        let ty = pr.y + pct(pr.height, 25);
+        // Inset the bistro table + stools clear of the room walls. A small
+        // pantry puts the raw 25% mark inside the meeting/pantry divider wall
+        // (caught by `furniture_does_not_overlap_room_walls`). Clearance = wall
+        // face + obstacle pad; the cluster half-extent is 5×4 (table 8×5 plus
+        // the ±4 / ±3 stool reach).
+        let clr = super::WALL_THICK_H + super::OBSTACLE_PAD_PX;
+        let (half_w, half_h) = (5u16, 4u16);
+        let min_x = pr.x + clr + half_w;
+        let max_x = (pr.x + pr.width).saturating_sub(clr + half_w);
+        let min_y = pr.y + clr + half_h;
+        // The counter sits lower in the room (60/65%); keep the table cluster's
+        // padded south edge above the counter's padded north so the two
+        // footprints don't merge into a band that closes the east routing strip
+        // in a short pantry (was unreachable at 120×80, outside the old matrix).
+        let counter_y = pr.y + pct(pr.height, if pantry_counter_size.0 >= 32 { 65 } else { 60 });
+        let counter_north =
+            counter_y.saturating_sub(pantry_counter_size.1 / 2 + super::OBSTACLE_PAD_PX);
+        let max_y = (pr.y + pr.height)
+            .saturating_sub(clr + half_h)
+            .min(counter_north.saturating_sub(half_h));
+        let tx = (pr.x + pct(pr.width, 25)).clamp(min_x, max_x.max(min_x));
+        let ty = (pr.y + pct(pr.height, 25)).clamp(min_y, max_y.max(min_y));
         (
             Some(Point { x: tx, y: ty }),
             vec![
@@ -717,15 +752,6 @@ pub(super) fn compute_room_walls(
                 },
                 Point { x: v_x, y: v2_bot },
             ));
-        } else if !has_pantry {
-            // Single meeting, no pantry, no dual: extend wall to floor
-            room_walls.push((
-                Point { x: v_x, y: v_bot },
-                Point {
-                    x: v_x,
-                    y: top_margin + usable_h,
-                },
-            ));
         }
     }
     // Horizontal wall: separates meeting from pantry, or two meetings.
@@ -812,10 +838,14 @@ pub(super) fn compute_waypoints(
     // wander to during Idle cycles. Plant/Whiteboard/TV are pure
     // decor (already obstacles via pod_decor).
     for (kind, pos) in pod_decor {
+        // Exhaustive (no `_`): a NEW PodDecor must make a deliberate
+        // wander-destination decision here — `None` = pure decor (aisle
+        // obstacle only), `Some(kind)` = also a walkable destination. A `_`
+        // would silently leave a new interactive kind unreachable.
         let wp_kind = match kind {
             PodDecor::PhoneBooth => Some(WaypointKind::PhoneBooth),
             PodDecor::StandingDesk => Some(WaypointKind::StandingDesk),
-            _ => None,
+            PodDecor::PlantTall | PodDecor::Whiteboard | PodDecor::Tv => None,
         };
         if let Some(wp_kind) = wp_kind {
             waypoints.push(Waypoint {
@@ -893,11 +923,11 @@ pub(super) fn compute_waypoints(
     }
     for (room_id, table) in meeting_tables.iter().enumerate() {
         // West stand faces East (toward the table centre); east stand faces West.
-        // The table obstacle (mask.rs) is `mark_blocked(t.x-6, w=12, pad=2)` →
-        // blocks x ∈ [t.x-8, t.x+7]. It is NOT centred on t.x (6 left, 5 right),
-        // so a symmetric ±8 puts the WEST point on the inclusive left edge (t.x-8 →
-        // non-walkable, router has to snap it). Offset the west stand one px further
-        // out (t.x-9) so both stands land on walkable cells. East (t.x+8) already clears.
+        // The table obstacle (mask.rs) is `mark_blocked(t.x-5, w=11, pad=2)` →
+        // blocks x ∈ [t.x-7, t.x+7] (symmetric, 7 px each side). West stand at
+        // t.x-9 clears by 2 px; east stand at t.x+8 clears by 1 px. (The -9 keeps
+        // margin for any future footprint bump — leave it even though -8 would
+        // also clear today.)
         for (dx, facing) in [(-9i16, Facing::East), (8, Facing::West)] {
             waypoints.push(Waypoint {
                 pos: Point {

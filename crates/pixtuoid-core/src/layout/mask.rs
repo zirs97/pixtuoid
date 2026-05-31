@@ -4,13 +4,18 @@
 //! clearance band around each obstacle so walkers don't scrape along
 //! edges.
 
-use super::{PodDecor, Point, WallDecor, Waypoint, DESK_H, DESK_W, OBSTACLE_PAD_PX};
+use super::{furniture_def, Furniture, PodDecor, Point, WallDecor, Waypoint, OBSTACLE_PAD_PX};
 use crate::walkable::WalkableMask;
 
 /// Walkable footprint (and render face height) of a horizontal (E-W) interior
 /// wall, in px. The renderer derives `WALL_THICK_H_PX` from this so the visible
 /// glass face and the blocked ground footprint can never drift apart.
 pub const WALL_THICK_H: u16 = 6;
+/// Walkable footprint of a vertical (N-S) interior wall — seen edge-on, so 1px
+/// (the renderer draws it 3px wide, visual-wider-than-footprint per the
+/// top-down ground-projection rule). Single source: mask + the placement test
+/// read this rather than re-typing `1`.
+pub const WALL_THICK_V: u16 = 1;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_walkable_mask(
@@ -48,10 +53,9 @@ pub(super) fn build_walkable_mask(
     //   • horizontal walls (E-W) show their FACE — WALL_THICK_H px tall so the
     //     wall reads as having real mass/height when viewed from the north
     //     room (clearly thicker than the edge-on vertical).
-    //   • vertical walls (N-S) are seen EDGE-ON — 1 px thin footprint (the
-    //     renderer draws it 3 px wide; visual-wider-than-footprint per the
+    //   • vertical walls (N-S) are seen EDGE-ON — WALL_THICK_V px thin footprint
+    //     (the renderer draws it 3 px wide; visual-wider-than-footprint per the
     //     top-down ground-projection rule).
-    const WALL_THICK_V: u16 = 1;
     for (start, end) in room_walls {
         if start.x == end.x {
             mask.mark_blocked(
@@ -80,54 +84,64 @@ pub(super) fn build_walkable_mask(
         // the desk paints in Pass 2 on top of both. Routes become much
         // shorter — walkers can cut diagonally between desk rows instead
         // of weaving around each one.
-        mask.mark_blocked(desk.x, desk.y, DESK_W + 2, DESK_H, OBSTACLE_PAD_PX);
+        // Desk footprint comes from the shared FurnitureDef (always Some for
+        // the desk); stamped TOP-LEFT at the desk Point (not centred like
+        // visited furniture).
+        if let Some((w, h)) = super::decor::desk_furniture_def().footprint {
+            mask.mark_blocked(desk.x, desk.y, w, h, OBSTACLE_PAD_PX);
+        }
     }
 
     for sofa in meeting_sofas {
-        // The sofa sprite is 20px wide. The width arg is 16 ON PURPOSE, not a
-        // stale 16px sprite size: `16 + 2·OBSTACLE_PAD = 20` reproduces the
-        // exact 20px X footprint while the pad provides the 7→11px VERTICAL
-        // approach clearance (sit access between sofa and table). The narrowest
-        // meeting room (~26px wide) can't fit horizontal clearance — a literal
-        // `20, pad` block is 24px wide and disconnects the room (the
-        // walkable_mask_is_fully_connected test catches it). Top-down rule:
-        // characters walk right up to the sofa's sides, clear above/below.
-        mask.mark_blocked(
-            sofa.x.saturating_sub(8),
-            sofa.y.saturating_sub(3),
-            16,
-            7,
-            OBSTACLE_PAD_PX,
-        );
+        // Sofa BODY footprint from the table (16 ON PURPOSE: 16 + 2·pad = the
+        // 20px sprite X footprint, with the pad giving vertical sit clearance —
+        // see the furniture_def row). Top-down rule: walk up to its sides.
+        if let Some((w, h)) = furniture_def(Furniture::MeetingSofaBody).footprint {
+            mask.mark_blocked(
+                sofa.x.saturating_sub(w / 2),
+                sofa.y.saturating_sub(h / 2),
+                w,
+                h,
+                OBSTACLE_PAD_PX,
+            );
+        }
     }
 
     for t in meeting_tables {
-        mask.mark_blocked(
-            t.x.saturating_sub(6),
-            t.y.saturating_sub(3),
-            12,
-            6,
-            OBSTACLE_PAD_PX,
-        );
+        if let Some((w, h)) = furniture_def(Furniture::MeetingTable).footprint {
+            mask.mark_blocked(
+                t.x.saturating_sub(w / 2),
+                t.y.saturating_sub(h / 2),
+                w,
+                h,
+                OBSTACLE_PAD_PX,
+            );
+        }
     }
 
     if let Some(t) = pantry_table {
-        mask.mark_blocked(
-            t.x.saturating_sub(4),
-            t.y.saturating_sub(2),
-            8,
-            5,
-            OBSTACLE_PAD_PX,
-        );
+        if let Some((w, h)) = furniture_def(Furniture::PantryTable).footprint {
+            mask.mark_blocked(
+                t.x.saturating_sub(w / 2),
+                t.y.saturating_sub(h / 2),
+                w,
+                h,
+                OBSTACLE_PAD_PX,
+            );
+        }
     }
     for chair in pantry_chairs {
-        mask.mark_blocked(
-            chair.x.saturating_sub(2),
-            chair.y.saturating_sub(2),
-            3,
-            3,
-            1,
-        );
+        // Stool footprint is small; stamped left-biased (offset 2, not w/2) to
+        // sit snug against the bistro table — kept as-is for the look.
+        if let Some((w, h)) = furniture_def(Furniture::PantryChair).footprint {
+            mask.mark_blocked(
+                chair.x.saturating_sub(2),
+                chair.y.saturating_sub(2),
+                w,
+                h,
+                1,
+            );
+        }
     }
 
     for wp in waypoints {
@@ -150,23 +164,52 @@ pub(super) fn build_walkable_mask(
         );
     }
 
-    for (_, p) in plants {
-        mask.mark_blocked(p.x.saturating_sub(3), p.y.saturating_sub(3), 6, 6, 1);
+    for (kind, p) in plants {
+        // GROUND footprint from the table — tighter than the taller visual
+        // sprite (top-down rule lets the leaves overhang).
+        if let Some((w, h)) = furniture_def(kind.furniture()).footprint {
+            mask.mark_blocked(
+                p.x.saturating_sub(w / 2),
+                p.y.saturating_sub(h / 2),
+                w,
+                h,
+                1,
+            );
+        }
     }
 
     if let Some(lamp) = floor_lamp {
-        mask.mark_blocked(lamp.x.saturating_sub(2), lamp.y.saturating_sub(3), 4, 6, 1);
+        if let Some((w, h)) = furniture_def(Furniture::FloorLamp).footprint {
+            mask.mark_blocked(
+                lamp.x.saturating_sub(w / 2),
+                lamp.y.saturating_sub(h / 2),
+                w,
+                h,
+                1,
+            );
+        }
     }
 
     if let Some(t) = lounge_side_table {
-        // 7×4 footprint centred on `t`; pad=1 since it's small and
-        // sits in the wide open lounge floor with plenty of clearance.
-        mask.mark_blocked(t.x.saturating_sub(3), t.y.saturating_sub(2), 7, 4, 1);
+        // Small footprint, pad=1: sits in the wide open lounge floor with
+        // plenty of clearance.
+        if let Some((w, h)) = furniture_def(Furniture::LoungeSideTable).footprint {
+            mask.mark_blocked(
+                t.x.saturating_sub(w / 2),
+                t.y.saturating_sub(h / 2),
+                w,
+                h,
+                1,
+            );
+        }
     }
 
+    // Wall decor is top-left anchored. Only kinds with a ground footprint in
+    // the furniture table are obstacles (the whiteboard); the rest are flush
+    // against the wall (footprint None) and stamp nothing.
     for (kind, pos) in wall_decor {
-        if matches!(kind, WallDecor::Whiteboard) {
-            mask.mark_blocked(pos.x, pos.y, 14, 11, OBSTACLE_PAD_PX);
+        if let Some((w, h)) = furniture_def(kind.furniture()).footprint {
+            mask.mark_blocked(pos.x, pos.y, w, h, OBSTACLE_PAD_PX);
         }
     }
 
@@ -177,7 +220,11 @@ pub(super) fn build_walkable_mask(
     // because aisles are tight (14×16) and an extra pixel of pad on
     // each side disconnects the routing grid through the aisle.
     for (kind, pos) in pod_decor {
-        let (w, h) = kind.size();
+        // GROUND footprint (not the sprite size) — a tall plant's canopy
+        // overhangs its 6×6 pot base and must not block the aisle (invariant #6).
+        let Some((w, h)) = furniture_def(kind.furniture()).footprint else {
+            continue;
+        };
         mask.mark_blocked(
             pos.x.saturating_sub(w / 2),
             pos.y.saturating_sub(h / 2),

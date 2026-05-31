@@ -15,9 +15,12 @@ mod compute;
 mod decor;
 mod mask;
 
-pub use approach::stand_point;
-pub use decor::{Facing, PlantKind, PodDecor, WallDecor, WaypointKind};
-pub use mask::WALL_THICK_H;
+pub use approach::{stand_point, walk_target};
+pub use decor::{
+    desk_furniture_def, desk_walk_anchor, furniture_def, ApproachSides, Facing, Furniture,
+    FurnitureDef, PlantKind, PodDecor, WallDecor, WaypointKind, DESK_APPROACH,
+};
+pub use mask::{WALL_THICK_H, WALL_THICK_V};
 
 use crate::walkable::WalkableMask;
 
@@ -70,7 +73,7 @@ pub struct SceneLayout {
     /// point and marks it as an obstacle in the walkable mask.
     pub pod_decor: Vec<(PodDecor, Point)>,
     pub floor_lamp: Option<Point>,
-    /// Lounge side table (5×3 wood + magazine) placed next to the
+    /// Lounge side table (7×4 wood + magazine) placed next to the
     /// viewing couch on the side opposite the floor lamp.
     pub lounge_side_table: Option<Point>,
     pub door: Option<Point>,
@@ -173,6 +176,70 @@ mod tests {
                 l.is_some(),
                 "huge terminal (seed {seed}) must lay out, not overflow"
             );
+        }
+    }
+
+    // Ground-footprint rectangle `(x, y, w, h)` (no clearance pad — the pad is
+    // routing slack, not the object's solid area). Mirror the stamps in `mask.rs`.
+    type Rect = (u16, u16, u16, u16);
+    fn rects_overlap(a: Rect, b: Rect) -> bool {
+        a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+    }
+    fn wall_rect(s: Point, e: Point) -> Rect {
+        if s.x == e.x {
+            (s.x, s.y.min(e.y), WALL_THICK_V, s.y.abs_diff(e.y) + 1)
+        } else {
+            (s.x.min(e.x), s.y, s.x.abs_diff(e.x) + 1, WALL_THICK_H)
+        }
+    }
+
+    #[test]
+    fn freestanding_decor_does_not_overlap_room_walls() {
+        // Placement-overlap guard for FREE-STANDING decor only — items meant to
+        // sit in open floor (pantry bistro table, lounge side table). Burying
+        // one inside a wall (the reported pantry-table bug) is a placement
+        // error. NOT checked: wall-ADJACENT furniture (meeting sofa/table sit
+        // against the glass partitions by design) — that overlap is intended +
+        // physically correct, and the occlusion / z-sort system draws it right.
+        // Includes the minimum-width sizes (34 = MIN_W, 48) where the lounge
+        // side table sits closest to the vertical room wall.
+        for &(w, h) in &[
+            (96u16, 72u16),
+            (120, 80),
+            (160, 120),
+            (192, 160),
+            (34, 60),
+            (48, 60),
+        ] {
+            for seed in 0..6u64 {
+                let Some(l) = SceneLayout::compute_with_seed(w, h, 8, seed) else {
+                    continue;
+                };
+                let mut items: Vec<(&str, Rect)> = Vec::new();
+                if let Some(t) = l.pantry_table {
+                    let (w, h) = furniture_def(Furniture::PantryTable).footprint.unwrap();
+                    items.push((
+                        "pantry_table",
+                        (t.x.saturating_sub(w / 2), t.y.saturating_sub(h / 2), w, h),
+                    ));
+                }
+                if let Some(t) = l.lounge_side_table {
+                    let (w, h) = furniture_def(Furniture::LoungeSideTable).footprint.unwrap();
+                    items.push((
+                        "lounge_side_table",
+                        (t.x.saturating_sub(w / 2), t.y.saturating_sub(h / 2), w, h),
+                    ));
+                }
+                for (item, rect) in &items {
+                    for &(s, e) in &l.room_walls {
+                        let wr = wall_rect(s, e);
+                        assert!(
+                            !rects_overlap(*rect, wr),
+                            "{w}x{h} seed {seed}: {item} {rect:?} overlaps wall {wr:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -544,46 +611,50 @@ mod tests {
     fn walkable_mask_connected_across_floor_seeds() {
         use std::collections::VecDeque;
 
-        let (buf_w, buf_h, num_agents) = (160u16, 100u16, 12usize);
-        for seed in 0..5u64 {
-            let l = SceneLayout::compute_with_seed(buf_w, buf_h, num_agents, seed)
-                .expect("layout fits");
-            let w = l.buf_w as usize;
-            let h = l.buf_h as usize;
-            let start = l.door_threshold.expect("door_threshold");
-            assert!(l.is_walkable(start.x, start.y));
+        // Sweep the two SMALLEST sizes across all floor seeds too: the dense
+        // floor variant (seed 2) stacks two meeting rooms and is the riskiest
+        // for connectivity at narrow widths — the size-only test runs seed 0.
+        for (buf_w, buf_h, num_agents) in [(160u16, 100u16, 12usize), (96, 70, 7), (128, 80, 10)] {
+            for seed in 0..5u64 {
+                let l = SceneLayout::compute_with_seed(buf_w, buf_h, num_agents, seed)
+                    .expect("layout fits");
+                let w = l.buf_w as usize;
+                let h = l.buf_h as usize;
+                let start = l.door_threshold.expect("door_threshold");
+                assert!(l.is_walkable(start.x, start.y));
 
-            let mut visited = vec![false; w * h];
-            visited[(start.y as usize) * w + (start.x as usize)] = true;
-            let mut queue = VecDeque::new();
-            queue.push_back((start.x, start.y));
-            let mut reachable = 1usize;
-            while let Some((cx, cy)) = queue.pop_front() {
-                for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1), (0, 1)] {
-                    let nx = cx as i32 + dx;
-                    let ny = cy as i32 + dy;
-                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
-                        continue;
-                    }
-                    let (nx, ny) = (nx as u16, ny as u16);
-                    let idx = (ny as usize) * w + (nx as usize);
-                    if !visited[idx] && l.is_walkable(nx, ny) {
-                        visited[idx] = true;
-                        reachable += 1;
-                        queue.push_back((nx, ny));
+                let mut visited = vec![false; w * h];
+                visited[(start.y as usize) * w + (start.x as usize)] = true;
+                let mut queue = VecDeque::new();
+                queue.push_back((start.x, start.y));
+                let mut reachable = 1usize;
+                while let Some((cx, cy)) = queue.pop_front() {
+                    for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1), (0, 1)] {
+                        let nx = cx as i32 + dx;
+                        let ny = cy as i32 + dy;
+                        if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                            continue;
+                        }
+                        let (nx, ny) = (nx as u16, ny as u16);
+                        let idx = (ny as usize) * w + (nx as usize);
+                        if !visited[idx] && l.is_walkable(nx, ny) {
+                            visited[idx] = true;
+                            reachable += 1;
+                            queue.push_back((nx, ny));
+                        }
                     }
                 }
+                let walkable_total = (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (x, y)))
+                    .filter(|&(x, y)| l.is_walkable(x as u16, y as u16))
+                    .count();
+                assert_eq!(
+                    reachable,
+                    walkable_total,
+                    "seed={seed}: {buf_w}x{buf_h}: {} disconnected pixels",
+                    walkable_total - reachable
+                );
             }
-            let walkable_total = (0..h)
-                .flat_map(|y| (0..w).map(move |x| (x, y)))
-                .filter(|&(x, y)| l.is_walkable(x as u16, y as u16))
-                .count();
-            assert_eq!(
-                reachable,
-                walkable_total,
-                "seed={seed}: {buf_w}x{buf_h}: {} disconnected pixels",
-                walkable_total - reachable
-            );
         }
     }
 }
