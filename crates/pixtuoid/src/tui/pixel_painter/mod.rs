@@ -686,8 +686,25 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         };
         if let Pose::AtWaypoint { wp, .. } = pose {
             if let Some(w) = ctx.layout.waypoints.get(wp) {
+                // Reserve the cell the agent actually stands on (the stand cell,
+                // off the furniture), NOT the blocked furniture center — else
+                // another agent's A* routes straight through the stander. Same
+                // `desk` origin as every other stand_point caller.
+                let origin = ctx
+                    .layout
+                    .home_desks
+                    .get(agent.desk_index)
+                    .copied()
+                    .unwrap_or(w.pos);
+                let stand = pixtuoid_core::layout::stand_point(
+                    w.kind,
+                    w.pos,
+                    ctx.layout.pantry_counter_size,
+                    &ctx.layout.walkable,
+                    origin,
+                );
                 ctx.overlay
-                    .add(w.pos.x.saturating_sub(4), w.pos.y.saturating_sub(6), 8, 12);
+                    .add(stand.x.saturating_sub(4), stand.y.saturating_sub(6), 8, 12);
             }
         }
     }
@@ -1130,12 +1147,23 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                     wp_rank.insert(wp, rank + 1);
                     let dx = waypoint_rank_offset_x(kind, rank);
                     use crate::tui::layout::WaypointKind;
+                    // Stand cell off the furniture, on the side nearest this
+                    // agent's desk — identical resolution to character_anchor /
+                    // the walk destination, so the sprite lands where it walked
+                    // (no arrival pop) instead of the blocked furniture center.
+                    let stand = pixtuoid_core::layout::stand_point(
+                        wp_obj.kind,
+                        wp_obj.pos,
+                        ctx.layout.pantry_counter_size,
+                        &ctx.layout.walkable,
+                        desk,
+                    );
                     let (anim_name, anchor_base, sprite_h, flip_x) = match kind {
                         WaypointKind::Couch => {
-                            ("back_couch", back_couch_anchor(wp_obj.pos), 9u16, false)
+                            ("back_couch", back_couch_anchor(stand), 9u16, false)
                         }
                         WaypointKind::Pantry => {
-                            ("holding_coffee", waypoint_anchor(wp_obj.pos), 12u16, false)
+                            ("holding_coffee", waypoint_anchor(stand), 12u16, false)
                         }
                         // Meeting sofa: the north-side seat faces the viewer
                         // across the table (front "seated"); the south-side seat
@@ -1143,12 +1171,12 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                         // facing each other. Both reuse the 16×7-sofa anchor.
                         WaypointKind::MeetingSofa => {
                             let (anim, flip) = meeting_sprite(kind, wp_obj.facing);
-                            (anim, back_couch_anchor(wp_obj.pos), 9u16, flip)
+                            (anim, back_couch_anchor(stand), 9u16, flip)
                         }
                         // Meeting stand: beside the table, facing inward.
                         WaypointKind::MeetingStand => {
                             let (anim, flip) = meeting_sprite(kind, wp_obj.facing);
-                            (anim, waypoint_anchor(wp_obj.pos), 12u16, flip)
+                            (anim, waypoint_anchor(stand), 12u16, flip)
                         }
                         // PhoneBooth + StandingDesk → agent just stands at the
                         // decor. waypoint_anchor positions them directly above
@@ -1158,7 +1186,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                         | WaypointKind::StandingDesk
                         | WaypointKind::VendingMachine
                         | WaypointKind::Printer => {
-                            ("standing", waypoint_anchor(wp_obj.pos), 12u16, false)
+                            ("standing", waypoint_anchor(stand), 12u16, false)
                         }
                     };
                     let anchor_no_breath = Point {
