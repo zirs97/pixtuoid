@@ -226,6 +226,171 @@ fn snap_back_walks_from_history_when_state_just_flipped() {
 }
 
 #[test]
+fn snap_back_origin_is_frozen_across_frames() {
+    // A snap-back is a walk FROM the interruption point TO the desk. Its
+    // origin is captured once (the `_snap_prev` field of the snap_back tuple)
+    // and must stay put for the whole leg — exactly like the EXIT branch,
+    // which freezes its origin Point and reuses it every frame.
+    //
+    // Regression: the origin was re-read from PoseHistory every frame
+    // (`from: prev` at the consuming arm). Because route_walking_pose records
+    // the advancing walker position into the single-slot history each frame,
+    // the next frame read that advanced point back as the "origin" — so the
+    // walk's `from` crept toward the desk frame-by-frame (a contraction, not a
+    // walk from a fixed start). That made the leg finish faster than its frozen
+    // physics profile intends and defeated the walk_path freeze (the per-frame
+    // `from` drift means the freeze's `wp.from == from` reuse guard stops
+    // matching). Assert the origin is identical on every frame of the leg.
+    let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let l = layout();
+    // state_started_at == now0: the leg arms on frame 0 and stays armed (the
+    // re-arm guard keys on state_started_at, which is constant here).
+    let slot = active_slot(now0, now0 - Duration::from_secs(60));
+    let desk = l.home_desks[0];
+    // ~80px manhattan from the desk: far enough that the pre-fix integer-pixel
+    // drift surfaces within the 8-frame window (empirically first drifts at
+    // frame 4). A snap near SNAP_BACK_MIN_DIST=8 could delay the first integer
+    // drift past the window and false-pass on broken code.
+    let prev0 = Point {
+        x: desk.x + 50,
+        y: desk.y + 30,
+    };
+    let mut history = PoseHistory::new();
+    history.record(slot.agent_id, prev0, now0 - Duration::from_millis(50));
+    let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
+    let mut router = StubRouter::straight();
+    let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
+
+    // Step several frames well inside the 900 ms window (8 × 33 ms = 231 ms),
+    // re-deriving each frame so route_walking_pose advances history just like
+    // the real render loop does.
+    let mut origins = Vec::new();
+    for i in 0..8u64 {
+        let t = now0 + Duration::from_millis(i * 33);
+        match derive_with_routing(
+            &slot,
+            t,
+            &l,
+            &mut router,
+            &overlay,
+            &mut history,
+            &mut motion,
+        ) {
+            Some(Pose::Walking { from, .. }) => origins.push((i, from)),
+            other => panic!("frame {i}: expected Walking pose mid snap-back, got {other:?}"),
+        }
+    }
+    for (i, from) in origins {
+        assert_eq!(
+            from, prev0,
+            "frame {i}: snap-back origin drifted to {from:?}; it must stay frozen at \
+             the interruption point {prev0:?} for the whole leg"
+        );
+    }
+}
+
+#[test]
+fn snap_back_cornered_leg_freezes_path_no_reroute() {
+    // Companion to `walk_leg_freezes_path_against_midleg_reroute` (entry walk),
+    // for the snap-back leg. A CORNERED snap-back (>2-point route) must
+    // snapshot its A* polyline once and reuse it, making NO router call on
+    // later frames — else the per-frame A* cost spikes and an overlay-churn
+    // reroute remaps frozen progress onto a new shape (the "flash"). This only
+    // holds because the origin is frozen: a per-frame-drifting `from` misses
+    // the `wp.from == from` reuse guard and re-routes every frame.
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let l = layout();
+    let desk = l.home_desks[0];
+    let snap_target = Point {
+        x: desk.x + 6,
+        y: desk.y + 4,
+    };
+    let prev0 = Point {
+        x: desk.x + 50,
+        y: desk.y + 30,
+    };
+    // Distinct corners so the frozen vs rerouted shapes are distinguishable.
+    let corner_a = Point {
+        x: prev0.x,
+        y: snap_target.y,
+    };
+    let corner_b = Point {
+        x: snap_target.x,
+        y: prev0.y,
+    };
+    assert_ne!(corner_a, corner_b, "test setup: corners must differ");
+
+    let mut router = ChangingRouter {
+        calls: 0,
+        first: vec![prev0, corner_a, snap_target],
+        rest: vec![prev0, corner_b, snap_target],
+    };
+    let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
+    let mut history = PoseHistory::new();
+    let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
+
+    // State flipped 100ms ago — inside the 900ms snap-back window on both frames.
+    let slot = active_slot(
+        now - Duration::from_millis(100),
+        now - Duration::from_secs(60),
+    );
+    history.record(slot.agent_id, prev0, now - Duration::from_millis(50));
+
+    // Frame 1: arms the snap-back and snapshots the cornered walk_path (the
+    // profile is built from octile length, not a router call, so this is the
+    // ONE route call of the leg).
+    let _ = derive_with_routing(
+        &slot,
+        now,
+        &l,
+        &mut router,
+        &overlay,
+        &mut history,
+        &mut motion,
+    );
+    let calls_after_frame1 = router.calls;
+    assert!(
+        calls_after_frame1 >= 1,
+        "frame 1 must route once to snapshot the cornered leg"
+    );
+
+    // Frame 2: 100ms later. The router WOULD return the `rest` shape if asked.
+    let later = now + Duration::from_millis(100);
+    let _ = derive_with_routing(
+        &slot,
+        later,
+        &l,
+        &mut router,
+        &overlay,
+        &mut history,
+        &mut motion,
+    );
+
+    // The frozen origin keeps `wp.from == from` matching, so frame 2 re-routes
+    // nothing. Pre-fix the drifting `from` missed the guard → a fresh call here.
+    assert_eq!(
+        router.calls,
+        calls_after_frame1,
+        "frozen cornered snap-back must not re-route on a later frame (got {} extra calls)",
+        router.calls - calls_after_frame1
+    );
+    let frozen = motion
+        .get(&slot.agent_id)
+        .and_then(|ms| ms.walk_path.as_ref())
+        .expect("walk_path must be snapshotted while snapping back");
+    assert!(
+        frozen.path.contains(&corner_a),
+        "frozen path must keep the first corner {corner_a:?}, got {:?}",
+        frozen.path
+    );
+    assert!(
+        !frozen.path.contains(&corner_b),
+        "frozen path must NOT adopt the rerouted corner {corner_b:?} mid-leg, got {:?}",
+        frozen.path
+    );
+}
+
+#[test]
 fn snap_back_long_distance_completes_by_window_no_teleport() {
     // Regression: a snap-back over a distance whose physics duration exceeds
     // SNAP_BACK_MS (the common case — agents snap back from far waypoints)
