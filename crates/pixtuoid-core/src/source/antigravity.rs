@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::source::decoder::{describe_tool_target, make_tool_detail};
+use crate::source::decoder::make_tool_detail;
 use crate::source::jsonl::JsonlWatcher;
 use crate::source::{Activity, AgentEvent, Source, TaggedSender};
 use crate::AgentId;
@@ -96,12 +96,12 @@ pub fn decode_ag_line(transcript_path: &str, source: &str, v: Value) -> Result<V
                                 .insert(key.to_string(), Value::String(clean.to_string()));
                         }
                     }
-                    let target = describe_tool_target(name, Some(&Value::Object(normalized_input)));
+                    let normalized = Value::Object(normalized_input);
                     out.push(AgentEvent::ActivityStart {
                         agent_id,
                         activity: Activity::Typing,
                         tool_use_id: Some(format!("ag-{step_index}-{i}")),
-                        detail: Some(make_tool_detail(name, target)),
+                        detail: Some(make_tool_detail(name, Some(&normalized))),
                     });
                 }
             }
