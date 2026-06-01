@@ -1373,6 +1373,537 @@ fn sweep_stale_marks_old_agent_exiting_on_tick() {
     );
 }
 
+#[test]
+fn stale_sweep_cascades_to_children() {
+    use pixtuoid_core::state::reducer::STALE_IDLE_TIMEOUT;
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let parent = AgentId::from_transcript_path("/p/stale-cascade.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/stale-cascade/subagents/agent-1.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "parent".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "child".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    // Heartbeat the child so it is NOT independently stale at the tick below.
+    // Only the parent (no events since t0) crosses STALE_IDLE_TIMEOUT, so the
+    // child's exit can only come from the cascade.
+    r.apply(
+        &mut scene,
+        AgentEvent::Rename {
+            agent_id: child,
+            label: "cc·sub".into(),
+        },
+        t0 + Duration::from_secs(25 * 60),
+        Transport::Jsonl,
+    );
+
+    r.tick(&mut scene, t0 + STALE_IDLE_TIMEOUT + Duration::from_secs(1));
+
+    assert!(
+        scene.agents.get(&parent).unwrap().exiting_at.is_some(),
+        "stale parent should be marked exiting"
+    );
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_some(),
+        "child should cascade-exit with a stale-swept parent (it is not independently stale)"
+    );
+}
+
+#[test]
+fn stale_sweep_cascades_to_grandchildren() {
+    use pixtuoid_core::state::reducer::STALE_IDLE_TIMEOUT;
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let grandparent = AgentId::from_transcript_path("/p/stale-gp.jsonl");
+    let parent = AgentId::from_parts("claude-code", "/p/stale-gp/subagents/agent-p.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/stale-gp/subagents/agent-c.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: grandparent,
+            source: "claude-code".into(),
+            session_id: "gp".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "p".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(grandparent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "c".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(200),
+        Transport::Jsonl,
+    );
+    // Heartbeat the middle + leaf so only the grandparent is independently stale.
+    for (id, label) in [(parent, "cc·p"), (child, "cc·c")] {
+        r.apply(
+            &mut scene,
+            AgentEvent::Rename {
+                agent_id: id,
+                label: label.into(),
+            },
+            t0 + Duration::from_secs(25 * 60),
+            Transport::Jsonl,
+        );
+    }
+
+    r.tick(&mut scene, t0 + STALE_IDLE_TIMEOUT + Duration::from_secs(1));
+
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_some(),
+        "grandchild should cascade-exit via BFS through the stale grandparent"
+    );
+}
+
+#[test]
+fn stale_sweep_cascade_skips_unrelated_fresh_agents() {
+    use pixtuoid_core::state::reducer::STALE_IDLE_TIMEOUT;
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let parent = AgentId::from_transcript_path("/p/stale-host.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/stale-host/subagents/agent-1.jsonl");
+    let unrelated = AgentId::from_transcript_path("/p/other-session.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "parent".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "child".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: unrelated,
+            source: "claude-code".into(),
+            session_id: "other".into(),
+            cwd: PathBuf::from("/other-repo"),
+            parent_id: None,
+        },
+        t0 + Duration::from_millis(150),
+        Transport::Hook,
+    );
+    // Heartbeat the child AND the unrelated agent so neither is independently
+    // stale: only the parent crosses the threshold.
+    for (id, label) in [(child, "cc·sub"), (unrelated, "cc·other")] {
+        r.apply(
+            &mut scene,
+            AgentEvent::Rename {
+                agent_id: id,
+                label: label.into(),
+            },
+            t0 + Duration::from_secs(25 * 60),
+            Transport::Jsonl,
+        );
+    }
+
+    r.tick(&mut scene, t0 + STALE_IDLE_TIMEOUT + Duration::from_secs(1));
+
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_some(),
+        "the stale parent's child must cascade-exit"
+    );
+    assert!(
+        scene.agents.get(&unrelated).unwrap().exiting_at.is_none(),
+        "a fresh, unrelated agent must NOT be cascaded out"
+    );
+}
+
+#[test]
+fn long_delegation_keeps_parent_and_live_subagent_alive() {
+    // A parent delegating a single Task longer than STALE_ACTIVE_TIMEOUT
+    // gets no events of its OWN — the subagent's hook events are misattributed
+    // to the parent's AgentId and suppressed. Those suppressed events are still
+    // proof the subtree is alive, so they must refresh the parent's
+    // last_event_at; otherwise sweep_stale reaps the live parent and the
+    // cascade drags its still-working subagent out with it.
+    use pixtuoid_core::state::reducer::STALE_ACTIVE_TIMEOUT;
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let parent = AgentId::from_transcript_path("/p/deleg.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/deleg/subagents/agent-1.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "p".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "c".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+
+    // Parent delegates one long Task → Active{Delegating}. The Task-start arm
+    // does NOT bump last_event_at, so the parent's liveness is frozen at t0.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: parent,
+            activity: Activity::Typing,
+            tool_use_id: Some("task-T".into()),
+            detail: Some("Task".into()),
+        },
+        t0 + Duration::from_secs(1),
+        Transport::Hook,
+    );
+
+    // The subagent works for ~9 min; each tool call is a hook event CC
+    // misattributes to the parent's AgentId, so the reducer suppresses it.
+    for (mins, tuid) in [(5u64, "sub-R1"), (9u64, "sub-R2")] {
+        r.apply(
+            &mut scene,
+            AgentEvent::ActivityStart {
+                agent_id: parent,
+                activity: Activity::Typing,
+                tool_use_id: Some(tuid.into()),
+                detail: Some("Read: /x".into()),
+            },
+            t0 + Duration::from_secs(mins * 60),
+            Transport::Hook,
+        );
+    }
+
+    // Tick just past the parent's Active stale threshold measured from t0, but
+    // well within it measured from the last suppressed child event (t0+9min).
+    r.tick(
+        &mut scene,
+        t0 + STALE_ACTIVE_TIMEOUT + Duration::from_secs(1),
+    );
+
+    assert!(
+        scene.agents.get(&parent).unwrap().exiting_at.is_none(),
+        "a delegating parent must stay alive while its subagent emits events"
+    );
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_none(),
+        "the live subagent must NOT be cascaded out by a falsely-stale parent"
+    );
+}
+
+#[test]
+fn stale_sweep_spares_subagent_blocked_under_a_waiting_parent() {
+    // A subagent's permission prompt is attributed to the PARENT (hook
+    // transcript_path → parent), so the parent goes Waiting (60-min) while the
+    // subagent stays Active (its last tool, 10-min) and emits nothing while
+    // blocked. The subagent is alive — waiting on a human gate the parent holds
+    // — so the stale-sweep must NOT reap it on the aggressive Active timer.
+    // Liveness vs readiness: a node under a Waiting ancestor is "not ready",
+    // not "dead".
+    use pixtuoid_core::state::reducer::STALE_ACTIVE_TIMEOUT;
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let parent = AgentId::from_transcript_path("/p/perm-parent.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/perm-parent/subagents/agent-1.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "p".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "c".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    // Subagent runs a tool → Active (10-min stale timeout).
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: child,
+            activity: Activity::Typing,
+            tool_use_id: Some("c-tool".into()),
+            detail: Some("WebFetch: /x".into()),
+        },
+        t0 + Duration::from_secs(1),
+        Transport::Jsonl,
+    );
+    // That tool needs permission → CC's Notification hook lands on the PARENT.
+    r.apply(
+        &mut scene,
+        AgentEvent::Waiting {
+            agent_id: parent,
+            reason: "permission?".into(),
+        },
+        t0 + Duration::from_secs(2),
+        Transport::Hook,
+    );
+
+    // User ignores the prompt for >10 min. No further events.
+    r.tick(
+        &mut scene,
+        t0 + STALE_ACTIVE_TIMEOUT + Duration::from_secs(60),
+    );
+
+    assert!(
+        scene.agents.get(&parent).unwrap().exiting_at.is_none(),
+        "Waiting parent (60-min threshold) must survive a 10-min wait"
+    );
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_none(),
+        "a subagent blocked under a Waiting parent must NOT be reaped on the Active timer"
+    );
+}
+
+#[test]
+fn stale_sweep_spares_grandchild_under_a_waiting_ancestor() {
+    // The readiness exemption walks the whole parent_id chain: a stale
+    // grandchild whose grandparent is Waiting is still "blocked", not dead.
+    use pixtuoid_core::state::reducer::STALE_ACTIVE_TIMEOUT;
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let gp = AgentId::from_transcript_path("/p/perm-gp.jsonl");
+    let parent = AgentId::from_parts("claude-code", "/p/perm-gp/subagents/agent-p.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/perm-gp/subagents/agent-c.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: gp,
+            source: "claude-code".into(),
+            session_id: "gp".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "p".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(gp),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "c".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(200),
+        Transport::Jsonl,
+    );
+    // Middle + leaf are Active (10-min); grandparent holds the permission gate.
+    for id in [parent, child] {
+        r.apply(
+            &mut scene,
+            AgentEvent::ActivityStart {
+                agent_id: id,
+                activity: Activity::Typing,
+                tool_use_id: Some("t".into()),
+                detail: Some("WebFetch: /x".into()),
+            },
+            t0 + Duration::from_secs(1),
+            Transport::Jsonl,
+        );
+    }
+    r.apply(
+        &mut scene,
+        AgentEvent::Waiting {
+            agent_id: gp,
+            reason: "permission?".into(),
+        },
+        t0 + Duration::from_secs(2),
+        Transport::Hook,
+    );
+
+    r.tick(
+        &mut scene,
+        t0 + STALE_ACTIVE_TIMEOUT + Duration::from_secs(60),
+    );
+
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_none(),
+        "a grandchild under a Waiting ancestor must NOT be reaped on the Active timer"
+    );
+    assert!(
+        scene.agents.get(&parent).unwrap().exiting_at.is_none(),
+        "the middle agent under a Waiting ancestor must NOT be reaped either"
+    );
+}
+
+#[test]
+fn active_subagent_keeps_parent_alive_via_jsonl_events() {
+    // Liveness flows up the tree via the subagent's OWN JSONL events — not only
+    // suppressed hook events (hooks are best-effort and can drop). A subagent
+    // actively emitting JSONL keeps its delegating parent from being
+    // stale-swept, so the cascade can't evict the live subagent.
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let parent = AgentId::from_transcript_path("/p/deleg2.jsonl");
+    let child = AgentId::from_parts("claude-code", "/p/deleg2/subagents/agent-1.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: parent,
+            source: "claude-code".into(),
+            session_id: "p".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: child,
+            source: "claude-code".into(),
+            session_id: "c".into(),
+            cwd: PathBuf::from("/repo"),
+            parent_id: Some(parent),
+        },
+        t0 + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    // Parent delegates → Active{Delegating} (10-min threshold); its OWN last
+    // event is now frozen at t0+1s.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: parent,
+            activity: Activity::Typing,
+            tool_use_id: Some("task-T".into()),
+            detail: Some("Task".into()),
+        },
+        t0 + Duration::from_secs(1),
+        Transport::Hook,
+    );
+    // Subagent works for >10 min, emitting ONLY JSONL events (no hooks reach the
+    // parent). Each keeps the parent's lineage alive.
+    for mins in [4u64, 8, 12] {
+        r.apply(
+            &mut scene,
+            AgentEvent::ActivityStart {
+                agent_id: child,
+                activity: Activity::Typing,
+                tool_use_id: Some("c".into()),
+                detail: Some("Read: /x".into()),
+            },
+            t0 + Duration::from_secs(mins * 60),
+            Transport::Jsonl,
+        );
+    }
+    // Tick shortly after the last child event — but ~12 min past the parent's
+    // OWN last event (the Task start at t0+1s).
+    r.tick(
+        &mut scene,
+        t0 + Duration::from_secs(12 * 60) + Duration::from_secs(30),
+    );
+
+    assert!(
+        scene.agents.get(&parent).unwrap().exiting_at.is_none(),
+        "a delegating parent must stay alive while its subagent emits JSONL events"
+    );
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_none(),
+        "the live subagent must not be cascaded out by a falsely-stale parent"
+    );
+}
+
 /// With heterogeneous per-floor capacities, the third session should
 /// overflow from floor 0 (cap=2) to floor 1's first desk (global index 2).
 #[test]
