@@ -15,7 +15,8 @@
 //! destinations stay in lockstep with the render anchor (all three call
 //! this with the same `origin = home desk`).
 
-use super::decor::{furniture_def, Facing, WaypointKind};
+use super::decor::{furniture_def, Facing, Furniture, WaypointKind};
+use super::reach::ReachSet;
 use super::Point;
 use crate::walkable::WalkableMask;
 
@@ -113,47 +114,133 @@ pub fn stand_point(
 /// far from the seat centre to clear the furniture and land on the floor.
 const SEAT_APPROACH_SCAN: i32 = 14;
 
-/// Where an agent WALKS to when visiting `kind` at `pos` with the given
-/// `facing`. For obstacle furniture this is exactly [`stand_point`] (the side
-/// stand cell). For `occupies_pos` seats — whose sprite RENDERS on `pos` — it
-/// is an allowed-side walkable cell ADJACENT to the seat, nearest `origin`, so
-/// the agent approaches from the front/sides and never paths in through the
-/// back. Arrival is therefore a short settle from the approach cell onto the
-/// seat (the render anchor stays `pos`). Falls back to `pos` (router snaps) if
-/// no allowed side is walkable.
-pub fn walk_target(
-    kind: WaypointKind,
+/// Ground footprint [`approach_point`] scans past for obstacle furniture —
+/// [`furniture_def`]'s, except the runtime-sized `Pantry` counter. The
+/// `Furniture`-keyed analog of [`obstacle_footprint`].
+fn approach_footprint(kind: Furniture, pantry_counter_size: (u16, u16)) -> Option<(u16, u16)> {
+    if matches!(kind, Furniture::Pantry) {
+        return Some(pantry_counter_size);
+    }
+    furniture_def(kind).footprint
+}
+
+/// The walkable, A\*-REACHABLE cell A\* routes to when an agent visits furniture
+/// `kind` at `pos` — the **approach point** (A\*'s goal). Honours the furniture's
+/// allowed approach sides (`ApproachSides`, rotated by `facing`) AND coarse-grid
+/// `reachable`-ility from `origin` (the home desk), so A\* never targets a
+/// walled-off cell ("the available approach side"). Keyed on [`Furniture`] so the
+/// home desk flows through the same selector as every waypoint.
+///
+/// - **`occupies_pos` seat/desk:** an allowed-side walkable+reachable cell
+///   adjacent to the seat, nearest `origin`. The sprite renders on its fixed
+///   [`seated_foot_cell`]; the post-A\* settle bridges approach → seat. The back
+///   (excluded) side is never scanned — **a seat approach is never a back-side
+///   cell** (you can't sit by climbing over the backrest).
+/// - **obstacle:** the first reachable cell past the footprint on the allowed
+///   side nearest `origin` — the agent stands there (render == approach point).
+///
+/// Returns the blocked `pos` as a **"no valid approach" sentinel** when no allowed
+/// reachable side exists (a seat boxed in to only its back, or a fully-blocked
+/// obstacle). Callers MUST treat `== pos` as "skip this furniture this cycle"
+/// rather than routing to it — routing to `pos` would let A\* snap onto the back.
+pub fn approach_point(
+    kind: Furniture,
     pos: Point,
+    facing: Facing,
     pantry_counter_size: (u16, u16),
     mask: &WalkableMask,
     origin: Point,
-    facing: Facing,
+    reachable: &ReachSet,
 ) -> Point {
-    let def = furniture_def(kind.furniture());
-    if !def.occupies_pos {
-        return stand_point(kind, pos, pantry_counter_size, mask, origin, facing);
-    }
+    let def = furniture_def(kind);
     const DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
     let mut best: Option<(u64, Point)> = None;
-    for (dx, dy) in DIRS {
-        if !def.approach.allows(facing, (dx, dy)) {
-            continue;
-        }
-        for dist in 1..=SEAT_APPROACH_SCAN {
-            let cx = pos.x as i32 + dx * dist;
-            let cy = pos.y as i32 + dy * dist;
-            if cx < 0 || cy < 0 {
-                break;
+    if def.occupies_pos {
+        // SEAT/desk: the sprite renders on the fixed seat foot cell; the agent
+        // walks IN from an ALLOWED side and the post-A* settle bridges approach →
+        // seat. Pick the ApproachSides-allowed side (facing-rotated: a North couch
+        // ⇒ {N,E,W}, the south backrest EXCLUDED) with a reachable cell NEAREST the
+        // home desk — the agent's natural side. The back side is never even scanned:
+        // a seat reachable ONLY from behind is un-sittable (you'd clip through the
+        // backrest), so there is NO back-side fallback — we return the blocked `pos`
+        // as the "no valid approach" sentinel and the caller skips the seat rather
+        // than letting A* snap onto the backrest. INVARIANT: a seat approach is
+        // never a back-side cell.
+        let mut allowed: Option<(u64, Point)> = None;
+        for (dx, dy) in DIRS {
+            if !def.approach.allows(facing, (dx, dy)) {
+                continue; // never approach across an excluded side (the back)
             }
-            let (cx, cy) = (cx as u16, cy as u16);
-            if mask.is_walkable(cx, cy) {
-                let ex = cx as i64 - origin.x as i64;
-                let ey = cy as i64 - origin.y as i64;
-                let d2 = (ex * ex + ey * ey) as u64;
-                if best.map_or(true, |(bd, _)| d2 < bd) {
-                    best = Some((d2, Point { x: cx, y: cy }));
+            // The FIRST walkable cell off this side can be a thin EDGE whose coarse
+            // routing cell straddles the furniture (the back-row desk's gap edge
+            // between pod rows): walkable, yet ReachSet-rejected. Step DEEPER
+            // through the CONTIGUOUS walkable run for the first cell A* can actually
+            // reach, instead of dropping the whole side at that edge. The seat's own
+            // footprint is skipped while `entered` is still false; once we've
+            // entered the run, the first blocked pixel STOPS the scan (`entered`
+            // guard) so we never hop a SECOND obstacle to a far strip — that would
+            // resurrect a cross-furniture / back-side approach (Session-3 invariant
+            // `seat_approach_is_never_behind_the_backrest_on_real_layouts`).
+            let mut entered = false;
+            for dist in 1..=SEAT_APPROACH_SCAN {
+                let cx = pos.x as i32 + dx * dist;
+                let cy = pos.y as i32 + dy * dist;
+                if cx < 0 || cy < 0 {
+                    break;
                 }
-                break; // first walkable cell on this side wins
+                let c = Point {
+                    x: cx as u16,
+                    y: cy as u16,
+                };
+                if mask.is_walkable(c.x, c.y) {
+                    entered = true;
+                    if reachable.reaches(c) {
+                        let ex = c.x as i64 - origin.x as i64;
+                        let ey = c.y as i64 - origin.y as i64;
+                        let d2 = (ex * ex + ey * ey) as u64;
+                        if allowed.map_or(true, |(b, _)| d2 < b) {
+                            allowed = Some((d2, c));
+                        }
+                        break;
+                    }
+                    // walkable but coarse-unreachable → keep scanning this run.
+                } else if entered {
+                    break;
+                }
+            }
+        }
+        return allowed.map(|(_, p)| p).unwrap_or(pos);
+    } else if let Some((fw, fh)) = approach_footprint(kind, pantry_counter_size) {
+        // Obstacle: stand just off the footprint, on the reachable allowed side
+        // nearest the home desk (== stand_point, plus the reachability filter).
+        let (hx, hy) = (fw as i32 / 2, fh as i32 / 2);
+        for (dx, dy) in DIRS {
+            if !def.approach.allows(facing, (dx, dy)) {
+                continue;
+            }
+            let half = if dx != 0 { hx } else { hy };
+            for step in 0..=STAND_SCAN {
+                let dist = half + STAND_CLEARANCE as i32 + step;
+                let cx = pos.x as i32 + dx * dist;
+                let cy = pos.y as i32 + dy * dist;
+                if cx < 0 || cy < 0 {
+                    break;
+                }
+                let c = Point {
+                    x: cx as u16,
+                    y: cy as u16,
+                };
+                if mask.is_walkable(c.x, c.y) {
+                    if reachable.reaches(c) {
+                        let ex = c.x as i64 - origin.x as i64;
+                        let ey = c.y as i64 - origin.y as i64;
+                        let d2 = (ex * ex + ey * ey) as u64;
+                        if best.map_or(true, |(bd, _)| d2 < bd) {
+                            best = Some((d2, c));
+                        }
+                    }
+                    break;
+                }
             }
         }
     }
@@ -340,65 +427,161 @@ mod tests {
     }
 
     #[test]
-    fn walk_target_seat_never_approaches_through_the_back() {
+    fn approach_point_seat_never_approaches_through_the_back() {
+        // Open field so the reachability filter is a no-op and we isolate the
+        // allowed-side (no-back) rule. The back is excluded even when the origin
+        // sits directly behind the seat (which would otherwise pull it there).
         let pos = Point { x: 50, y: 50 };
-        let m = mask_with_obstacle(100, 100, pos, 20, 7); // sofa-ish body
-                                                          // South-facing sofa: back is north. Even with the origin due north
-                                                          // (which would otherwise pull a north approach), the walk-in must NOT
-                                                          // be due-north of the seat.
-        let south = walk_target(
-            WaypointKind::MeetingSofa,
+        let m = WalkableMask::new_open(100, 100);
+        let reach = ReachSet::from_mask(&m, Point { x: 5, y: 5 });
+        // South-facing sofa: back is north. Origin due NORTH must NOT yield a
+        // due-north (back) approach.
+        let s = approach_point(
+            Furniture::MeetingSofa,
             pos,
+            Facing::South,
             (0, 0),
             &m,
             Point { x: 50, y: 5 },
-            Facing::South,
+            &reach,
         );
-        assert!(m.is_walkable(south.x, south.y) && south != pos);
+        assert!(s != pos && reach.reaches(s));
         assert!(
-            !(south.x == pos.x && south.y < pos.y),
-            "south-facing sofa back is north — must not approach due-north: {south:?}"
+            !(s.x == pos.x && s.y < pos.y),
+            "south-facing sofa back is north — must not approach due-north: {s:?}"
         );
-        // North-facing sofa: back is south. Origin due south must not yield a
-        // due-south approach.
-        let north = walk_target(
-            WaypointKind::MeetingSofa,
+        // North-facing sofa: back is south. Origin due SOUTH must NOT yield a
+        // due-south (back) approach.
+        let n = approach_point(
+            Furniture::MeetingSofa,
             pos,
+            Facing::North,
             (0, 0),
             &m,
             Point { x: 50, y: 95 },
-            Facing::North,
+            &reach,
         );
-        assert!(m.is_walkable(north.x, north.y) && north != pos);
+        assert!(n != pos && reach.reaches(n));
         assert!(
-            !(north.x == pos.x && north.y > pos.y),
-            "north-facing sofa back is south — must not approach due-south: {north:?}"
+            !(n.x == pos.x && n.y > pos.y),
+            "north-facing sofa back is south — must not approach due-south: {n:?}"
         );
     }
 
     #[test]
-    fn walk_target_for_obstacle_delegates_to_stand_point() {
+    fn seat_approach_is_never_behind_the_backrest_on_real_layouts() {
+        // The physics invariant on REAL layouts: for every seat, across
+        // sizes × seeds × desks, approach_point is EITHER the `pos` skip-sentinel
+        // OR a cell on an ALLOWED side — NEVER a cell behind the backrest (the
+        // excluded side). With no fallback, a back-approach can never be chosen.
+        use crate::layout::{furniture_def, SceneLayout};
+        for (w, h) in [(120u16, 96u16), (160, 120), (192, 160), (240, 160)] {
+            for seed in 0..4u64 {
+                let Some(l) = SceneLayout::compute_with_seed(w, h, 4, seed) else {
+                    continue;
+                };
+                for &desk in &l.home_desks {
+                    for wp in &l.waypoints {
+                        let def = furniture_def(wp.kind.furniture());
+                        if !def.occupies_pos {
+                            continue;
+                        }
+                        let a = approach_point(
+                            wp.kind.furniture(),
+                            wp.pos,
+                            wp.facing,
+                            l.pantry_counter_size,
+                            &l.walkable,
+                            desk,
+                            &l.reachable,
+                        );
+                        if a == wp.pos {
+                            continue; // skip sentinel — the wander avoids it, fine
+                        }
+                        // The approach is a pure single-axis offset from pos; its
+                        // direction MUST be an allowed (non-back) side.
+                        let dx = a.x as i32 - wp.pos.x as i32;
+                        let dy = a.y as i32 - wp.pos.y as i32;
+                        let dir = if dx.abs() >= dy.abs() {
+                            (dx.signum(), 0)
+                        } else {
+                            (0, dy.signum())
+                        };
+                        assert!(
+                            def.approach.allows(wp.facing, dir),
+                            "{w}x{h} seed{seed}: {:?} at {:?} (facing {:?}) approach {a:?} is on \
+                             a FORBIDDEN side {dir:?} — a back-approach was chosen",
+                            wp.kind,
+                            wp.pos,
+                            wp.facing,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn approach_point_seat_never_approaches_from_the_back_even_when_walled_in() {
+        // A North-facing sofa boxed in on N/E/W (its three ALLOWED sides), with
+        // ONLY the south backrest side opening onto a reachable corridor. Physics:
+        // you cannot sit by climbing over the backrest, so there is NO valid
+        // approach. approach_point must return the blocked `pos` (the "no valid
+        // side" sentinel for the caller to skip), NOT a back-side cell — a settle
+        // must never cross the backrest line, not even as a last resort.
+        let pos = Point { x: 50, y: 50 };
+        let mut m = WalkableMask::new_open(100, 100);
+        m.mark_blocked(0, 0, 100, 100, 0); // block everything…
+        m.mark_walkable(48, 54, 5, 44); // …then carve a corridor SOUTH (behind the back)
+        let reach = ReachSet::from_mask(&m, Point { x: 50, y: 90 });
+        let s = approach_point(
+            Furniture::MeetingSofa,
+            pos,
+            Facing::North,
+            (0, 0),
+            &m,
+            Point { x: 50, y: 95 }, // origin in the south corridor (behind the back)
+            &reach,
+        );
+        assert_eq!(
+            s, pos,
+            "only the backrest side is reachable → no valid approach → return pos (skip), got {s:?}"
+        );
+    }
+
+    #[test]
+    fn approach_point_for_obstacle_matches_stand_point_when_reachable() {
+        // For an obstacle on an open-enough field, the approach point is exactly
+        // the stand cell (the reachability filter drops nothing). This pins the
+        // obstacle render (stand_point) ≡ obstacle walk-end (approach_point).
         let pos = Point { x: 50, y: 50 };
         let m = mask_with_obstacle(100, 100, pos, 32, 10);
+        let reach = ReachSet::from_mask(&m, Point { x: 5, y: 5 });
         let origin = Point { x: 50, y: 8 };
+        let sp = stand_point(
+            WaypointKind::Pantry,
+            pos,
+            (32, 10),
+            &m,
+            origin,
+            Facing::South,
+        );
+        assert!(
+            reach.reaches(sp),
+            "the stand cell must be coarse-reachable here"
+        );
         assert_eq!(
-            walk_target(
-                WaypointKind::Pantry,
+            approach_point(
+                Furniture::Pantry,
                 pos,
+                Facing::South,
                 (32, 10),
                 &m,
                 origin,
-                Facing::South
+                &reach,
             ),
-            stand_point(
-                WaypointKind::Pantry,
-                pos,
-                (32, 10),
-                &m,
-                origin,
-                Facing::South
-            ),
-            "obstacle walk_target must equal stand_point",
+            sp,
+            "obstacle approach_point must equal stand_point when reachable",
         );
     }
 

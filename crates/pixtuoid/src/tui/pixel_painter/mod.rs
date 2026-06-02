@@ -22,7 +22,7 @@ use pixtuoid_core::{AgentSlot, SceneState};
 use crate::tui::chitchat::{self, ActiveChitchat, ChitchatBubble};
 use crate::tui::floor::LightingState;
 use crate::tui::frame_cache::FrameCache;
-use crate::tui::layout::{Layout, Point, DESK_H, DESK_W};
+use crate::tui::layout::{z_sort_row, Anchor, Layout, Point, DESK_H, DESK_W};
 use crate::tui::motion::MotionState;
 use crate::tui::pathfind::Router;
 use crate::tui::pet::PetKind;
@@ -54,7 +54,7 @@ pub(in crate::tui) use anchors::character_anchor;
 pub(in crate::tui) use anchors::walking_position;
 use anchors::{
     back_couch_anchor, compute_door_frame_idx, seated_anchor, standing_at_desk_anchor,
-    walking_anchor, waypoint_anchor, waypoint_rank_offset_x, with_breath,
+    walking_anchor, waypoint_anchor, waypoint_rank_offset_x, with_breath, CHARACTER_SPRITE_W,
 };
 use background::{
     dim_floor_overlay, paint_ceiling_pool, paint_clock, paint_corridor_runner,
@@ -226,19 +226,6 @@ fn paint_glass_wall_v(
     }
 }
 
-/// Rows the opaque "back face" of a tall free-standing object (phone booth,
-/// standing desk, pantry counter) rises NORTH of its sprite. These objects are
-/// reachable from any open side incl. the north (`approach::stand_point` — a
-/// desk to the north yields a north stand cell), and a feet-anchored character
-/// extends UP/north, so a walker standing behind one would otherwise float
-/// above it with a gap and never be occluded. Extruding the sprite's top edge
-/// north by this many px gives the object ¾-view depth and composites over the
-/// walker's feet + lower legs (the object's drawable is y-sorted at its south
-/// base, so the band paints after — on top of — anyone standing behind it).
-/// Same rationale as the glass wall's `GLASS_CAP_PX`; 5 ≈ pad(1) + 1 feet row +
-/// ~3 leg rows for the northmost reachable stand cell.
-pub(super) const FURNITURE_BACK_PX: u16 = 5;
-
 /// The home desk sprite's front lip extends this many px past its blocked
 /// footprint (the top-down 3/4 bevel), so the desk's z-sort baseline is the
 /// footprint front edge + this overhang — the same "footprint front + sprite
@@ -267,25 +254,67 @@ fn floor_lamp_south_offset() -> u16 {
     )
 }
 
-/// Extrude `frame`'s top edge north of its blit origin `(sx, sy)` into an
-/// opaque back face (see [`FURNITURE_BACK_PX`]). Each column repeats its
-/// topmost opaque sprite color, darkened with distance so the band reads as the
-/// object's top/back receding into shadow; transparent-top columns are skipped,
-/// preserving the silhouette. Render-only — emit inside the object's drawable
-/// so y-sort composites it over a character standing behind (north of) it.
-pub(super) fn paint_furniture_back(buf: &mut RgbBuffer, frame: &Frame, sx: u16, sy: u16) {
+/// Extrude `frame`'s top edge `rows` px NORTH of its blit origin `(sx, sy)` into
+/// an opaque back face. Tall free-standing objects are reachable from the north
+/// and a feet-anchored character extends UP/north, so a walker standing behind
+/// one would otherwise float above it with a gap. The object's drawable y-sorts
+/// at its south base, so this band paints AFTER — on top of — anyone behind it,
+/// giving ¾-view depth (same idea as the glass wall's `GLASS_CAP_PX`). `rows` is
+/// the per-object back-cap DEPTH from `FurnitureDef::occludes_behind`, so a short
+/// printer hides less than a tall booth. Each column repeats its topmost opaque
+/// sprite color, darkened with distance; transparent-top columns are skipped,
+/// preserving the silhouette. Render-only — emit inside the object's drawable.
+pub(super) fn paint_furniture_back(
+    buf: &mut RgbBuffer,
+    frame: &Frame,
+    sx: u16,
+    sy: u16,
+    rows: u16,
+) {
+    paint_furniture_back_impl(buf, frame, sx, sy, rows, None);
+}
+
+/// Like [`paint_furniture_back`] but paints a single uniform `tint` (still
+/// darkened with distance) for every opaque column rather than repeating each
+/// column's own top pixel. Wide multi-material objects — the pantry counter —
+/// have a top row that alternates materials (white fridge + brown counter), so
+/// the per-column form smears it into vertical streaks; one receding shade
+/// reads as a single back surface. Gives the same clean over-the-body occlusion
+/// the couch gives its sitter, for an object a character stands *behind*.
+pub(super) fn paint_furniture_back_uniform(
+    buf: &mut RgbBuffer,
+    frame: &Frame,
+    sx: u16,
+    sy: u16,
+    tint: Rgb,
+    rows: u16,
+) {
+    paint_furniture_back_impl(buf, frame, sx, sy, rows, Some(tint));
+}
+
+fn paint_furniture_back_impl(
+    buf: &mut RgbBuffer,
+    frame: &Frame,
+    sx: u16,
+    sy: u16,
+    requested_rows: u16,
+    uniform: Option<Rgb>,
+) {
     if sy == 0 {
         return;
     }
-    let rows = FURNITURE_BACK_PX.min(sy);
+    let rows = requested_rows.min(sy);
     let w = frame.width as usize;
     let denom = (rows.max(2) - 1) as f32;
     for fx in 0..frame.width {
-        let Some(top) =
+        // A fully-transparent column has no back face — preserves the
+        // silhouette (and the counter's inter-appliance gaps).
+        let Some(col_top) =
             (0..frame.height).find_map(|fy| frame.pixels[(fy as usize) * w + fx as usize])
         else {
-            continue; // column is fully transparent — keep the silhouette
+            continue;
         };
+        let top = uniform.unwrap_or(col_top);
         let x = sx.saturating_add(fx);
         if x >= buf.width {
             continue;
@@ -308,16 +337,44 @@ pub(super) fn paint_furniture_back(buf: &mut RgbBuffer, frame: &Frame, sx: u16, 
     }
 }
 
-/// Render policy: does this aisle pod get a north back-cap ([`paint_furniture_back`])?
-/// True only for tall, narrow, free-standing pods an agent can approach from
-/// the north (phone booth, standing desk) — so a walker standing behind reads
-/// as occluded. Plant / TV / whiteboard are wall-flanking decor (left flat).
-/// Wide multi-material counters (pantry) and wall-flush appliances
-/// (vending/printer) are intentionally excluded — see `paint_furniture_back`.
-/// One place to decide back-cap-ness per pod kind.
-pub(super) fn back_cap(kind: crate::tui::layout::PodDecor) -> bool {
-    use crate::tui::layout::PodDecor;
-    matches!(kind, PodDecor::PhoneBooth | PodDecor::StandingDesk)
+/// Solid-rect variant of [`paint_furniture_back`] for procedurally-drawn boxes
+/// (vending machine, printer) that have no `Frame` to read a silhouette from.
+/// Fills `width` columns from `sx`, `rows` px north of `sy`, with `tint`
+/// darkened by distance — the same receding back face. `rows` (the per-object
+/// back-cap DEPTH) and whether to call this at all both come from the
+/// FurnitureDef table's `occludes_behind` — one source of truth, no allowlist.
+pub(super) fn paint_furniture_back_rect(
+    buf: &mut RgbBuffer,
+    sx: u16,
+    width: u16,
+    sy: u16,
+    tint: Rgb,
+    rows: u16,
+) {
+    if sy == 0 {
+        return;
+    }
+    let rows = rows.min(sy);
+    let denom = (rows.max(2) - 1) as f32;
+    for fx in 0..width {
+        let x = sx.saturating_add(fx);
+        if x >= buf.width {
+            continue;
+        }
+        for i in 0..rows {
+            let y = sy - rows + i;
+            let f = 0.55 + 0.45 * (i as f32 / denom);
+            buf.put(
+                x,
+                y,
+                Rgb(
+                    (tint.0 as f32 * f) as u8,
+                    (tint.1 as f32 * f) as u8,
+                    (tint.2 as f32 * f) as u8,
+                ),
+            );
+        }
+    }
 }
 
 /// Bundled input for the pixel-painting pass. Constructed from `DrawCtx`
@@ -346,7 +403,6 @@ pub struct PixelCtx<'a> {
     pub chitchat_state: &'a mut HashMap<crate::tui::chitchat::VenueKey, ActiveChitchat>,
     pub coffee_holders: &'a std::collections::HashSet<pixtuoid_core::AgentId>,
     pub coffee_fetched_at: &'a HashMap<pixtuoid_core::AgentId, SystemTime>,
-    pub coffee_stains: &'a HashMap<pixtuoid_core::AgentId, Vec<crate::tui::tui_renderer::StainPos>>,
     pub light: &'a mut crate::tui::floor::LightingState,
     /// When set, composite the walkable / approach / route debug layer over the
     /// finished scene (the live `w` toggle). Off by default; transient.
@@ -395,27 +451,169 @@ pub(super) fn paint_character_at(
     blit_frame(cached, anchor.x, anchor.y, buf);
 }
 
-/// Sprite name + horizontal flip for an agent at a meeting slot, by facing.
-/// A north-side sofa seat faces the viewer across the table (front `seated`);
-/// a south-side seat faces away (back view). A meeting stand faces inward, so
-/// the west-side stander (which the layout marks `Facing::East`) is mirrored.
-/// Extracted so the facing→sprite mapping is unit-testable without a render.
-pub(super) fn meeting_sprite(
+/// Sprite name + horizontal flip for an agent SEATED at a seat slot, by its
+/// SEATED facing (the `facing` field = which way the sitter LOOKS, decoupled
+/// from the approach side). A `Facing::North` sitter shows its back (`back_couch`):
+/// the lounge couch (always looks at the window/North) and the south-side meeting
+/// sofa; other meeting-sofa seats face the viewer across the table (front
+/// `seated`); a meeting stand faces inward (west stander marked `Facing::East` is
+/// mirrored). Extracted so the facing→sprite mapping is unit-testable.
+pub(super) fn seat_sprite(
     kind: crate::tui::layout::WaypointKind,
     facing: crate::tui::layout::Facing,
 ) -> (&'static str, bool) {
-    use crate::tui::layout::{Facing, WaypointKind};
-    match kind {
-        WaypointKind::MeetingSofa => match facing {
-            Facing::North => ("back_couch", false),
-            _ => ("seated", false),
-        },
-        // Stand mirrors toward the table centre; west stand is `Facing::East`.
-        WaypointKind::MeetingStand => ("standing", matches!(facing, Facing::East)),
-        // Not a meeting slot — caller dispatches these directly.
-        _ => ("standing", false),
+    SeatView::of(kind, facing).seated_sprite()
+}
+
+/// The single orientation a seat occupant is shown in — the ONE source BOTH the
+/// seated render (`AtWaypoint`, via [`seat_sprite`]) and the sit-down WALK glide
+/// onto the seat derive from, so the two can never disagree.
+///
+/// This is the data-model fix for the recurring "sit facing the wrong way then
+/// snap" bug. The two renders used to compute facing independently — the seated
+/// sprite from the seat's `facing` field, the glide from the travel direction —
+/// and disagreed whenever a seat faces away from its open approach side. A
+/// window-facing (`North`) seat (lounge couch AND the south-of-table meeting
+/// sofa) is reached from the north, but its foot-cell is pinned SOUTH
+/// (`seated_foot_cell` = `pos + (WALKING_Y_OFF − SEAT_RENDER_Y_OFF)`, fixed by
+/// pop-free head-alignment); so the settle travels south, the directional walk
+/// rule rendered a FRONT walk, and the agent sat facing the camera for ~1s before
+/// snapping to `back_couch` at `AtWaypoint`.
+///
+/// Routing both renders through `SeatView` makes the disagreement structurally
+/// impossible: a new seatable furniture picks a view here ONCE (or falls through
+/// to the upright default) and the seated sprite, the flip, and the sit-down
+/// glide all follow — the bug cannot reappear for a future seat. Sprite names
+/// stay in the painter because pixtuoid-core forbids terminal/pack deps; the
+/// per-instance `facing` is the core data this projects.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SeatView {
+    /// Faces the camera (south) — front `seated` / `walking`.
+    Front,
+    /// Faces away (the window / back wall) — `back_couch` / `walking_back`.
+    Back,
+    /// Faces sideways; `flip` mirrors east↔west.
+    Side { flip: bool },
+}
+
+impl SeatView {
+    /// The view a `kind` occupant looks in, from its seat `facing`. The ONE place
+    /// a seat's orientation is decided — extend HERE to add a seatable furniture.
+    fn of(kind: crate::tui::layout::WaypointKind, facing: crate::tui::layout::Facing) -> Self {
+        use crate::tui::layout::{Facing, WaypointKind};
+        match kind {
+            // Couch + sofa: North looks at the window/back wall (back view); the
+            // other seats face the viewer across the table.
+            WaypointKind::Couch | WaypointKind::MeetingSofa => match facing {
+                Facing::North => SeatView::Back,
+                _ => SeatView::Front,
+            },
+            // Stand beside the table, facing inward; west stand marked East.
+            WaypointKind::MeetingStand => SeatView::Side {
+                flip: matches!(facing, Facing::East),
+            },
+            // Not seat slots — the caller dispatches these directly (they never
+            // reach a seated render through SeatView); upright is the safe default.
+            // Listed EXPLICITLY (no `_`) so a new WaypointKind is a compile error
+            // HERE, forcing a deliberate decision instead of silently rendering as
+            // a stander. The totality-guard test still pins the seat-kind set.
+            WaypointKind::Pantry
+            | WaypointKind::PhoneBooth
+            | WaypointKind::StandingDesk
+            | WaypointKind::VendingMachine
+            | WaypointKind::Printer => SeatView::Side { flip: false },
+        }
+    }
+
+    /// Sprite + horizontal flip for the SEATED / standing render (`AtWaypoint`).
+    fn seated_sprite(self) -> (&'static str, bool) {
+        match self {
+            SeatView::Front => ("seated", false),
+            SeatView::Back => ("back_couch", false),
+            SeatView::Side { flip } => ("standing", flip),
+        }
+    }
+
+    /// `(going_back, flip)` for the sit-down WALK glide that settles onto the
+    /// seat — the SAME orientation as [`seated_sprite`](Self::seated_sprite), so
+    /// the sit-down never faces the wrong way (overrides the travel-direction
+    /// rule for this terminal segment).
+    fn settle_walk(self) -> (bool, bool) {
+        match self {
+            SeatView::Front => (false, false),
+            SeatView::Back => (true, false),
+            SeatView::Side { flip } => (false, flip),
+        }
+    }
+
+    /// The y-sort key for an agent occupying this seat at waypoint centre
+    /// `wp_pos` — used BOTH for the settled `AtWaypoint` render AND for the
+    /// sit-down / stand-up WALK glide. Using one key for the whole sit arc is the
+    /// z-sort half of the single-source fix: the settle is a `Walking` pose whose
+    /// natural z-key is the foot position (`pos.y`), which glides from the
+    /// approach point down to `seated_foot_cell = pos+5` and so CROSSES the
+    /// furniture's own z-key (`pos+3` for a couch/back sofa) for a frame or two
+    /// before snapping to the seated key (`pos+2`) — the agent pops in front of
+    /// the sofa mid-glide, then jumps behind it. Pinning the glide to this stable
+    /// key keeps the agent on the correct side of its furniture for the entire
+    /// arc. Values match the historical `AtWaypoint` formulas exactly (back/front:
+    /// `back_couch_anchor.y + 9 = pos+2`; side/stand: `waypoint_anchor.y + 12 + 3
+    /// = pos+3`, the +3 clearing the meeting-table z-key), so the seated render is
+    /// unchanged — only the glide is pulled into agreement with it.
+    fn z_key_for_seat(self, wp_pos: Point) -> u16 {
+        match self {
+            // Behind a couch/sofa back (furniture sorts at pos+3) or tied with a
+            // front sofa (pos+2, insertion order puts the sitter on top).
+            SeatView::Front | SeatView::Back => wp_pos.y + 2,
+            // Stand clears the meeting table (table.y+2) it stands beside.
+            SeatView::Side { .. } => wp_pos.y + 3,
+        }
     }
 }
+
+/// The seated [`SeatView`] (for the glide facing) and the seat's stable z-key
+/// for the seat whose settle foot-cell is `cell`, or `None` if `cell` is not a
+/// seat foot-cell. The caller passes the glide's `to` (sit-down: settling ONTO
+/// the seat) and/or `from` (stand-up: rising OFF it) — either endpoint landing
+/// on a foot-cell means the agent is on the sit arc and must render in the
+/// seat's view and at the seat's stable z-key, not the travel-direction /
+/// foot-position values.
+///
+/// Covers ALL seatables:
+/// - Wander seats — any `layout.waypoints` entry whose furniture has a
+///   `seated_foot_cell`; the view comes from [`SeatView::of`], the z-key from
+///   [`SeatView::z_key_for_seat`].
+/// - The home desk — `layout.home_desks` are NOT waypoints, but the chair
+///   (`seated_foot_cell(Desk)` = `desk_walk_anchor`) is a settle target too once
+///   the desk's arrival glides onto it (see `pose::desk_approach_cell`). The desk
+///   sitter faces the camera (front) and renders at the desk's seated z-key
+///   (`seated_anchor.y + 12 = desk.y + 4`, below the desk furniture's `desk.y+8`),
+///   so the glide stays behind the desk — no front-cross.
+fn settle_seat_view(cell: Point, layout: &Layout) -> Option<(SeatView, u16)> {
+    use pixtuoid_core::layout::{seated_foot_cell, Furniture};
+    layout
+        .waypoints
+        .iter()
+        .find_map(|w| {
+            (seated_foot_cell(w.kind.furniture(), w.pos) == Some(cell)).then(|| {
+                let view = SeatView::of(w.kind, w.facing);
+                (view, view.z_key_for_seat(w.pos))
+            })
+        })
+        .or_else(|| {
+            layout.home_desks.iter().find_map(|&desk| {
+                (seated_foot_cell(Furniture::Desk, desk) == Some(cell))
+                    // == the seated arms' `anchor_no_breath.y + 12` (= desk.y+4);
+                    // pinned by `desk_settle_z_key_matches_the_seated_arm`.
+                    .then_some((SeatView::Front, desk.y + DESK_SEAT_Z_OFF))
+            })
+        })
+}
+
+/// The home-desk sitter's z-key offset south of `desk`: `seated_anchor.y(=desk.y
+/// − 8) + sprite_h(12) = desk.y + 4`. Below the desk furniture key (`desk.y + 8`)
+/// so the sitter and its sit-down glide always sort behind the desk monitor.
+const DESK_SEAT_Z_OFF: u16 = 4;
 
 pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
     let agents: Vec<_> = ctx.scene.agents.values().cloned().collect();
@@ -430,7 +628,10 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
     let look = time_of_day_look(ctx.now, ctx.theme);
     // Wall band height tracks layout.top_margin (which is buf_h/4 with
     // a floor) — leaves a 4-px buffer between wall trim and cubicles.
-    let top_wall_h = ctx.layout.top_margin.saturating_sub(4);
+    let top_wall_h = ctx
+        .layout
+        .top_margin
+        .saturating_sub(pixtuoid_core::layout::WALL_BAND_TO_TOP_MARGIN);
     // The elevator door replaces the rightmost window — pass its x-range
     // so `paint_floor_and_walls` skips drawing a window that would
     // otherwise bleed through behind the elevator frame.
@@ -865,10 +1066,6 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                     .and_then(|t| ctx.now.duration_since(*t).ok())
                     .is_some_and(|d| d.as_secs() < COFFEE_STEAM_WINDOW_SECS)
             });
-        let stains: &[crate::tui::tui_renderer::StainPos] = occupant
-            .and_then(|a| ctx.coffee_stains.get(&a.agent_id))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
         drawables.push(Drawable {
             // z-sort baseline = the footprint's south/front edge + the desk
             // sprite's front-lip overhang, mirroring every other drawable's
@@ -884,7 +1081,6 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                 session_age_secs,
                 has_coffee,
                 coffee_steam,
-                stains,
             },
         });
     }
@@ -947,28 +1143,41 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         drawables.push(Drawable {
             // z-key = sprite south row, derived from the table (== +2 for the
             // 11×5 coffee-table sprite) so it can't drift from a visual edit.
-            anchor_y: table.y
-                + center_pin_south_offset(
-                    crate::tui::layout::furniture_def(crate::tui::layout::Furniture::MeetingTable)
-                        .visual
-                        .1,
-                ),
+            anchor_y: z_sort_row(
+                Anchor::Center,
+                table,
+                crate::tui::layout::furniture_def(crate::tui::layout::Furniture::MeetingTable)
+                    .visual
+                    .1,
+            ),
             kind: DrawableKind::MeetingTable { pos: table },
         });
     }
 
-    // Pantry bistro table (7×4 centered) — z-key = sprite south row (h=4 →
-    // center + h/2 - 1 = table.y + 1; was +2, one row past).
+    // Pantry bistro table — z-key = sprite south row, derived from the table's
+    // own visual height (was a hand-rolled `table.y + 1`).
     if let Some(table) = ctx.layout.pantry_table {
         drawables.push(Drawable {
-            anchor_y: table.y + 1,
+            anchor_y: z_sort_row(
+                Anchor::Center,
+                table,
+                crate::tui::layout::furniture_def(crate::tui::layout::Furniture::PantryTable)
+                    .visual
+                    .1,
+            ),
             kind: DrawableKind::PantryTable { pos: table },
         });
     }
-    // Pantry stools (2×2 anchored at center → bottom = pos.y).
+    // Pantry stools (centered) — z-key derived from the stool visual height.
     for chair in &ctx.layout.pantry_chairs {
         drawables.push(Drawable {
-            anchor_y: chair.y,
+            anchor_y: z_sort_row(
+                Anchor::Center,
+                *chair,
+                crate::tui::layout::furniture_def(crate::tui::layout::Furniture::PantryChair)
+                    .visual
+                    .1,
+            ),
             kind: DrawableKind::PantryChair { pos: *chair },
         });
     }
@@ -992,12 +1201,26 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
             },
         });
         drawables.push(Drawable {
-            anchor_y: center.y + 3,
+            anchor_y: z_sort_row(
+                Anchor::Center,
+                center,
+                crate::tui::layout::furniture_def(crate::tui::layout::Furniture::Couch)
+                    .visual
+                    .1,
+            ),
             kind: DrawableKind::WaypointCouch { pos: center },
         });
         if let Some(table) = ctx.layout.lounge_side_table {
             drawables.push(Drawable {
-                anchor_y: table.y + 1,
+                anchor_y: z_sort_row(
+                    Anchor::Center,
+                    table,
+                    crate::tui::layout::furniture_def(
+                        crate::tui::layout::Furniture::LoungeSideTable,
+                    )
+                    .visual
+                    .1,
+                ),
                 kind: DrawableKind::LoungeSideTable { pos: table },
             });
         }
@@ -1022,7 +1245,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
             WaypointKind::Pantry => {
                 let (cw, ch) = ctx.layout.pantry_counter_size; // runtime-sized
                 drawables.push(Drawable {
-                    anchor_y: wp.pos.y + center_pin_south_offset(ch),
+                    anchor_y: z_sort_row(Anchor::Center, wp.pos, ch),
                     kind: DrawableKind::WaypointPantry {
                         pos: wp.pos,
                         use_large: cw >= 32,
@@ -1033,13 +1256,13 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
             WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {}
             WaypointKind::VendingMachine => {
                 drawables.push(Drawable {
-                    anchor_y: wp.pos.y + center_pin_south_offset(footprint_h),
+                    anchor_y: z_sort_row(Anchor::Center, wp.pos, footprint_h),
                     kind: DrawableKind::VendingMachine { pos: wp.pos },
                 });
             }
             WaypointKind::Printer => {
                 drawables.push(Drawable {
-                    anchor_y: wp.pos.y + center_pin_south_offset(footprint_h),
+                    anchor_y: z_sort_row(Anchor::Center, wp.pos, footprint_h),
                     kind: DrawableKind::Printer { pos: wp.pos },
                 });
             }
@@ -1059,7 +1282,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         // sort correctly without blocking the aisle).
         let (_, h) = crate::tui::layout::furniture_def(kind.furniture()).visual;
         drawables.push(Drawable {
-            anchor_y: pos.y + center_pin_south_offset(h),
+            anchor_y: z_sort_row(Anchor::Center, *pos, h),
             kind: DrawableKind::PodDecorItem {
                 kind: *kind,
                 pos: *pos,
@@ -1074,10 +1297,11 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
     // the same height, so the two can't diverge.
     for (kind, p) in &ctx.layout.plants {
         drawables.push(Drawable {
-            anchor_y: p.y
-                + center_pin_south_offset(
-                    crate::tui::layout::furniture_def(kind.furniture()).visual.1,
-                ),
+            anchor_y: z_sort_row(
+                Anchor::Center,
+                *p,
+                crate::tui::layout::furniture_def(kind.furniture()).visual.1,
+            ),
             kind: DrawableKind::Plant {
                 kind: *kind,
                 pos: *p,
@@ -1126,11 +1350,14 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         });
     }
 
-    // Wall decor — hung on walls (top-left anchored), bottom = pos.y + h.
+    // Wall decor — hung on walls, TOP-LEFT anchored at `pos`, so its y-sort
+    // row is its south base (`pos.y + h - 1`), same helper the mask + every
+    // other drawable use. (Was a hand-rolled `pos.y + h`, one row past the
+    // sprite's actual bottom.)
     for (kind, pos) in &ctx.layout.wall_decor {
         let (_, h) = crate::tui::layout::furniture_def(kind.furniture()).visual;
         drawables.push(Drawable {
-            anchor_y: pos.y + h,
+            anchor_y: z_sort_row(Anchor::TopLeft, *pos, h),
             kind: DrawableKind::WallDecor {
                 kind: *kind,
                 pos: *pos,
@@ -1207,6 +1434,16 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         .waypoints
         .iter()
         .position(|w| w.kind == crate::tui::layout::WaypointKind::Couch);
+    // The pack's character sprite width (8 for the bundled pack, 10 for the
+    // robot pack). All character poses share one width, so resolve it ONCE from
+    // a reference pose and center every anchor on it — a non-8-wide pack would
+    // otherwise blit ~1px off (the anchors hardcoded 8). Fallback to the bundled
+    // default if the pack lacks the reference anim.
+    let char_w = ctx
+        .pack
+        .animation("standing")
+        .and_then(|a| a.frames.first())
+        .map_or(CHARACTER_SPRITE_W, |f| f.width);
     for agent in &agents {
         let Some(desk) = ctx.layout.home_desks.get(agent.desk_index).copied() else {
             continue;
@@ -1224,7 +1461,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         };
         match p {
             Pose::SeatedIdle => {
-                let anchor_no_breath = seated_anchor(desk);
+                let anchor_no_breath = seated_anchor(desk, char_w);
                 let anchor = with_breath(anchor_no_breath, agent.agent_id, ctx.now);
                 let sleep_variant = if agent.agent_id.raw() % 2 == 0 {
                     "seated_sleeping"
@@ -1251,7 +1488,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                 });
             }
             Pose::SeatedThinking => {
-                let anchor_no_breath = seated_anchor(desk);
+                let anchor_no_breath = seated_anchor(desk, char_w);
                 let anchor = with_breath(anchor_no_breath, agent.agent_id, ctx.now);
                 drawables.push(Drawable {
                     // Breath-independent z-key (matches AtWaypoint/AimlessAt):
@@ -1273,7 +1510,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                 });
             }
             Pose::SeatedTyping { frame } => {
-                let anchor_no_breath = seated_anchor(desk);
+                let anchor_no_breath = seated_anchor(desk, char_w);
                 let anchor = with_breath(anchor_no_breath, agent.agent_id, ctx.now);
                 drawables.push(Drawable {
                     // Breath-independent z-key (matches AtWaypoint/AimlessAt):
@@ -1295,7 +1532,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                 });
             }
             Pose::StandingAtDesk => {
-                let anchor_no_breath = standing_at_desk_anchor(desk);
+                let anchor_no_breath = standing_at_desk_anchor(desk, char_w);
                 let anchor = with_breath(anchor_no_breath, agent.agent_id, ctx.now);
                 let is_waiting = matches!(agent.state, ActivityState::Waiting { .. });
                 drawables.push(Drawable {
@@ -1326,7 +1563,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                     // Render anchor: the cell the agent occupies. For obstacles
                     // this is the side stand cell (side-aware); for seats it is
                     // `wp.pos` (the sprite sits ON the furniture) — the walk-in
-                    // approach cell is resolved separately by `walk_target`.
+                    // approach cell is resolved separately by `approach_point`.
                     let stand = pixtuoid_core::layout::stand_point(
                         wp_obj.kind,
                         wp_obj.pos,
@@ -1336,24 +1573,24 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                         wp_obj.facing,
                     );
                     let (anim_name, anchor_base, sprite_h, flip_x) = match kind {
-                        WaypointKind::Couch => {
-                            ("back_couch", back_couch_anchor(stand), 9u16, false)
-                        }
-                        WaypointKind::Pantry => {
-                            ("holding_coffee", waypoint_anchor(stand), 12u16, false)
-                        }
-                        // Meeting sofa: the north-side seat faces the viewer
-                        // across the table (front "seated"); the south-side seat
-                        // faces away (back view) — the pair reads as two people
-                        // facing each other. Both reuse the 16×7-sofa anchor.
-                        WaypointKind::MeetingSofa => {
-                            let (anim, flip) = meeting_sprite(kind, wp_obj.facing);
-                            (anim, back_couch_anchor(stand), 9u16, flip)
+                        WaypointKind::Pantry => (
+                            "holding_coffee",
+                            waypoint_anchor(stand, char_w),
+                            12u16,
+                            false,
+                        ),
+                        // Lounge couch + meeting sofa: the sprite follows the
+                        // SEATED facing (couch always North/window → back_couch;
+                        // the sofa's two seats face each other across the table).
+                        // Both reuse the 16×7-sofa anchor.
+                        WaypointKind::Couch | WaypointKind::MeetingSofa => {
+                            let (anim, flip) = seat_sprite(kind, wp_obj.facing);
+                            (anim, back_couch_anchor(stand, char_w), 9u16, flip)
                         }
                         // Meeting stand: beside the table, facing inward.
                         WaypointKind::MeetingStand => {
-                            let (anim, flip) = meeting_sprite(kind, wp_obj.facing);
-                            (anim, waypoint_anchor(stand), 12u16, flip)
+                            let (anim, flip) = seat_sprite(kind, wp_obj.facing);
+                            (anim, waypoint_anchor(stand, char_w), 12u16, flip)
                         }
                         // PhoneBooth + StandingDesk → agent just stands at the
                         // decor. waypoint_anchor positions them directly above
@@ -1363,7 +1600,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                         | WaypointKind::StandingDesk
                         | WaypointKind::VendingMachine
                         | WaypointKind::Printer => {
-                            ("standing", waypoint_anchor(stand), 12u16, false)
+                            ("standing", waypoint_anchor(stand, char_w), 12u16, false)
                         }
                     };
                     let anchor_no_breath = Point {
@@ -1383,23 +1620,25 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                     let anchor = with_breath(anchor_no_breath, agent.agent_id, ctx.now);
                     drawables.push(Drawable {
                         // Breath-independent sort key: a seated occupant must
-                        // y-sort identically every frame so the breath ±1px
-                        // never flips it under its sofa (the overlap bug). The
-                        // visual `anchor` below still breathes; only the z-order
-                        // is pinned. Insertion order (decor before characters)
-                        // then keeps the sitter on top of the couch.
+                        // y-sort identically every frame so the breath ±1px never
+                        // flips it under its sofa (the overlap bug). The visual
+                        // `anchor` above still breathes; only the z-order is pinned.
                         //
-                        // MeetingStand sits AT the table row (stand.y == table.y),
-                        // so its bare z-key (stand.y) ties below the meeting
-                        // table (table.y+2) and the table paints over the
-                        // stander's feet. +3 lifts it clear of the table.
-                        anchor_y: anchor_no_breath.y
-                            + sprite_h
-                            + if matches!(kind, WaypointKind::MeetingStand) {
-                                3
-                            } else {
-                                0
-                            },
+                        // Seats route through `SeatView::z_key_for_seat` — the SAME
+                        // key the sit-down/stand-up glide uses, so the agent can't
+                        // pop across its furniture's z-key at the walk→seat seam.
+                        // (back/front sofa+couch → pos+2; stand → pos+3, clearing
+                        // the meeting table.) Obstacles (pantry/booth/vending/
+                        // printer) keep the stand-at-the-approach-cell key — the
+                        // agent stands AT them, there is no settle onto them.
+                        anchor_y: match kind {
+                            WaypointKind::Couch
+                            | WaypointKind::MeetingSofa
+                            | WaypointKind::MeetingStand => {
+                                SeatView::of(kind, wp_obj.facing).z_key_for_seat(stand)
+                            }
+                            _ => anchor_no_breath.y + sprite_h,
+                        },
                         kind: DrawableKind::Character {
                             agent,
                             anim_name,
@@ -1418,7 +1657,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
             Pose::AimlessAt { dest } => {
                 // Breath-independent sort key (like the AtWaypoint arm): the
                 // ±1px breath bob must not flicker the z-order frame to frame.
-                let anchor_no_breath = waypoint_anchor(dest);
+                let anchor_no_breath = waypoint_anchor(dest, char_w);
                 let anchor = with_breath(anchor_no_breath, agent.agent_id, ctx.now);
                 drawables.push(Drawable {
                     anchor_y: anchor_no_breath.y + 12,
@@ -1452,11 +1691,34 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                     new_coffee_carriers.push(agent.agent_id);
                 }
                 let pos = walking_position(from, to, t_x1000);
-                let walker_anchor = walking_anchor(pos);
+                let walker_anchor = walking_anchor(pos, char_w);
                 let dx = to.x as i32 - from.x as i32;
                 let dy = to.y as i32 - from.y as i32;
-                let going_back = dy.unsigned_abs() > dx.unsigned_abs() && dy < 0;
-                let flip = to.x < from.x;
+                // A sit-down glide onto a seat faces the SEAT's seated direction
+                // (single source of truth — same `facing` as the seated render),
+                // NOT the travel direction. Without this a window-facing seat
+                // (couch / south meeting sofa, approached from the north, foot-cell
+                // to the south) renders a FRONT walk and the agent sits facing the
+                // camera until it snaps to `back_couch` at AtWaypoint. With it the
+                // agent backs into the seat already facing the window — no late
+                // flip. Ordinary travel segments keep the travel-direction rule.
+                // On the sit arc? `to` is a foot-cell while settling ONTO a seat
+                // (sit-down); `from` is a foot-cell while rising OFF one
+                // (stand-up). Either way the agent renders in the SEAT's view and
+                // at the SEAT's stable z-key for the whole glide — same single
+                // source as the seated render — so it neither faces the wrong way
+                // nor crosses its furniture's z-key mid-glide. Ordinary travel
+                // segments keep the travel-direction facing and foot-position
+                // z-key.
+                let settle =
+                    settle_seat_view(to, ctx.layout).or_else(|| settle_seat_view(from, ctx.layout));
+                let (going_back, flip) = match settle {
+                    Some((view, _)) => view.settle_walk(),
+                    None => (
+                        dy.unsigned_abs() > dx.unsigned_abs() && dy < 0,
+                        to.x < from.x,
+                    ),
+                };
                 // walking_back always wins (no back-facing coffee sprite).
                 let anim_name: &'static str = if going_back {
                     "walking_back"
@@ -1466,7 +1728,10 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
                     "walking"
                 };
                 drawables.push(Drawable {
-                    anchor_y: walker_anchor.y + 12,
+                    anchor_y: match settle {
+                        Some((_, z_key)) => z_key,
+                        None => walker_anchor.y + 12,
+                    },
                     kind: DrawableKind::Character {
                         agent,
                         anim_name,
@@ -1584,6 +1849,28 @@ mod tests {
         assert_eq!((yt4, yb4), (60, 80), "no joints → unchanged");
     }
 
+    // The vertical-wall top raise lives in TWO crates — the renderer
+    // (stitch_vertical_wall, here) and the mask (build_walkable_mask, core).
+    // The mask raises a top_margin-rooted segment to
+    // `top_margin - WALL_BAND_TO_TOP_MARGIN`; the renderer raises it to
+    // `top_wall_h`, which the binary derives from the SAME const. If they ever
+    // disagree a walkable slot opens at the wall top (the regression
+    // `vertical_wall_is_impassable_except_through_the_door` guards). Extracting
+    // the rule into core would drag tui wall constants across the crate
+    // boundary (invariant #1); this test pins the agreement instead.
+    #[test]
+    fn vertical_wall_top_raise_agrees_between_renderer_and_mask() {
+        let top_margin = 48u16;
+        let tbm = pixtuoid_core::layout::WALL_BAND_TO_TOP_MARGIN;
+        let top_wall_h = top_margin - tbm; // what the binary passes the renderer
+        let mask_raise = top_margin.saturating_sub(tbm); // what mask.rs computes
+        let (renderer_raise, _) = stitch_vertical_wall(top_margin, 90, top_margin, top_wall_h, &[]);
+        assert_eq!(
+            renderer_raise, mask_raise,
+            "renderer + mask must raise the vertical wall top to the same row"
+        );
+    }
+
     #[test]
     fn glass_wall_h_back_cap_composites_over_a_character_behind_it() {
         // Occlusion: the horizontal wall's frosted glass rises GLASS_CAP_PX
@@ -1626,8 +1913,8 @@ mod tests {
 
     #[test]
     fn furniture_back_occludes_a_character_behind_it() {
-        // A tall pod's back face rises FURNITURE_BACK_PX rows north of its
-        // sprite top, in a darkened shade of the column's top color — so a
+        // A tall pod's back face rises `rows` (its occludes_behind depth) north
+        // of its sprite top, in a darkened shade of the column's top color — so a
         // character standing just north (drawn earlier) is painted over.
         let blue = Rgb(40, 60, 200);
         let frame = solid_frame(6, 8, blue);
@@ -1637,7 +1924,7 @@ mod tests {
         // Stand-in pixel one row north of the sprite top — inside the band.
         let row = sy - 1;
         buf.put(sx + 2, row, character);
-        paint_furniture_back(&mut buf, &frame, sx, sy);
+        paint_furniture_back(&mut buf, &frame, sx, sy, 5);
         let after = buf.get(sx + 2, row);
         assert_ne!(after, character, "back face must paint over the character");
         // Shade of the (blue) sprite top, not the warm character/floor: blue
@@ -1660,7 +1947,7 @@ mod tests {
         let floor = Rgb(150, 110, 72);
         let (sx, sy) = (10u16, 20u16);
         let mut buf = RgbBuffer::filled(48, 48, floor);
-        paint_furniture_back(&mut buf, &frame, sx, sy);
+        paint_furniture_back(&mut buf, &frame, sx, sy, 5);
         assert_eq!(
             buf.get(sx, sy - 1),
             floor,
@@ -1674,26 +1961,32 @@ mod tests {
     }
 
     #[test]
-    fn meeting_sprite_maps_facing_to_sprite_and_flip() {
+    fn seat_sprite_maps_facing_to_sprite_and_flip() {
         use crate::tui::layout::{Facing, WaypointKind};
+        // Lounge couch always looks at the window (Facing::North) → back view.
+        assert_eq!(
+            seat_sprite(WaypointKind::Couch, Facing::North),
+            ("back_couch", false),
+            "couch's seated facing is North (window) → back_couch, same path as the sofa"
+        );
         // North-side sofa seat faces away → back view, no flip.
         assert_eq!(
-            meeting_sprite(WaypointKind::MeetingSofa, Facing::North),
+            seat_sprite(WaypointKind::MeetingSofa, Facing::North),
             ("back_couch", false)
         );
         // South-side sofa seat faces the viewer → front seated, no flip.
         assert_eq!(
-            meeting_sprite(WaypointKind::MeetingSofa, Facing::South),
+            seat_sprite(WaypointKind::MeetingSofa, Facing::South),
             ("seated", false)
         );
         // West stand (layout marks it Facing::East) mirrors toward the table.
         assert_eq!(
-            meeting_sprite(WaypointKind::MeetingStand, Facing::East),
+            seat_sprite(WaypointKind::MeetingStand, Facing::East),
             ("standing", true)
         );
         // East stand (Facing::West) is unmirrored.
         assert_eq!(
-            meeting_sprite(WaypointKind::MeetingStand, Facing::West),
+            seat_sprite(WaypointKind::MeetingStand, Facing::West),
             ("standing", false)
         );
     }
@@ -2010,11 +2303,305 @@ mod tests {
             Point { x: 100, y: 60 },
             Point { x: 7, y: 5 }, // near-origin: saturating_sub edge
         ] {
+            // The identity must hold for ANY pack character width — the bundled
+            // 8-wide AND the robot 10-wide — because desk_walk_anchor's +4 / -8
+            // cancel against the width-centering for every w.
+            for w in [CHARACTER_SPRITE_W, 10] {
+                assert_eq!(
+                    walking_anchor(desk_walk_anchor(desk), w),
+                    seated_anchor(desk, w),
+                    "walking_anchor(desk_walk_anchor({desk:?}), {w}) must equal seated_anchor",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seated_foot_cell_settles_exactly_on_the_render_anchor() {
+        // The UNIFIED zero-pop identity: for every occupies_pos Furniture (the
+        // seat kinds AND the home desk), the WALKING sprite anchor at
+        // seated_foot_cell(S) must equal the SEATED render anchor at pos — so the
+        // post-A* settle ends with zero pop on every arrival side. back_couch
+        // render for couch/sofa, waypoint render for stand, seated_anchor for the
+        // desk: ONE fn, the correctness lock for the whole convergence.
+        use pixtuoid_core::layout::{seated_foot_cell, Furniture};
+        for pos in [
+            Point { x: 40, y: 30 },
+            Point { x: 100, y: 60 },
+            Point { x: 6, y: 8 }, // near-origin: saturating_sub edge
+        ] {
+            for w in [CHARACTER_SPRITE_W, 10] {
+                for f in [Furniture::Couch, Furniture::MeetingSofa] {
+                    let s = seated_foot_cell(f, pos).expect("occupies_pos seat");
+                    assert_eq!(
+                        walking_anchor(s, w),
+                        back_couch_anchor(pos, w),
+                        "{f:?}: walking_anchor(S={s:?}) must equal back_couch_anchor(pos={pos:?}) w={w}",
+                    );
+                }
+                let s = seated_foot_cell(Furniture::MeetingStand, pos).expect("occupies_pos seat");
+                assert_eq!(
+                    walking_anchor(s, w),
+                    waypoint_anchor(pos, w),
+                    "MeetingStand: walking_anchor(S={s:?}) must equal waypoint_anchor(pos={pos:?}) w={w}",
+                );
+                // The home desk flows through the SAME fn — its S is
+                // desk_walk_anchor, its render seated_anchor. Same identity,
+                // proving the desk genuinely converged into Furniture.
+                let sd = seated_foot_cell(Furniture::Desk, pos).expect("desk is occupies_pos");
+                assert_eq!(
+                    walking_anchor(sd, w),
+                    seated_anchor(pos, w),
+                    "Desk: walking_anchor(seated_foot_cell)={:?} must equal seated_anchor",
+                    walking_anchor(sd, w),
+                );
+            }
+            // Obstacles have no fixed seat — their sprite renders AT the approach
+            // cell, so seated_foot_cell is None.
+            assert_eq!(seated_foot_cell(Furniture::Pantry, pos), None);
+            assert_eq!(seated_foot_cell(Furniture::VendingMachine, pos), None);
+        }
+    }
+
+    #[test]
+    fn settle_view_matches_the_seated_view_for_every_seat() {
+        // The unification guarantee: the sit-down settle and the seated render
+        // derive from ONE source (`SeatView::of`), so they can never disagree —
+        // the "sit facing the wrong way then snap" bug cannot recur, for current
+        // OR future seatable furniture (matched generically by having a settle
+        // foot-cell, not a hardcoded kind list).
+        use crate::tui::layout::{Facing, WaypointKind, MAX_VISIBLE_DESKS};
+        let l = Layout::compute(192, 158, MAX_VISIBLE_DESKS).expect("fits");
+        let seats: Vec<_> = l
+            .waypoints
+            .iter()
+            .filter(|w| {
+                pixtuoid_core::layout::seated_foot_cell(w.kind.furniture(), w.pos).is_some()
+            })
+            .collect();
+        assert!(
+            seats.iter().any(
+                |w| matches!(w.kind, WaypointKind::Couch | WaypointKind::MeetingSofa)
+                    && w.facing == Facing::North
+            ),
+            "this layout size must have a window-facing (North) seat to exercise the fix"
+        );
+        for w in &seats {
+            let foot = pixtuoid_core::layout::seated_foot_cell(w.kind.furniture(), w.pos)
+                .expect("seat occupies_pos → has a settle foot cell");
+            let view = SeatView::of(w.kind, w.facing);
+            // The sit-down glide onto this seat renders in the seat's view, at the
+            // seat's stable z-key.
             assert_eq!(
-                walking_anchor(desk_walk_anchor(desk)),
-                seated_anchor(desk),
-                "walking_anchor(desk_walk_anchor({desk:?})) must equal seated_anchor",
+                settle_seat_view(foot, &l),
+                Some((view, view.z_key_for_seat(w.pos))),
+                "settle onto {:?}@{:?} must use the seat view {view:?}",
+                w.kind,
+                w.pos
             );
+            // Totality guard (review finding): a seat detected generically by its
+            // foot-cell must NOT fall through `SeatView::of`'s upright catch-all —
+            // every real seat maps to an explicitly-handled view, so a future seat
+            // added to the Furniture table without a `SeatView::of` arm fails HERE
+            // rather than silently rendering as an upright stander.
+            assert!(
+                matches!(w.kind, WaypointKind::Couch | WaypointKind::MeetingSofa)
+                    || matches!(w.kind, WaypointKind::MeetingStand),
+                "seat kind {:?} has a settle foot-cell but is not explicitly handled \
+                 in SeatView::of — add an arm there",
+                w.kind
+            );
+            // Single-source invariant: the seated sprite and the sit-down settle
+            // agree on orientation (both back-view, or neither) — they cannot
+            // diverge because both come from `view`.
+            let seated_is_back = view.seated_sprite().0 == "back_couch";
+            let (settle_is_back, _) = view.settle_walk();
+            assert_eq!(
+                seated_is_back, settle_is_back,
+                "{:?}: seated render and sit-down settle must share orientation",
+                w.kind
+            );
+            // For seats whose foot-cell is offset from the centre (couch/sofa),
+            // the centre is an ordinary travel target — keeps travel facing.
+            if foot != w.pos {
+                assert_eq!(
+                    settle_seat_view(w.pos, &l),
+                    None,
+                    "seat centre {:?} is not a settle foot cell",
+                    w.pos
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn settle_seat_view_recognizes_the_home_desk() {
+        // The home desk joins the unified settle: its chair (seated_foot_cell(Desk)
+        // = desk_walk_anchor) is a settle target, so the arrival glide onto it goes
+        // through SeatView::Front (front-facing, stable z-key) — same path as the
+        // sofas, no front-cross.
+        use crate::tui::layout::MAX_VISIBLE_DESKS;
+        use pixtuoid_core::layout::{desk_walk_anchor, Furniture};
+        let l = Layout::compute(192, 158, MAX_VISIBLE_DESKS).expect("fits");
+        let desk = *l.home_desks.first().expect("at least one home desk");
+        let chair = desk_walk_anchor(desk);
+        assert_eq!(
+            settle_seat_view(chair, &l),
+            Some((SeatView::Front, desk.y + DESK_SEAT_Z_OFF)),
+            "the desk chair {chair:?} must settle as SeatView::Front at the desk z-key"
+        );
+        // seated_foot_cell(Desk) is exactly desk_walk_anchor — the hook keys off it.
+        assert_eq!(
+            pixtuoid_core::layout::seated_foot_cell(Furniture::Desk, desk),
+            Some(chair)
+        );
+        // A non-chair cell near the desk is ordinary travel.
+        assert_eq!(
+            settle_seat_view(desk, &l),
+            None,
+            "the desk corner is not the chair"
+        );
+    }
+
+    #[test]
+    fn desk_settle_z_key_matches_the_seated_arm() {
+        // The desk's settle z-key (desk.y + DESK_SEAT_Z_OFF) must equal the z-key
+        // the seated desk arms use (anchor_no_breath.y + 12 with anchor =
+        // seated_anchor) so the glide and the settled render sort identically —
+        // and both stay below the desk furniture z-key (desk.y + 8).
+        for desk in [Point { x: 40, y: 30 }, Point { x: 100, y: 60 }] {
+            for w in [CHARACTER_SPRITE_W, 10] {
+                let seated_arm_z = seated_anchor(desk, w).y + 12;
+                assert_eq!(
+                    desk.y + DESK_SEAT_Z_OFF,
+                    seated_arm_z,
+                    "desk settle z-key must equal the SeatedIdle/Typing arm z-key"
+                );
+                let fp_h = crate::tui::layout::desk_furniture_def()
+                    .footprint
+                    .expect("desk footprint")
+                    .1;
+                assert!(
+                    desk.y + DESK_SEAT_Z_OFF < desk.y + fp_h + DESK_FRONT_OVERHANG,
+                    "desk sitter must sort behind the desk furniture"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sit_arc_z_key_is_stable_and_on_the_right_side_of_its_furniture() {
+        // The z-sort flicker fix. The sit-down/stand-up GLIDE and the SEATED state
+        // must share ONE z-key (`z_key_for_seat`) so the agent never crosses its
+        // furniture's z-key mid-glide (pop in front of the sofa for a frame, then
+        // snap behind it). Asserts: (1) the seat z-key equals the historical
+        // AtWaypoint formula (seated render unchanged); (2) it lands the agent on
+        // the correct side of the furniture for every seat — behind a back-view
+        // sofa/couch, on top of (tie with) a front sofa, and in front of the
+        // meeting table for a stand.
+        use crate::tui::layout::{
+            furniture_def, z_sort_row, Anchor, Facing, Furniture, WaypointKind, MAX_VISIBLE_DESKS,
+        };
+        let l = Layout::compute(192, 158, MAX_VISIBLE_DESKS).expect("fits");
+        let mut saw_back = false;
+        for w in l.waypoints.iter().filter(|w| {
+            pixtuoid_core::layout::seated_foot_cell(w.kind.furniture(), w.pos).is_some()
+        }) {
+            let view = SeatView::of(w.kind, w.facing);
+            let z = view.z_key_for_seat(w.pos);
+
+            // (1) Behavior-preserving: equals the historical seated AtWaypoint key.
+            let historical = match view {
+                // back_couch_anchor.y + sprite_h(9) = (pos.y - 7) + 9
+                SeatView::Front | SeatView::Back => {
+                    back_couch_anchor(w.pos, CHARACTER_SPRITE_W).y + 9
+                }
+                // waypoint_anchor.y + sprite_h(12) + 3 = (pos.y - 12) + 12 + 3
+                SeatView::Side { .. } => waypoint_anchor(w.pos, CHARACTER_SPRITE_W).y + 12 + 3,
+            };
+            assert_eq!(
+                z, historical,
+                "{:?}@{:?}: seat z-key {z} must equal the historical AtWaypoint key {historical}",
+                w.kind, w.pos
+            );
+
+            // (2) Correct side of the furniture.
+            match w.kind {
+                WaypointKind::Couch => {
+                    // Lounge couch furniture z-key = z_sort_row(Center, center, visual.h).
+                    let couch_z = z_sort_row(
+                        Anchor::Center,
+                        w.pos,
+                        furniture_def(Furniture::Couch).visual.1,
+                    );
+                    assert!(
+                        z < couch_z,
+                        "couch sitter z {z} must be BEHIND the couch back {couch_z}"
+                    );
+                    saw_back = true;
+                }
+                WaypointKind::MeetingSofa => {
+                    // Furniture z-key: faces_away (North) → sofa.y+3; else sofa.y+2.
+                    if w.facing == Facing::North {
+                        assert!(z < w.pos.y + 3, "back sofa sitter z {z} must be < sofa.y+3");
+                        saw_back = true;
+                    } else {
+                        // Front sofa: tie at sofa.y+2 (insertion order keeps the
+                        // sitter on top).
+                        assert!(
+                            z <= w.pos.y + 2,
+                            "front sofa sitter z {z} must be <= sofa.y+2"
+                        );
+                    }
+                }
+                WaypointKind::MeetingStand => {
+                    // Stand clears the meeting table row it stands beside.
+                    assert!(
+                        z > w.pos.y + 2,
+                        "stand z {z} must clear the table at pos.y+2"
+                    );
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_back,
+            "layout must contain a back-view seat to exercise the flicker fix"
+        );
+    }
+
+    #[test]
+    fn desk_occupant_always_sorts_behind_its_desk() {
+        // The same "agent on the correct side of its furniture" guarantee the
+        // wander-seat invariant gives, extended to the home desk so EVERY seatable
+        // is covered. A seated or standing desk occupant must y-sort BEHIND the
+        // desk cubicle (which sorts at `desk.y + footprint.h + DESK_FRONT_OVERHANG`
+        // — pinned by `desk_z_key_is_footprint_front_plus_overhang`). The desk
+        // keeps its own render arms (different sprite/work-state by design), but
+        // ties its character z-key to its furniture z-key so a footprint or anchor
+        // edit can never drift the agent in front of its own desk (no flicker,
+        // matching the wander seats — the z-order GUARANTEE is unified even though
+        // the render code is intentionally not).
+        let fp_h = crate::tui::layout::desk_furniture_def()
+            .footprint
+            .expect("desk has a footprint")
+            .1;
+        for desk in [Point { x: 40, y: 30 }, Point { x: 100, y: 60 }] {
+            for w in [CHARACTER_SPRITE_W, 10] {
+                let desk_furniture_z = desk.y + fp_h + DESK_FRONT_OVERHANG;
+                // SeatedIdle / SeatedThinking / SeatedTyping z-key.
+                let seated_z = seated_anchor(desk, w).y + 12;
+                // StandingAtDesk z-key.
+                let standing_z = standing_at_desk_anchor(desk, w).y + 12;
+                assert!(
+                    seated_z < desk_furniture_z,
+                    "seated desk occupant z {seated_z} must be BEHIND the desk {desk_furniture_z}"
+                );
+                assert!(
+                    standing_z < desk_furniture_z,
+                    "standing desk occupant z {standing_z} must be BEHIND the desk {desk_furniture_z}"
+                );
+            }
         }
     }
 
@@ -2033,11 +2620,14 @@ mod tests {
     }
 
     #[test]
-    fn back_cap_covers_exactly_the_freestanding_pods() {
-        // Per-kind occlusion policy: the north back-cap (occlude a walker
-        // standing behind) applies to EXACTLY the tall free-standing aisle pods
-        // — not the wall-flanking decor. Exhaustive over PodDecor::ALL so a new
-        // pod kind must make a deliberate back-cap choice.
+    fn every_pod_declares_behind_occlusion() {
+        // Per-kind occlusion policy now lives in the FurnitureDef table
+        // (`occludes_behind`), not a render-local allowlist. Every SOLID aisle pod
+        // is something a walker can pass behind, so it carries a back-cap depth (the
+        // exact px per kind is pinned in core's furniture_def invariant test). The
+        // ONE exception is the plant: its thin foliage's 1px back-cap rendered as an
+        // ugly dark line across the top, so PlantTall carries none. Exhaustive over
+        // PodDecor::ALL so a new pod kind must declare its policy in the table.
         use crate::tui::layout::{furniture_def, PodDecor};
         assert_eq!(
             PodDecor::ALL.len(),
@@ -2045,17 +2635,18 @@ mod tests {
             "PodDecor variant added/removed — update ALL (and this count)"
         );
         for &kind in PodDecor::ALL {
-            let expected = matches!(kind, PodDecor::PhoneBooth | PodDecor::StandingDesk);
+            let def = furniture_def(kind.furniture());
+            let expect_occlusion = !matches!(kind, PodDecor::PlantTall);
             assert_eq!(
-                back_cap(kind),
-                expected,
-                "{kind:?}: back-cap policy mismatch (only free-standing pods get one)"
+                def.occludes_behind.is_some(),
+                expect_occlusion,
+                "{kind:?}: aisle-pod behind-occlusion policy (plants are the exception)"
             );
             // z-sort precondition: the pod-decor loop anchors at
             // `center_pin_south_offset(visual.1)`, so a 0-height visual would
             // sort the sprite at its own center. Every pod must have visible h.
             assert!(
-                furniture_def(kind.furniture()).visual.1 > 0,
+                def.visual.1 > 0,
                 "{kind:?}: pod decor needs a non-zero visual height for the z-sort"
             );
         }
@@ -2101,7 +2692,7 @@ mod tests {
         // under the desktop). They must sort BEFORE the desk so the
         // desk occludes their lower body in top-down view.
         let desk_y: u16 = 20;
-        let seated_anchor = seated_anchor(Point { x: 0, y: desk_y });
+        let seated_anchor = seated_anchor(Point { x: 0, y: desk_y }, CHARACTER_SPRITE_W);
         let char_feet_anchor = seated_anchor.y + 12;
         let desk_anchor_y = desk_y + 8;
         assert!(

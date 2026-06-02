@@ -14,13 +14,18 @@ mod approach;
 mod compute;
 mod decor;
 mod mask;
+mod placement;
+mod reach;
 
-pub use approach::{stand_point, walk_target};
+pub use approach::{approach_point, stand_point};
 pub use decor::{
-    desk_furniture_def, desk_walk_anchor, furniture_def, ApproachSides, Facing, Furniture,
-    FurnitureDef, PlantKind, PodDecor, WallDecor, WaypointKind, DESK_APPROACH,
+    desk_furniture_def, desk_walk_anchor, furniture_def, seated_foot_cell, ApproachSides, Facing,
+    Furniture, FurnitureDef, PlantKind, PodDecor, WallDecor, WaypointKind, DESK_APPROACH,
+    SEAT_RENDER_Y_OFF, WALKING_Y_OFF,
 };
 pub use mask::{WALL_THICK_H, WALL_THICK_V};
+pub use placement::{anchored_top_left, z_sort_row, Anchor};
+pub use reach::{ReachSet, REACH_CELL_SIZE, REACH_CELL_WALKABLE_MIN};
 
 use crate::walkable::WalkableMask;
 
@@ -98,12 +103,40 @@ pub struct SceneLayout {
     /// paint once, centred here. `None` when no couch fits.
     pub couch_sprite_center: Option<Point>,
     pub walkable: WalkableMask,
+    /// Coarse-cell reachable component (the walkable area an agent can A\*-route
+    /// to). Computed once from a known in-component seed; consumed by
+    /// `approach_point` to prefer a *reachable* approach side over a merely-
+    /// walkable-but-walled-off one. Mirrors the tui router's coarsening.
+    pub reachable: ReachSet,
 }
 
 /// Padding (in pixels) added around every obstacle when building the
 /// walkable mask. Reserves a buffer zone so characters route AROUND
 /// furniture rather than scraping along its edge.
 pub const OBSTACLE_PAD_PX: u16 = 2;
+
+/// The north wall+window band's visual bottom sits this many px ABOVE
+/// `top_margin`; the rows in between (`[top_margin - this, top_margin)`) render
+/// as carpet apron, not wall. The mask therefore blocks only down to the band
+/// bottom (`top_margin - this`), NOT the full `top_margin`, so the walkable area
+/// hugs the visible wall base instead of eating a strip of carpet (invariant #6,
+/// the same ground-projection rule furniture footprints follow). The renderer
+/// derives `top_wall_h = top_margin - this` for the wall/window/trim paint, so
+/// the two MUST agree — one source here prevents the mask and the visual from
+/// drifting (the relationship was a `- 4` literal duplicated across both).
+pub const WALL_BAND_TO_TOP_MARGIN: u16 = 4;
+
+/// How many pixels of the pantry counter actually sit on the floor. The
+/// counter is a 3/4-perspective sprite (10 px tall in the large variant)
+/// centered on its waypoint `pos`, but only the southern base contacts the
+/// ground — the receding cabinet tops + backsplash are elevation that
+/// overhangs (invariant #6). The mask blocks only this shallow strip,
+/// anchored to the sprite's SOUTH base, so the non-walkable area hugs the
+/// counter's foot instead of the full sprite height. A character routed
+/// behind (north of) the counter is occluded by the back-cap
+/// (`FurnitureDef.occludes_behind`), exactly like the couch — see
+/// `mask::build_walkable_mask`.
+pub const PANTRY_FOOTPRINT_DEPTH: u16 = 3;
 
 pub const DESK_W: u16 = 12;
 pub const DESK_H: u16 = 6;
@@ -127,9 +160,9 @@ pub const POD_SIDE: u16 = 2;
 pub const INTRA_POD_GAP_X: u16 = 12;
 pub const INTRA_POD_GAP_Y: u16 = 12;
 /// Gap between adjacent pods — comfortably wider than the intra-pod
-/// gap so the pod boundary is visually obvious. 28 px also fits the
-/// rolling whiteboard (14 wide) with ~7 px of walking clearance on
-/// each side after the 1-px obstacle pad.
+/// gap so the pod boundary is visually obvious. 28 px fits the rolling
+/// whiteboard's 10-px GROUND footprint (the 14-px board panel overhangs
+/// it, invariant #6) with comfortable clearance after the 1-px pad.
 pub const INTER_POD_AISLE_X: u16 = 28;
 pub const INTER_POD_AISLE_Y: u16 = 28;
 
@@ -326,13 +359,101 @@ mod tests {
     }
 
     #[test]
+    fn every_waypoint_kind_is_placed_in_some_layout() {
+        // Placement conformance: a `WaypointKind` defined in `decor.rs` but never
+        // pushed by `compute_waypoints` compiles green and passes every existing
+        // test while being SILENTLY INVISIBLE in the office (the most forgettable
+        // failure mode when adding furniture — there is no compile guard that a
+        // declared kind actually gets a placement site). This sweep is that guard.
+        //
+        // The sizes MUST span small→large: `VendingMachine`/`Printer` are
+        // corridor-height-gated (`walkway.height >= …` in `compute_waypoints`), so
+        // they only appear at large terminals; a single 192×80 seed would falsely
+        // "fail" for them.
+        use std::collections::HashSet;
+        let mut seen: HashSet<WaypointKind> = HashSet::new();
+        for seed in 0..40u64 {
+            for (w, h) in [
+                (160u16, 100u16),
+                (192, 80),
+                (240, 120),
+                (300, 140),
+                (400, 200),
+                (500, 250),
+            ] {
+                if let Some(l) = SceneLayout::compute_with_seed(w, h, 24, seed) {
+                    seen.extend(l.waypoints.iter().map(|wp| wp.kind));
+                }
+            }
+        }
+        // Kinds deliberately NOT a wander destination (none today). A new
+        // WaypointKind that is intentionally never placed goes here WITH a reason.
+        const ALLOWLIST: &[WaypointKind] = &[];
+        let missing: Vec<_> = WaypointKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| !seen.contains(k) && !ALLOWLIST.contains(k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "WaypointKind(s) declared in ::ALL but never pushed by compute_waypoints \
+             in any swept layout: {missing:?}. Add a placement site in \
+             compute_waypoints, or add to ALLOWLIST with a reason."
+        );
+    }
+
+    #[test]
+    fn every_home_desk_has_a_reachable_north_approach() {
+        // Back-row pod desks face the front row across the thin INTRA_POD_GAP_Y;
+        // the first walkable cell scanning north sits at the gap's south EDGE,
+        // whose coarse routing cell straddles the desk → ReachSet-rejected. The
+        // reachable-aware deeper scan steps past that edge into the gap interior
+        // (which always holds a reachable coarse cell), so EVERY desk — front and
+        // back row — gets a north approach. Was ~50% (front row only). Pushing the
+        // origin far north makes `approach_point` prefer the north side whenever it
+        // has a reachable cell, so a north return proves the scan reached it.
+        use crate::layout::{approach_point, desk_walk_anchor, Facing, Furniture};
+        for (w, h) in [(192u16, 158u16), (160, 120), (240, 160)] {
+            let l = SceneLayout::compute(w, h, 64).expect("fits");
+            for &desk in &l.home_desks {
+                let chair = desk_walk_anchor(desk);
+                let north_origin = Point {
+                    x: chair.x,
+                    y: chair.y.saturating_sub(40),
+                };
+                let a = approach_point(
+                    Furniture::Desk,
+                    chair,
+                    Facing::South,
+                    l.pantry_counter_size,
+                    &l.walkable,
+                    north_origin,
+                    &l.reachable,
+                );
+                assert_ne!(a, chair, "desk {desk:?}: no reachable approach (sentinel)");
+                assert!(
+                    a.y < chair.y,
+                    "desk {desk:?}: approach {a:?} should be NORTH of the chair {chair:?}"
+                );
+                assert!(
+                    l.reachable.reaches(a),
+                    "desk {desk:?}: approach {a:?} must be A*-reachable"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn sofas_seat_three_people() {
         // Both venues seat 3: each meeting sofa (3 seats per sofa) and the
         // lounge couch (was 1 seat → 3). Seats are dx ∈ {-6, 0, +6} on the
         // 20px sprite. The lounge keeps room_id = None — its group-chat
         // grouping happens at the chitchat venue-key layer, not via the
         // meeting-only room_id field.
-        let l = SceneLayout::compute(96, 72, 4).expect("fits"); // seed 0 → has_meeting
+        // 120 wide so the meeting room clears MEETING_FURNITURE_MIN_W (a 96-wide
+        // room is too narrow to route to the sofa seats and is intentionally
+        // left bare — see the gate in compute.rs). seed 0 → has_meeting.
+        let l = SceneLayout::compute(120, 80, 4).expect("fits");
 
         let couch: Vec<_> = l
             .waypoints
@@ -429,6 +550,36 @@ mod tests {
     }
 
     #[test]
+    fn meeting_table_is_centered_between_its_two_sofas() {
+        // The two sofas face each other across the table, so the table must sit
+        // vertically EQUIDISTANT from both — each sofa's front (toward the table)
+        // then gets equal, routable approach clearance. Room-CENTER placement
+        // packed the north sofa's front against the table (a sub-coarse-grid seam
+        // that cost its seats their front approach) while the south sofa had room
+        // — an asymmetry users spotted as "the south-facing sofa is missing entry
+        // points." Sofa/table positions are window-height-driven, so this relative
+        // invariant is swept across sizes × seeds, NOT a fixed pixel offset.
+        for (w, h) in [(128u16, 80u16), (160, 120), (192, 160), (240, 160)] {
+            for seed in 0..8u64 {
+                let Some(l) = SceneLayout::compute_with_seed(w, h, 8, seed) else {
+                    continue;
+                };
+                for (room_id, table) in l.meeting_tables.iter().enumerate() {
+                    let north = l.meeting_sofas[2 * room_id];
+                    let south = l.meeting_sofas[2 * room_id + 1];
+                    let gap_n = table.y.abs_diff(north.y);
+                    let gap_s = south.y.abs_diff(table.y);
+                    assert!(
+                        gap_n.abs_diff(gap_s) <= 1,
+                        "{w}x{h} seed {seed} room {room_id}: table not centered \
+                         between sofas (north gap {gap_n}px, south gap {gap_s}px)"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn meeting_slots_face_the_table() {
         // Sofa seats face the table across the room (north seat faces South,
         // south seat faces North); standing slots face inward toward the table
@@ -507,6 +658,31 @@ mod tests {
         assert!(whiteboard.is_some());
         assert!(bookshelf.unwrap().1.y < l.cubicle_band.y);
         assert!(whiteboard.unwrap().1.y > l.cubicle_band.y);
+    }
+
+    #[test]
+    fn whiteboard_blocks_only_its_wheel_base_not_the_elevated_panel() {
+        // The rolling whiteboard's 8-px board panel overhangs its 3-px wheel base
+        // (invariant #6): the mask must block ONLY the south wheel strip so a
+        // walker can pass BEHIND the panel (occluded by it), not the full 11-px
+        // sprite. Was the full height — a walker couldn't get above the board.
+        let l = SceneLayout::compute(120, 96, 1).expect("fits");
+        let (_, pos) = *l
+            .wall_decor
+            .iter()
+            .find(|(k, _)| *k == WallDecor::Whiteboard)
+            .expect("a free-standing whiteboard");
+        // Wall board is TopLeft-anchored; the 14×11 sprite's wheels sit at rows
+        // 8-10. A panel-surface cell well north of the wheels must be WALKABLE.
+        assert!(
+            l.is_walkable(pos.x + 5, pos.y + 2),
+            "the elevated whiteboard panel must NOT block the floor (invariant #6)"
+        );
+        // A wheel-base cell (the sprite's south rows) must stay BLOCKED.
+        assert!(
+            !l.is_walkable(pos.x + 5, pos.y + 9),
+            "the whiteboard wheel base must block the floor"
+        );
     }
 
     #[test]

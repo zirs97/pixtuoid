@@ -52,10 +52,6 @@ pub(super) enum DrawableKind<'a> {
         session_age_secs: u64,
         has_coffee: bool,
         coffee_steam: bool,
-        /// Accumulated coffee-ring stains for the occupant (FIFO,
-        /// capped at `MAX_STAINS_PER_DESK`). Empty slice for unoccupied
-        /// desks or agents that haven't visited the pantry yet.
-        stains: &'a [crate::tui::tui_renderer::StainPos],
     },
     Character {
         agent: &'a AgentSlot,
@@ -306,7 +302,6 @@ pub(super) fn paint_drawable(
             session_age_secs,
             has_coffee,
             coffee_steam,
-            stains,
         } => {
             let divider = theme.office.cubicle_divider;
             if !is_last_col {
@@ -346,7 +341,6 @@ pub(super) fn paint_drawable(
                 *session_age_secs,
                 *has_coffee,
                 *coffee_steam,
-                stains,
                 now,
                 theme,
             );
@@ -405,13 +399,32 @@ pub(super) fn paint_drawable(
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 let cx = pos.x.saturating_sub(f.width / 2);
                 let cy = pos.y.saturating_sub(f.height / 2);
-                // NB: no `paint_furniture_back` here. The counter is a wide
-                // (32px) multi-material bank; extruding each column's top pixel
-                // north smears its decorative elements (steam wand, chip-bag,
-                // dividers) into the floor as color streaks. The short counter
-                // also stands ~2px clear below a north-approaching agent, so a
-                // back cap buys almost no real occlusion. Back caps are for
-                // tall, narrow, single-silhouette objects (pods / glass wall).
+                // Couch-style occlusion: a character standing behind (north of)
+                // the counter would otherwise float fully visible just above it
+                // (no depth). The drawable y-sorts at the counter's south base,
+                // so it paints AFTER a north-stander — extrude a back face north
+                // to composite over their feet/legs, exactly as the sofa back
+                // occludes its sitter. UNIFORM tint (not per-column): the 32px
+                // top row alternates white fridge + brown counter, which the
+                // per-column form would streak vertically; one receding
+                // counter-back shade reads as a single surface. Depth (how many
+                // px of a north-stander to hide) comes from the table.
+                if let Some(rows) =
+                    crate::tui::layout::furniture_def(crate::tui::layout::Furniture::Pantry)
+                        .occludes_behind
+                {
+                    // Counter-back recede shade = the theme's desk-wood shadow,
+                    // so it harmonizes per theme (was a hardcoded warm brown
+                    // that clashed on the cool/dark themes).
+                    super::paint_furniture_back_uniform(
+                        buf,
+                        f,
+                        cx,
+                        cy,
+                        theme.furniture.wood_trim,
+                        rows,
+                    );
+                }
                 blit_frame(f, cx, cy, buf);
             }
             // Large sprite: coffee machine at sprite cols 11-18 of
@@ -466,35 +479,31 @@ pub(super) fn paint_drawable(
             paint_pantry_chair(buf, pos.x, pos.y, theme);
         }
         DrawableKind::Plant { kind, pos } => {
-            use crate::tui::layout::PlantKind;
-            let anim_name = match kind {
-                PlantKind::Ficus => "plant",
-                PlantKind::Tall => "plant_tall",
-                PlantKind::Flower => "plant_flower",
-                PlantKind::Succulent => "plant_succulent",
-            };
+            let anim_name = kind.sprite_name();
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 let px = pos.x.saturating_sub(f.width / 2);
                 let py = pos.y.saturating_sub(f.height / 2);
+                // Behind-occlusion depth from the table (free-standing plants get
+                // a faint cap; the pod-decor PlantTall path handles its own).
+                if let Some(rows) =
+                    crate::tui::layout::furniture_def(kind.furniture()).occludes_behind
+                {
+                    super::paint_furniture_back(buf, f, px, py, rows);
+                }
                 blit_frame(f, px, py, buf);
             }
         }
         DrawableKind::PodDecorItem { kind, pos } => {
-            use crate::tui::layout::PodDecor;
-            let anim_name = match kind {
-                PodDecor::PlantTall => "plant_tall",
-                PodDecor::Whiteboard => "whiteboard",
-                PodDecor::Tv => "tv_stand",
-                PodDecor::PhoneBooth => "phone_booth",
-                PodDecor::StandingDesk => "standing_desk",
-            };
+            let anim_name = kind.sprite_name();
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 let px = pos.x.saturating_sub(f.width / 2);
                 let py = pos.y.saturating_sub(f.height / 2);
-                // Back-cap policy (which pods occlude a north-stander) lives in
-                // one place: super::back_cap. See paint_furniture_back.
-                if super::back_cap(*kind) {
-                    super::paint_furniture_back(buf, f, px, py);
+                // Behind-occlusion (whether + DEPTH) is the FurnitureDef table's
+                // `occludes_behind` — one source of truth, not a render allowlist.
+                if let Some(rows) =
+                    crate::tui::layout::furniture_def(kind.furniture()).occludes_behind
+                {
+                    super::paint_furniture_back(buf, f, px, py, rows);
                 }
                 blit_frame(f, px, py, buf);
             }
@@ -515,29 +524,33 @@ pub(super) fn paint_drawable(
             }
         }
         DrawableKind::WallDecor { kind, pos } => {
-            use crate::tui::layout::WallDecor;
-            let anim_name = match kind {
-                WallDecor::Bookshelf => "bookshelf",
-                WallDecor::BulletinBoard => "bulletin_board",
-                WallDecor::ExitSign => "exit_sign",
-                WallDecor::Whiteboard => "whiteboard",
-                WallDecor::MeetingScreen => "meeting_screen",
-            };
+            let anim_name = kind.sprite_name();
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
+                // Free-standing board (the only WallDecor with a footprint) gets
+                // a behind-occlusion cap; wall-hung decor is None. Top-left
+                // anchored like the blit.
+                if let Some(rows) =
+                    crate::tui::layout::furniture_def(kind.furniture()).occludes_behind
+                {
+                    super::paint_furniture_back(buf, f, pos.x, pos.y, rows);
+                }
                 blit_frame(f, pos.x, pos.y, buf);
             }
         }
         DrawableKind::VendingMachine { pos } => {
-            let body = Rgb(50, 55, 65);
-            let panel = Rgb(180, 60, 60);
-            let drinks = [
-                Rgb(220, 50, 50),
-                Rgb(50, 160, 50),
-                Rgb(50, 80, 200),
-                Rgb(220, 180, 40),
-            ];
+            let body = theme.appliance.vending_body;
+            let panel = theme.appliance.vending_panel;
+            let drinks = theme.appliance.vending_drinks;
             let vx = pos.x.saturating_sub(2);
             let vy = pos.y.saturating_sub(3);
+            // Behind-occlusion back face (procedural box → rect variant); depth
+            // from the FurnitureDef table.
+            if let Some(rows) =
+                crate::tui::layout::furniture_def(crate::tui::layout::Furniture::VendingMachine)
+                    .occludes_behind
+            {
+                super::paint_furniture_back_rect(buf, vx, 4, vy, body, rows);
+            }
             for dy in 0..6u16 {
                 for dx in 0..4u16 {
                     let px = vx + dx;
@@ -553,9 +566,9 @@ pub(super) fn paint_drawable(
                                 body
                             }
                         } else if dy == 4 && dx == 2 {
-                            Rgb(180, 170, 100)
+                            theme.appliance.vending_trim
                         } else if dy == 5 {
-                            Rgb(40, 42, 48)
+                            theme.appliance.vending_dark
                         } else {
                             body
                         };
@@ -565,13 +578,21 @@ pub(super) fn paint_drawable(
             }
         }
         DrawableKind::Printer { pos } => {
-            let body_white = Rgb(220, 220, 225);
-            let top_dark = Rgb(60, 60, 68);
-            let glass = Rgb(130, 180, 200);
-            let paper = Rgb(245, 245, 240);
-            let tray = Rgb(180, 180, 185);
+            let body_white = theme.appliance.printer_body;
+            let top_dark = theme.appliance.printer_top;
+            let glass = theme.appliance.printer_glass;
+            let paper = theme.appliance.printer_paper;
+            let tray = theme.appliance.printer_tray;
             let px0 = pos.x.saturating_sub(2);
             let py0 = pos.y.saturating_sub(2);
+            // Behind-occlusion back face (procedural box → rect variant); depth
+            // from the FurnitureDef table.
+            if let Some(rows) =
+                crate::tui::layout::furniture_def(crate::tui::layout::Furniture::Printer)
+                    .occludes_behind
+            {
+                super::paint_furniture_back_rect(buf, px0, 5, py0, top_dark, rows);
+            }
             for dy in 0..4u16 {
                 for dx in 0..5u16 {
                     let px = px0 + dx;
@@ -634,7 +655,7 @@ pub(super) fn paint_drawable(
             let (cx, cy) = (*cx, *cy);
             let pole = theme.furniture.wood_trim;
             let base = theme.furniture.wood_top;
-            let coats = [Rgb(200, 60, 60), Rgb(80, 120, 200), Rgb(240, 240, 240)];
+            let coats = theme.appliance.coats;
             // Pole (1px wide, 8 tall).
             for dy in 0..8u16 {
                 let py = cy + dy;
@@ -669,18 +690,16 @@ pub(super) fn paint_drawable(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn paint_desk_personalization(
     buf: &mut RgbBuffer,
     desk: Point,
     age_secs: u64,
     has_coffee: bool,
     coffee_steam: bool,
-    stains: &[crate::tui::tui_renderer::StainPos],
     now: SystemTime,
     theme: &crate::tui::theme::Theme,
 ) {
-    if age_secs == 0 && !has_coffee && stains.is_empty() {
+    if age_secs == 0 && !has_coffee {
         return;
     }
     let put = |buf: &mut RgbBuffer, x: u16, y: u16, c: Rgb| {
@@ -688,9 +707,6 @@ fn paint_desk_personalization(
             buf.put(x, y, c);
         }
     };
-    // Stains paint UNDER the coffee cup / plant / photo so the
-    // foreground items remain readable.
-    paint_coffee_stains(buf, desk, stains, now);
     if has_coffee {
         let cx = desk.x + 2;
         let cy = desk.y + 2;
@@ -719,55 +735,5 @@ fn paint_desk_personalization(
         put(buf, fx + 1, fy, theme.furniture.photo_frame);
         put(buf, fx, fy + 1, theme.furniture.photo_bg);
         put(buf, fx + 1, fy + 1, theme.furniture.photo_bg);
-    }
-}
-
-/// Tint a faint brown stain at each recorded position. Anchored at the
-/// desk centre; per-stain offsets land it inside the desk footprint
-/// (and a hair outside for character variation). Alpha decays linearly
-/// over `STAIN_DECAY_SECS` and floors at `MIN_STAIN_ALPHA` so stains
-/// remain subtly visible for the rest of the session.
-fn paint_coffee_stains(
-    buf: &mut RgbBuffer,
-    desk: Point,
-    stains: &[crate::tui::tui_renderer::StainPos],
-    now: SystemTime,
-) {
-    use super::palette::blend;
-
-    const STAIN_DECAY_SECS: f32 = 1800.0;
-    const MIN_STAIN_ALPHA: f32 = 0.2;
-    const STAIN_RGB: Rgb = Rgb(98, 60, 38);
-    const STAIN_STRENGTH: f32 = 0.5;
-
-    let anchor_x = desk.x as i32 + (DESK_W as i32) / 2;
-    let anchor_y = desk.y as i32 + (DESK_H as i32) / 2;
-
-    for stain in stains {
-        let age_secs = now
-            .duration_since(stain.painted_at)
-            .map(|d| d.as_secs_f32())
-            .unwrap_or(0.0);
-        let alpha = (1.0 - age_secs / STAIN_DECAY_SECS).clamp(MIN_STAIN_ALPHA, 1.0);
-        let x = anchor_x + stain.offset_x as i32;
-        let y = anchor_y + stain.offset_y as i32;
-        if x < 0 || y < 0 {
-            continue;
-        }
-        let (ux, uy) = (x as u16, y as u16);
-        if ux >= buf.width || uy >= buf.height {
-            continue;
-        }
-        let cur = buf.get(ux, uy);
-        let t = alpha * STAIN_STRENGTH;
-        buf.put(
-            ux,
-            uy,
-            Rgb(
-                blend(cur.0, STAIN_RGB.0, t),
-                blend(cur.1, STAIN_RGB.1, t),
-                blend(cur.2, STAIN_RGB.2, t),
-            ),
-        );
     }
 }

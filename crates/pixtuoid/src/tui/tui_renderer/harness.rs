@@ -531,35 +531,97 @@ fn floor_transition_clears_stale_pet_position() {
 // ===================================================================
 
 #[test]
-fn coffee_stains_cap_at_four_fifo() {
-    let mut r = build(100, 40, vec![]);
-    let id = AgentId::from_transcript_path("/cof/0.jsonl");
-    for i in 0..6 {
-        r.note_coffee_stain(id, t0() + Duration::from_secs(i));
-    }
-    assert_eq!(
-        r.coffee_stains_for(id).len(),
-        MAX_STAINS_PER_DESK,
-        "stains capped at {MAX_STAINS_PER_DESK} (FIFO)"
-    );
-}
-
-#[test]
 fn coffee_state_evicted_when_agent_leaves_scene() {
     let id = AgentId::from_transcript_path("/cof/leave.jsonl");
     let scene = scene_with(vec![slot(id, 0, 0, t0())], 16);
     let mut r = build(100, 40, vec![]);
-    r.note_coffee_stain(id, t0());
     r.inject_coffee(id, t0());
     r.render(&scene, &pack(), t0()).unwrap();
-    assert!(!r.coffee_stains_for(id).is_empty());
+    assert!(r.coffee_holders_contains(id));
     // Agent gone from the scene ⇒ next render evicts its coffee state.
     let empty = SceneState::uniform(16);
     r.render(&empty, &pack(), t0() + Duration::from_millis(33))
         .unwrap();
     assert!(
-        r.coffee_stains_for(id).is_empty(),
+        !r.coffee_holders_contains(id),
         "coffee state must be evicted when the agent leaves (no leak)"
+    );
+}
+
+#[test]
+fn coffee_persists_through_floor_transition() {
+    // Regression: render_transition_floor discarded its render_to_rgb_buffer
+    // result (`let _ =`), so a coffee carrier first DETECTED during a floor
+    // slide was never persisted into coffee_holders → the cup never landed.
+    // The normal path persists via DrawCtx.new_coffee_carriers; the transition
+    // path now threads the same Vec back.
+    let p = pack();
+    let step = Duration::from_millis(500);
+    let cap = 16;
+    // Several floor-0 wanderers (the pantry is 1 of ~10 waypoints, so one
+    // agent reaches it far sooner than any single one would) + a floor-1
+    // occupant so navigate_floor(1) has a destination.
+    let n_f0 = 10usize;
+    let mut agents: Vec<_> = (0..n_f0)
+        .map(|i| {
+            idle(
+                &format!("/cof/f0_{i}.jsonl"),
+                i,
+                t0() - Duration::from_secs(120),
+            )
+        })
+        .collect();
+    agents.push(slot(
+        AgentId::from_transcript_path("/cof/f1.jsonl"),
+        1,
+        cap,
+        t0(),
+    ));
+    let scene = scene_with(agents, cap);
+    let f0_ids: Vec<AgentId> = (0..n_f0)
+        .map(|i| AgentId::from_transcript_path(&format!("/cof/f0_{i}.jsonl")))
+        .collect();
+
+    // Pass 1 (scratch): find the first frame where the NORMAL render path
+    // detects ANY floor-0 wanderer walking back from the pantry, and which one.
+    let mut scratch = build(100, 40, vec![]);
+    let mut now = t0();
+    scratch.render(&scene, &p, now).unwrap();
+    let mut hit = None;
+    'outer: for _ in 0..400 {
+        now += step;
+        scratch.render(&scene, &p, now).unwrap();
+        for &id in &f0_ids {
+            if scratch.coffee_holders_contains(id) {
+                hit = Some((id, now));
+                break 'outer;
+            }
+        }
+    }
+    let (agent, detect_at) = hit.expect("a floor-0 wanderer should fetch coffee while wandering");
+
+    // Pass 2 (real): advance to one step BEFORE detection (no coffee yet),
+    // begin a transition, then render AT detect_at — so the carrier is first
+    // detected DURING the slide (gap ≤ step < the 900ms transition window, and
+    // < the wander stale-resume trigger, so the timeline matches the scratch).
+    let mut r = build(100, 40, vec![]);
+    let mut t = t0();
+    r.render(&scene, &p, t).unwrap();
+    while t + step < detect_at {
+        t += step;
+        r.render(&scene, &p, t).unwrap();
+    }
+    assert!(
+        !r.coffee_holders_contains(agent),
+        "agent must not yet hold coffee before the transition"
+    );
+    r.navigate_floor(1, t);
+    assert!(r.transition().is_some(), "navigation begins a transition");
+    r.render(&scene, &p, detect_at).unwrap();
+    assert!(
+        r.coffee_holders_contains(agent),
+        "a coffee run completing mid-transition must persist (regression: \
+         render_transition_floor dropped new_coffee_carriers)"
     );
 }
 

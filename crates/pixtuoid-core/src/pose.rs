@@ -414,24 +414,37 @@ fn idle_pose(slot: &AgentSlot, desk: Point, layout: &SceneLayout, elapsed_ms: u6
     } else {
         let wp_idx = waypoint_index_for_cycle(slot.agent_id, cycle_n, layout.waypoints.len());
         let wp = layout.waypoints[wp_idx];
-        // Walk DESTINATION (not the render anchor): for seats this is an
-        // allowed-side approach cell so the agent never paths through the back;
-        // the AtWaypoint sprite still renders on `wp.pos` (see pixel_painter).
-        let dest = crate::layout::walk_target(
-            wp.kind,
+        // Walk DESTINATION (not the render anchor): the A*-reachable approach
+        // point on an allowed side — for seats an allowed-side cell so the agent
+        // never paths in through the back; the AtWaypoint sprite still renders on
+        // the seat (see pixel_painter). Same `&layout.reachable` as tui::motion.
+        let dest = crate::layout::approach_point(
+            wp.kind.furniture(),
             wp.pos,
+            wp.facing,
             layout.pantry_counter_size,
             &layout.walkable,
             desk,
-            wp.facing,
+            &layout.reachable,
         );
-        (
-            dest,
-            Pose::AtWaypoint {
-                wp: wp_idx,
-                kind: wp.kind,
-            },
-        )
+        // NO approach-side fallback (mirrors tui::motion::pick_wander_dest so the
+        // overlay + render stay in lockstep): when no allowed+reachable side
+        // exists, approach_point returns the blocked `wp.pos` sentinel (a seat
+        // boxed in to only its backrest, or an obstacle with no open reachable
+        // side). Amble aimlessly this cycle instead of routing into the furniture.
+        if dest == wp.pos {
+            let seed = aimless_wander_seed(slot.agent_id, cycle_n);
+            let p = pick_aimless_dest(layout, seed);
+            (p, Pose::AimlessAt { dest: p })
+        } else {
+            (
+                dest,
+                Pose::AtWaypoint {
+                    wp: wp_idx,
+                    kind: wp.kind,
+                },
+            )
+        }
     };
 
     if phase_t < seated_end {

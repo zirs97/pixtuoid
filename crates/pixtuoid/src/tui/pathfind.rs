@@ -30,6 +30,12 @@ pub const CELL_SIZE: u16 = 4;
 /// 4 = 25%) lets paths graze furniture edges. 50% is the sweet spot.
 const CELL_WALKABLE_MIN: u16 = 8;
 
+// The core-side `ReachSet` MUST coarsen identically to this router, or
+// "reachable" in `approach_point` would diverge from what A* actually routes.
+// Locked at compile time so a CELL_SIZE / threshold edit can't silently desync.
+const _: () = assert!(CELL_SIZE == pixtuoid_core::layout::REACH_CELL_SIZE);
+const _: () = assert!(CELL_WALKABLE_MIN == pixtuoid_core::layout::REACH_CELL_WALKABLE_MIN);
+
 /// Abstract pathfinder — implementations route from `from` to `to` over
 /// the supplied mask + overlay, returning a polyline (first = `from`,
 /// last = `to`, intermediate = corners). Renderer + pose layer use this
@@ -438,6 +444,179 @@ mod tests {
             .pos;
         let path = find_path(&l.walkable, &overlay, None, from, pantry).expect("path");
         assert!(path.len() >= 3, "expected routed path, got {path:?}");
+    }
+
+    #[test]
+    fn vertical_wall_is_impassable_except_through_the_door() {
+        // Regression: a vertical (N-S) room divider has a 1px walkable
+        // footprint (WALL_THICK_V, edge-on top-down rule). With NO clearance
+        // pad that 1px strip is invisible to the coarse 4×4 router — only
+        // 1 of a cell's 4 columns is blocked, so the cell keeps ≥12/16 px
+        // walkable and stays "walkable", letting A* route STRAIGHT THROUGH
+        // the wall. OBSTACLE_PAD_PX drives the wall's whole cell-column under
+        // the threshold; this test pins that the wall is a real barrier.
+        let l = make_layout();
+        let overlay = OccupancyOverlay::new();
+        let (start, end) = l
+            .room_walls
+            .iter()
+            .copied()
+            .find(|(s, e)| s.x == e.x)
+            .expect("layout has a vertical wall");
+        let wall_x = start.x;
+        // A y inside the wall body, near its top — clear of the mid door gap.
+        let y = start.y.min(end.y) + 3;
+        let from = Point {
+            x: wall_x.saturating_sub(12),
+            y,
+        };
+        let to = Point { x: wall_x + 12, y };
+        let path = find_path(&l.walkable, &overlay, None, from, to)
+            .expect("rooms stay connected through the door gap");
+        let direct = crate::tui::pose::octile_distance(from, to);
+        let routed: u32 = path
+            .windows(2)
+            .map(|w| crate::tui::pose::octile_distance(w[0], w[1]))
+            .sum();
+        // A straight crossing is ~24px; detouring through the mid door is far
+        // longer. A passable wall would yield a near-straight path (≈ direct).
+        assert!(
+            routed > direct * 2,
+            "expected a detour around the wall (routed {routed} vs direct {direct}); \
+             a near-direct path means A* crossed the wall. path={path:?}"
+        );
+    }
+
+    #[test]
+    fn every_wander_waypoint_is_routable_on_the_coarse_grid() {
+        // Teleport guard (#22): a waypoint A* can't reach on the coarse 4×4 grid
+        // makes an idle agent SNAP/teleport there — find_path returns None and
+        // route() falls back to a straight [from,to] line. The core connectivity
+        // sweep only checks full-PIXEL BFS from the door; this checks COARSE-grid
+        // reachability of EVERY emitted wander destination (meeting seats, pantry,
+        // couch, AND the pod-aisle decor — phone booth / standing desk / vending /
+        // printer, which also pins the INTER_POD_AISLE_X width: narrow the aisle
+        // and the decor disconnects the grid here). Across seeds × sizes incl. the
+        // 96×70 floor. It caught the narrow-meeting-room teleport (now gated).
+        use crate::tui::layout::MAX_VISIBLE_DESKS;
+        let overlay = OccupancyOverlay::new();
+        let sizes = [
+            (96u16, 70u16),
+            (128, 80),
+            (160, 120),
+            (192, 160),
+            (240, 160),
+        ];
+        for (w, h) in sizes {
+            for seed in 0..5u64 {
+                let Some(l) = Layout::compute_with_seed(w, h, MAX_VISIBLE_DESKS, seed) else {
+                    continue;
+                };
+                let Some(origin) = l.door_threshold else {
+                    continue;
+                };
+                for wp in &l.waypoints {
+                    assert!(
+                        find_path(&l.walkable, &overlay, None, origin, wp.pos).is_some(),
+                        "seed {seed} {w}x{h}: {:?} at ({},{}) is unreachable on the coarse \
+                         routing grid — an idle agent sent there would teleport",
+                        wp.kind,
+                        wp.pos.x,
+                        wp.pos.y
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_approach_point_is_routable_from_its_home_desk() {
+        // STRONGER routability guard for the approach model: the cell A* actually
+        // targets — `approach_point` on a reachable allowed side — must be
+        // find_path-routable from the agent's OWN home desk, for EVERY
+        // desk × waypoint × size × seed. The test above uses the DOOR origin + the
+        // blocked furniture CENTER, so it can pass while a specific desk's chosen
+        // approach side is unroutable (a teleport). `reaches ⇒ routable` (the
+        // ReachSet contract) makes this hold. When NO allowed+reachable side
+        // exists, approach_point returns the `wp.pos` sentinel (NO fallback — the
+        // wander skips the furniture), which isn't a real destination, so we
+        // exclude it below.
+        use crate::tui::layout::MAX_VISIBLE_DESKS;
+        use pixtuoid_core::layout::approach_point;
+        let overlay = OccupancyOverlay::new();
+        for (w, h) in [
+            (96u16, 70u16),
+            (128, 80),
+            (160, 120),
+            (192, 160),
+            (240, 160),
+        ] {
+            for seed in 0..5u64 {
+                let Some(l) = Layout::compute_with_seed(w, h, MAX_VISIBLE_DESKS, seed) else {
+                    continue;
+                };
+                for &desk in &l.home_desks {
+                    for wp in &l.waypoints {
+                        let a = approach_point(
+                            wp.kind.furniture(),
+                            wp.pos,
+                            wp.facing,
+                            l.pantry_counter_size,
+                            &l.walkable,
+                            desk,
+                            &l.reachable,
+                        );
+                        if a == wp.pos {
+                            continue; // "no valid approach" sentinel — skipped, not routed to
+                        }
+                        assert!(
+                            find_path(&l.walkable, &overlay, None, desk, a).is_some(),
+                            "{w}x{h} seed {seed}: {:?} approach_point {a:?} unroutable from \
+                             desk {desk:?} — the agent would teleport",
+                            wp.kind,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reachset_never_claims_an_unroutable_cell() {
+        // The core ReachSet must never be a FALSE POSITIVE vs the real router:
+        // every cell it reports reachable MUST be find_path-routable from the
+        // door. (Conservative false negatives at coarse boundaries are fine —
+        // approach_point simply won't pick those.) Pins the core↔router
+        // coarsening agreement on REAL layouts, not just synthetic masks, so
+        // approach_point can never select an unroutable approach side.
+        use crate::tui::layout::MAX_VISIBLE_DESKS;
+        let overlay = OccupancyOverlay::new();
+        for (w, h) in [(160u16, 120u16), (200, 80), (96, 70)] {
+            for seed in 0..3u64 {
+                let Some(l) = Layout::compute_with_seed(w, h, MAX_VISIBLE_DESKS, seed) else {
+                    continue;
+                };
+                let Some(door) = l.door_threshold else {
+                    continue;
+                };
+                let mut y = 0;
+                while y < l.buf_h {
+                    let mut x = 0;
+                    while x < l.buf_w {
+                        let p = Point { x, y };
+                        if l.reachable.reaches(p) {
+                            assert!(
+                                find_path(&l.walkable, &overlay, None, door, p).is_some(),
+                                "{w}x{h} seed {seed}: ReachSet claims {p:?} reachable but \
+                                 find_path can't route there from the door {door:?}",
+                            );
+                        }
+                        x += 8;
+                    }
+                    y += 8;
+                }
+            }
+        }
     }
 
     #[test]

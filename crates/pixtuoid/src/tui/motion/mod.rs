@@ -16,13 +16,13 @@ use pixtuoid_core::state::AgentSlot;
 use pixtuoid_core::walkable::OccupancyOverlay;
 use pixtuoid_core::AgentId;
 
-use crate::tui::layout::{desk_walk_anchor, Layout, Point, WaypointKind};
+use crate::tui::layout::{Layout, Point, WaypointKind};
 use crate::tui::pathfind::Router;
-use crate::tui::pose::octile_distance;
 use crate::tui::pose::{
     aimless_wander_seed, cycle_ms_for, dwell_ms, est_wander_cycle_ms, is_aimless_cycle,
     pick_aimless_dest, seated_dwell_ms, takes_trip, waypoint_index_for_cycle, WANDER_DWELL_EST_MS,
 };
+use crate::tui::pose::{desk_leg_endpoint, octile_distance};
 
 /// Frozen A* polyline for one in-flight walk leg.
 ///
@@ -101,6 +101,12 @@ pub struct MotionState {
     /// Index into `layout.waypoints` for the current wander destination,
     /// if it is a named waypoint.
     pub wander_dest_wp_idx: Option<usize>,
+    /// Seat foot cell `S` for the current wander waypoint (where the seated
+    /// sprite renders), when it's an occupied seat. `Some` ⇒ the walk SETTLES
+    /// from the approach point `wander_dest` onto `S` (and rises from `S` on the
+    /// way back), so the arrival/departure don't pop; `None` for obstacles /
+    /// aimless (the agent stands AT `wander_dest`).
+    pub wander_seat: Option<Point>,
     /// Last `now` at which `advance_wander` performed a transition. Used for
     /// idempotency: when `now <= last_advanced_at`, the call is a no-op on
     /// mutable state (computes pose from existing phase state only).
@@ -134,6 +140,7 @@ impl MotionState {
             wander_dest: Point { x: 0, y: 0 },
             wander_dest_kind: None,
             wander_dest_wp_idx: None,
+            wander_seat: None,
             last_advanced_at: SystemTime::UNIX_EPOCH,
             walk_path: None,
         }
@@ -265,21 +272,22 @@ pub fn advance_wander(
                     // stateless/stateful destinations stay in lockstep).
                     let desk_pt = layout.home_desks.get(slot.desk_index).copied();
                     let origin = desk_pt.unwrap_or(Point { x: 0, y: 0 });
-                    let (dest, dest_kind, wp_idx) =
+                    let (dest, dest_kind, wp_idx, seat) =
                         pick_wander_dest(id, ms.wander_cycle_n, layout, origin);
                     ms.wander_dest = dest;
                     ms.wander_dest_kind = dest_kind;
                     ms.wander_dest_wp_idx = wp_idx;
+                    ms.wander_seat = seat;
 
                     let desk = desk_pt.unwrap_or(dest);
-                    // Route from desk+(6,4) (the seated anchor) so the walk-out
-                    // start matches where the seated sprite was — no stand-up
-                    // jump. This intentionally differs from core::idle_pose's
-                    // raw `from: desk`; only the routed TUI path is user-visible
-                    // and the walk-back already uses the same +(6,4) offset.
-                    let from = desk_walk_anchor(desk);
+                    // Leave via the desk approach cell (rise off the chair),
+                    // mirroring pose's WalkingOut leg. The profile duration must
+                    // cover the FULL polyline: chair-glide + route + seat settle —
+                    // else t reaches 1000 before the sprite arrives and it pops.
+                    let (from, chair_settle) = desk_leg_endpoint(desk, layout);
                     let path = router.route(&layout.walkable, overlay, from, dest);
-                    let len = octile_path_len(&path).max(1);
+                    let desk_glide = chair_settle.map_or(0, |c| octile_distance(c, from));
+                    let len = (octile_path_len(&path) + desk_glide + settle_len(dest, seat)).max(1);
                     ms.wander_profile = Some(walk_profile(len, WalkIntent::WanderOut, id));
 
                     ms.wander_phase = WanderPhase::WalkingOut;
@@ -320,9 +328,16 @@ pub fn advance_wander(
                     .get(slot.desk_index)
                     .copied()
                     .unwrap_or(ms.wander_dest);
-                let snap_to = desk_walk_anchor(desk);
+                // Arrive via the desk approach cell (glide onto the chair),
+                // mirroring pose's WalkingBack leg; add the chair-glide so the
+                // profile covers the full polyline (no pop on arrival).
+                let (snap_to, chair_settle) = desk_leg_endpoint(desk, layout);
                 let back_path = router.route(&layout.walkable, overlay, ms.wander_dest, snap_to);
-                let back_len = octile_path_len(&back_path).max(1);
+                let desk_glide = chair_settle.map_or(0, |c| octile_distance(snap_to, c));
+                let back_len = (octile_path_len(&back_path)
+                    + settle_len(ms.wander_dest, ms.wander_seat)
+                    + desk_glide)
+                    .max(1);
 
                 ms.wander_phase = WanderPhase::AtWaypoint;
                 ms.wander_phase_started_at = ms
@@ -348,10 +363,14 @@ pub fn advance_wander(
                         .get(slot.desk_index)
                         .copied()
                         .unwrap_or(ms.wander_dest);
-                    let snap_to = desk_walk_anchor(desk);
+                    let (snap_to, chair_settle) = desk_leg_endpoint(desk, layout);
                     let back_path =
                         router.route(&layout.walkable, overlay, ms.wander_dest, snap_to);
-                    let back_len = octile_path_len(&back_path).max(1);
+                    let desk_glide = chair_settle.map_or(0, |c| octile_distance(snap_to, c));
+                    let back_len = (octile_path_len(&back_path)
+                        + settle_len(ms.wander_dest, ms.wander_seat)
+                        + desk_glide)
+                        .max(1);
                     ms.wander_profile = Some(walk_profile(back_len, WalkIntent::WanderBack, id));
                 }
 
@@ -386,6 +405,11 @@ pub fn advance_wander(
                 ms.wander_profile = None;
                 ms.wander_dest_kind = None;
                 ms.wander_dest_wp_idx = None;
+                // Clear the seat too (symmetry with the sibling dest fields):
+                // the Seated arm never reads it and the next WalkingOut overwrites
+                // it, but leaving it stale invites a future Seated-phase reader to
+                // mistake it for "currently on a seat".
+                ms.wander_seat = None;
                 ms.wander_phase = WanderPhase::Seated;
                 ms.wander_phase_started_at = ms
                     .wander_phase_started_at
@@ -420,28 +444,43 @@ fn pick_wander_dest(
     cycle_n: u64,
     layout: &Layout,
     origin: Point,
-) -> (Point, Option<WaypointKind>, Option<usize>) {
+) -> (Point, Option<WaypointKind>, Option<usize>, Option<Point>) {
     if is_aimless_cycle(id, cycle_n) {
         // Shared seed helper so this can never drift from core::pose::idle_pose.
         let seed = aimless_wander_seed(id, cycle_n);
         let p = pick_aimless_dest(layout, seed);
-        (p, None, None)
+        (p, None, None, None)
     } else {
         let wp_idx = waypoint_index_for_cycle(id, cycle_n, layout.waypoints.len());
         let wp = layout.waypoints[wp_idx];
-        // Walk destination on the side nearest the desk — NOT the raw `wp.pos`
-        // (the blocked furniture center), which made A* detour around it and
-        // the sprite pop on arrival. For seats this is an allowed-side approach
-        // cell (never through the back); the sprite still renders on `wp.pos`.
-        let dest = pixtuoid_core::layout::walk_target(
-            wp.kind,
+        // Walk destination = the A*-reachable approach point on an allowed side
+        // (NOT the raw blocked `wp.pos`, which made A* detour + the sprite pop).
+        // Same `&layout.reachable` + origin as core::pose::idle_pose so the
+        // stateless overlay and this routed dest stay in lockstep.
+        let dest = pixtuoid_core::layout::approach_point(
+            wp.kind.furniture(),
             wp.pos,
+            wp.facing,
             layout.pantry_counter_size,
             &layout.walkable,
             origin,
-            wp.facing,
+            &layout.reachable,
         );
-        (dest, Some(wp.kind), Some(wp_idx))
+        // Seat foot cell `S`: the walk SETTLES from `dest` onto it (the sprite
+        // renders here). `None` for obstacles — the agent stands AT `dest`.
+        // NO approach-side fallback: when no allowed+reachable side exists,
+        // approach_point returns the blocked `wp.pos` sentinel (a seat boxed in to
+        // only its backrest, or an obstacle with no open reachable side). Never
+        // route there — A* would snap onto the furniture (the backrest, for a
+        // seat). Amble aimlessly this cycle instead, matching idle_pose.
+        if dest == wp.pos {
+            let seed = aimless_wander_seed(id, cycle_n);
+            return (pick_aimless_dest(layout, seed), None, None, None);
+        }
+        // Seat foot cell `S`: the walk SETTLES from `dest` onto it (the sprite
+        // renders here). `None` for obstacles — the agent stands AT `dest`.
+        let seat = pixtuoid_core::layout::seated_foot_cell(wp.kind.furniture(), wp.pos);
+        (dest, Some(wp.kind), Some(wp_idx), seat)
     }
 }
 
@@ -456,6 +495,13 @@ pub fn octile_path_len(path: &[Point]) -> u32 {
         return 0;
     }
     path.windows(2).map(|w| octile_distance(w[0], w[1])).sum()
+}
+
+/// Octile length of the settle segment `approach → seat`, or 0 when there is no
+/// seat (obstacle/aimless). Added to a wander leg's profile length so its
+/// DURATION covers the full walk including the short sit-down/stand-up settle.
+fn settle_len(approach: Point, seat: Option<Point>) -> u32 {
+    seat.map_or(0, |s| octile_distance(approach, s))
 }
 
 #[cfg(test)]

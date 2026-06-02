@@ -14,7 +14,9 @@ use pixtuoid_core::sprite::{Rgb, RgbBuffer};
 use pixtuoid_core::{AgentId, SceneState};
 
 use super::palette::blend;
-use crate::tui::layout::{desk_walk_anchor, furniture_def, Layout, Point, WaypointKind};
+use crate::tui::layout::{
+    desk_walk_anchor, furniture_def, Facing, Furniture, Layout, Point, WaypointKind,
+};
 use crate::tui::motion::MotionState;
 
 const BLOCKED: Rgb = Rgb(220, 60, 60); // walkable mask — blocked ground
@@ -75,12 +77,56 @@ fn paint_mask(buf: &mut RgbBuffer, layout: &Layout) {
     }
 }
 
+/// First A*-REACHABLE walkable cell scanning `(dx, dy)` from `origin`, stepping
+/// DEEPER through the contiguous walkable run past any coarse-rejected EDGE cell
+/// (e.g. a back-row desk's gap edge). Mirrors `core::approach_point`'s seat scan
+/// so the green dots land exactly where the agent actually routes; the `entered`
+/// guard stops at the first blocked pixel so it never hops a second obstacle.
+/// `None` if the side has no reachable cell. ONE scan for both the waypoint seats
+/// and the home desks below.
+fn first_reachable_on_side(layout: &Layout, origin: Point, dx: i32, dy: i32) -> Option<Point> {
+    let mut entered = false;
+    for dist in 1..=SEAT_APPROACH_SCAN {
+        let cx = origin.x as i32 + dx * dist;
+        let cy = origin.y as i32 + dy * dist;
+        if cx < 0 || cy < 0 {
+            break;
+        }
+        let c = Point {
+            x: cx as u16,
+            y: cy as u16,
+        };
+        if layout.is_walkable(c.x, c.y) {
+            entered = true;
+            if layout.reachable.reaches(c) {
+                return Some(c);
+            }
+        } else if entered {
+            break;
+        }
+    }
+    None
+}
+
 fn paint_approach(buf: &mut RgbBuffer, layout: &Layout) {
     for wp in &layout.waypoints {
         let def = furniture_def(wp.kind.furniture());
         if def.occupies_pos {
-            // Seat / stand-on cell — the sprite sits ON `pos`, no side approach.
+            // Seat / stand-on cell — the sprite SETTLES ON `pos` (magenta).
             blob(buf, wp.pos.x as i32, wp.pos.y as i32, SEAT, 0.7);
+            // ...but A* routes to an APPROACH POINT off an allowed side (green),
+            // then a post-A* settle bridges approach → seat. Mark the first
+            // walkable + reachable cell on each ALLOWED side (facing-rotated) so
+            // the approach point reads DISTINCT from the seat — the viewer can
+            // confirm the agent enters from its natural side, not the backrest.
+            for (dx, dy) in DIRS {
+                if !def.approach.allows(wp.facing, (dx, dy)) {
+                    continue;
+                }
+                if let Some(c) = first_reachable_on_side(layout, wp.pos, dx, dy) {
+                    blob(buf, c.x as i32, c.y as i32, APPROACH, 0.7);
+                }
+            }
             continue;
         }
         // Obstacle: mark the cell just off each ALLOWED side (facing-rotated).
@@ -106,11 +152,24 @@ fn paint_approach(buf: &mut RgbBuffer, layout: &Layout) {
             }
         }
     }
-    // Home desks: the agent's fixed stand/seat cell is a bespoke anchor (not a
-    // side-probe), so mark `desk_walk_anchor` directly.
+    // Home desks: the chair (`desk_walk_anchor` == `seated_foot_cell(Desk)`) is
+    // the SEAT the sprite settles onto (magenta, inside the blocked footprint),
+    // and A* now routes to an APPROACH POINT off an allowed N/E/W side (green) —
+    // the SAME split as the seats. Mirror `desk_approach_cell`'s per-side scan
+    // from the CHAIR (not the top-left corner) so every allowed+reachable side
+    // shows, including the east (the corner scan can't clear the 16px body).
+    let desk_def = furniture_def(Furniture::Desk);
     for desk in &layout.home_desks {
-        let a = desk_walk_anchor(*desk);
-        blob(buf, a.x as i32, a.y as i32, APPROACH, 0.7);
+        let chair = desk_walk_anchor(*desk);
+        blob(buf, chair.x as i32, chair.y as i32, SEAT, 0.7);
+        for (dx, dy) in DIRS {
+            if !desk_def.approach.allows(Facing::South, (dx, dy)) {
+                continue;
+            }
+            if let Some(c) = first_reachable_on_side(layout, chair, dx, dy) {
+                blob(buf, c.x as i32, c.y as i32, APPROACH, 0.7);
+            }
+        }
     }
 }
 
@@ -127,6 +186,10 @@ fn paint_routes(buf: &mut RgbBuffer, scene: &SceneState, motion: &HashMap<AgentI
         }
     }
 }
+
+/// Scan this far from a seat centre to clear the (wide) furniture body and land
+/// on the first floor cell — mirrors `approach.rs::SEAT_APPROACH_SCAN`.
+const SEAT_APPROACH_SCAN: i32 = 14;
 
 /// Integer Bresenham line between two pixel points.
 fn line(buf: &mut RgbBuffer, a: Point, b: Point, c: Rgb) {
@@ -151,5 +214,122 @@ fn line(buf: &mut RgbBuffer, a: Point, b: Point, c: Rgb) {
             err += dx;
             y0 += sy;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::layout::SceneLayout;
+
+    fn greenish(c: Rgb) -> bool {
+        c.1 > c.0 && c.1 > c.2
+    }
+    fn magentaish(c: Rgb) -> bool {
+        c.0 > c.1 && c.2 > c.1
+    }
+
+    /// The `w` overlay must show a seat's APPROACH POINT (green, where A* routes)
+    /// distinct from the SEAT cell (magenta, where the sprite settles) — so a
+    /// viewer can confirm the agent enters from its natural side, not the seat.
+    #[test]
+    fn overlay_marks_seat_approach_sides_distinct_from_the_seat_cell() {
+        let l = SceneLayout::compute_with_seed(200, 130, 8, 0).unwrap();
+        let couch = l
+            .waypoints
+            .iter()
+            .find(|w| w.kind == WaypointKind::Couch)
+            .expect("a lounge couch seat");
+        let mut buf = RgbBuffer::filled(l.buf_w, l.buf_h, Rgb(0, 0, 0));
+        paint_approach(&mut buf, &l);
+
+        assert!(
+            magentaish(buf.get(couch.pos.x, couch.pos.y)),
+            "seat cell must be tinted toward SEAT (magenta), got {:?}",
+            buf.get(couch.pos.x, couch.pos.y)
+        );
+
+        let def = furniture_def(couch.kind.furniture());
+        let mut found_green_approach = false;
+        for (dx, dy) in DIRS {
+            if !def.approach.allows(couch.facing, (dx, dy)) {
+                continue;
+            }
+            for dist in 1..=SEAT_APPROACH_SCAN {
+                let (cx, cy) = (
+                    couch.pos.x as i32 + dx * dist,
+                    couch.pos.y as i32 + dy * dist,
+                );
+                if cx < 0 || cy < 0 {
+                    break;
+                }
+                let c = Point {
+                    x: cx as u16,
+                    y: cy as u16,
+                };
+                if l.is_walkable(c.x, c.y) {
+                    if l.reachable.reaches(c) && greenish(buf.get(c.x, c.y)) {
+                        found_green_approach = true;
+                    }
+                    break;
+                }
+            }
+        }
+        assert!(
+            found_green_approach,
+            "at least one allowed, reachable approach cell must be tinted toward APPROACH (green)"
+        );
+    }
+
+    /// The home desk joined the unified approach model: its chair
+    /// (`desk_walk_anchor` == `seated_foot_cell(Desk)`) is the SEAT (magenta,
+    /// inside the blocked footprint) and A* routes to an APPROACH POINT off an
+    /// allowed N/E/W side (green). The `w` overlay must show them distinct — the
+    /// same split as the seats — so a viewer can confirm the entry walks AROUND
+    /// to a side, not through the desk front.
+    #[test]
+    fn overlay_marks_desk_approach_distinct_from_the_chair() {
+        use pixtuoid_core::layout::{Facing, Furniture};
+        let l = SceneLayout::compute_with_seed(200, 130, 8, 0).unwrap();
+        let desk = *l.home_desks.first().expect("a home desk");
+        let chair = desk_walk_anchor(desk);
+        let mut buf = RgbBuffer::filled(l.buf_w, l.buf_h, Rgb(0, 0, 0));
+        paint_approach(&mut buf, &l);
+
+        assert!(
+            magentaish(buf.get(chair.x, chair.y)),
+            "the desk chair must be tinted toward SEAT (magenta), got {:?}",
+            buf.get(chair.x, chair.y)
+        );
+
+        // Scan from the CHAIR (== production `desk_approach_cell`), not the desk
+        // corner — that is what makes every allowed side reachable.
+        let def = furniture_def(Furniture::Desk);
+        let mut found_green_approach = false;
+        for (dx, dy) in DIRS {
+            if !def.approach.allows(Facing::South, (dx, dy)) {
+                continue;
+            }
+            for dist in 1..=SEAT_APPROACH_SCAN {
+                let (cx, cy) = (chair.x as i32 + dx * dist, chair.y as i32 + dy * dist);
+                if cx < 0 || cy < 0 {
+                    break;
+                }
+                let c = Point {
+                    x: cx as u16,
+                    y: cy as u16,
+                };
+                if l.is_walkable(c.x, c.y) {
+                    if l.reachable.reaches(c) && greenish(buf.get(c.x, c.y)) {
+                        found_green_approach = true;
+                    }
+                    break;
+                }
+            }
+        }
+        assert!(
+            found_green_approach,
+            "at least one allowed, reachable desk approach cell must be tinted green"
+        );
     }
 }

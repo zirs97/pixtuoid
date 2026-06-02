@@ -407,15 +407,17 @@ fn snap_back_derive_is_idempotent_within_a_frame() {
     let l = layout();
     let slot = active_slot(now0, now0 - Duration::from_secs(60));
     let desk = l.home_desks[0];
-    // Short snap (octile ~24): it arms (>= SNAP_BACK_MIN_DIST), and its physics
-    // profile is short enough (< SNAP_BACK_MS, so NO time-compression) that
-    // walk_arrived fires well inside the 900ms window — clearing snap_back, after
-    // which a same-`now` call re-arms it. That clear -> re-arm is the path most
-    // at risk of a within-frame split (the window-expiry else branch can't
-    // re-arm), so we steer the leg through it and assert below that we did.
+    // A snap-back far enough from the CHAIR to arm (≥ SNAP_BACK_MIN_DIST), stepped
+    // through its full lifecycle: arm → physics walk → walk_arrived clear → seated.
+    // The chair-distance arm gate means it does NOT re-arm once the walk reaches the
+    // chair (dist 0 < MIN), so it settles cleanly. We derive 4× per frame at the SAME
+    // `now` and assert the pose + history are stable every frame (the K-call
+    // idempotency invariant): this holds because the override arms ONCE per state
+    // transition and renders from the FROZEN origin, never re-reading the advancing
+    // history position as a per-frame gate.
     let prev0 = Point {
-        x: desk.x + 8,
-        y: desk.y + 5,
+        x: desk.x + 16,
+        y: desk.y + 12,
     };
     let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
     let mut router = StubRouter::straight();
@@ -424,7 +426,7 @@ fn snap_back_derive_is_idempotent_within_a_frame() {
     let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
 
     let mut arrived_frame: Option<u64> = None;
-    for i in 0..30u64 {
+    for i in 0..60u64 {
         let t = now0 + Duration::from_millis(i * 33);
         let p0 = derive_with_routing(
             &slot,
@@ -465,16 +467,12 @@ fn snap_back_derive_is_idempotent_within_a_frame() {
             );
         }
     }
-    // Confirm the leg reached the desk via the walk_arrived clear BEFORE the
-    // 900ms window-expiry clear — i.e. the clear -> re-arm path really was
-    // exercised above (not just the window-expiry else branch, which can't
-    // re-arm). Else the comment would overstate what this test covers.
-    let arrived = arrived_frame.expect("snap-back should reach the desk within the run");
+    // The leg must complete (settle to seated) within the run — proving we stepped a
+    // full arm → walk → arrive lifecycle (not just a no-op gate), and that the
+    // chair-distance gate stopped it re-arming once it reached the seat.
     assert!(
-        arrived * 33 < SNAP_BACK_MS,
-        "snap-back should arrive via walk_arrived (< {SNAP_BACK_MS}ms), not window-expiry; \
-         arrived at frame {arrived} ({}ms)",
-        arrived * 33
+        arrived_frame.is_some(),
+        "snap-back should reach the desk (settle to seated) within the run"
     );
 }
 
@@ -536,32 +534,94 @@ fn wander_derive_is_idempotent_within_a_frame() {
 }
 
 #[test]
-fn snap_back_long_distance_completes_by_window_no_teleport() {
-    // Regression: a snap-back over a distance whose physics duration exceeds
-    // SNAP_BACK_MS (the common case — agents snap back from far waypoints)
-    // must be time-compressed so it REACHES the desk by the 900ms window
-    // edge. Before the fix it capped elapsed at 900ms → progress stuck mid-
-    // path → the sprite teleported the remaining distance when the window
-    // guard flipped it to seated.
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+fn snap_back_long_distance_renders_past_window_by_physics() {
+    // A far snap-back's physics walk exceeds the SNAP_BACK_MS arm window. The OLD
+    // design time-compressed it to finish by 900ms; the NEW design renders it to
+    // completion by PHYSICS — no time-compression, no render cap — kept brisk by
+    // the snap-back's higher accel + cruise. So PAST the 900ms window it KEEPS
+    // WALKING (no window-cut teleport), then settles to the seated pose. We step
+    // the leg with persistent motion/history and assert: still Walking after the
+    // window, and it eventually arrives.
+    let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let l = layout();
-    // State flipped 880ms ago — just inside the 900ms window.
-    let slot = active_slot(
-        now - Duration::from_millis(880),
-        now - Duration::from_secs(60),
-    );
+    let slot = active_slot(now0, now0 - Duration::from_secs(60)); // flip at now0
     let desk = l.home_desks[0];
-    // Far prev (octile ~544) → SnapBack physics duration ~1.9s >> 900ms.
+    // Far prev → SnapBack physics duration well over the 900ms arm window.
     let prev = Point {
         x: desk.x + 50,
         y: desk.y + 30,
     };
-    let mut history = PoseHistory::new();
-    history.record(slot.agent_id, prev, now - Duration::from_millis(50));
     let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
     let mut router = StubRouter::straight();
+    let mut history = PoseHistory::new();
+    history.record(slot.agent_id, prev, now0 - Duration::from_millis(50));
     let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
-    match derive_with_routing(
+
+    let (mut walking_after_window, mut arrived) = (false, false);
+    for i in 0..90u64 {
+        let t = now0 + Duration::from_millis(i * 33);
+        match derive_with_routing(
+            &slot,
+            t,
+            &l,
+            &mut router,
+            &overlay,
+            &mut history,
+            &mut motion,
+        ) {
+            Some(Pose::Walking { .. }) if i * 33 > SNAP_BACK_MS => walking_after_window = true,
+            Some(Pose::Walking { .. }) => {}
+            // Only counts as "arrived" once we've actually been walking.
+            Some(Pose::SeatedTyping { .. } | Pose::SeatedIdle | Pose::SeatedThinking)
+                if walking_after_window =>
+            {
+                arrived = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        walking_after_window,
+        "far snap-back must keep WALKING past the {SNAP_BACK_MS}ms arm window — not compressed or window-capped"
+    );
+    assert!(
+        arrived,
+        "far snap-back must eventually settle to the seated pose by physics"
+    );
+}
+
+#[test]
+fn snap_back_routes_via_the_approach_cell_then_settles_onto_the_chair() {
+    // Snap-back is unified with the other desk legs: it routes to a reachable N/E/W
+    // approach cell and SETTLES onto the chair, instead of aiming A* at the blocked
+    // chair (which find_path snaps to the nearest — south — cell). The frozen
+    // polyline therefore ends [..., approach, chair].
+    use pixtuoid_core::layout::desk_walk_anchor;
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let l = layout();
+    let desk_index = (0..l.home_desks.len())
+        .find(|&i| desk_approach_cell(l.home_desks[i], &l).is_some())
+        .expect("a desk with a valid approach cell");
+    let desk = l.home_desks[desk_index];
+    let chair = desk_walk_anchor(desk);
+    let approach = desk_approach_cell(desk, &l).expect("approach cell");
+
+    let mut slot = active_slot(now, now - Duration::from_secs(60));
+    slot.desk_index = desk_index;
+    slot.agent_id = AgentId::from_transcript_path("/snapapproach/slot.jsonl");
+    // Far from the chair (≥ SNAP_BACK_MIN_DIST) so the snap-back arms.
+    let prev = Point {
+        x: chair.x + 40,
+        y: chair.y + 25,
+    };
+    let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
+    let mut router = StubRouter::straight();
+    let mut history = PoseHistory::new();
+    history.record(slot.agent_id, prev, now - Duration::from_millis(50));
+    let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
+
+    let pose = derive_with_routing(
         &slot,
         now,
         &l,
@@ -569,15 +629,28 @@ fn snap_back_long_distance_completes_by_window_no_teleport() {
         &overlay,
         &mut history,
         &mut motion,
-    ) {
-        Some(Pose::Walking { t_x1000, .. }) => {
-            assert!(
-                    t_x1000 >= 950,
-                    "long snap-back must be ~complete by the window edge (no teleport), got t_x1000={t_x1000}"
-                );
-        }
-        other => panic!("expected near-complete Walking pose, got {other:?}"),
-    }
+    )
+    .expect("snap-back renders a pose");
+    assert!(
+        matches!(pose, Pose::Walking { .. }),
+        "snap-back must be Walking, got {pose:?}"
+    );
+    let snap = motion[&slot.agent_id]
+        .walk_path
+        .as_ref()
+        .expect("the cornered snap-back leg is frozen (… approach, chair, len > 2)");
+    assert_eq!(
+        snap.path.last(),
+        Some(&chair),
+        "snap-back must settle onto the chair; got {:?}",
+        snap.path
+    );
+    assert_eq!(
+        snap.path[snap.path.len() - 2],
+        approach,
+        "snap-back must arrive via the N/E/W approach cell, not straight at the chair; got {:?}",
+        snap.path
+    );
 }
 
 #[test]
@@ -830,10 +903,11 @@ fn snap_back_progress_is_physics_eased_not_linear() {
     let l = layout();
     let slot = active_slot(now, now - Duration::from_secs(60));
     let desk = l.home_desks[0];
-    // Short-but-qualifying distance (manhattan 15 ≥ SNAP_BACK_MIN_DIST=8).
+    // Qualifying distance from the CHAIR (manhattan 28 ≥ SNAP_BACK_MIN_DIST=8) so
+    // the snap-back actually arms.
     let prev = Point {
-        x: desk.x + 10,
-        y: desk.y + 5,
+        x: desk.x + 20,
+        y: desk.y + 18,
     };
 
     let mut history = PoseHistory::new();
@@ -884,13 +958,15 @@ fn snap_back_progress_is_physics_eased_not_linear() {
 
     match p {
         Some(Pose::Walking { t_x1000, .. }) => {
-            // Triangular profile: s(T/4) = (1/2)*a*(T/4)² = L/16
-            // → t_x1000 ≈ 1000*L/16/L = 62. Linear would be 250.
-            // We assert strictly < 250 (generous threshold).
+            // Physics ease-in: the accel ramp at the start keeps progress SUB-LINEAR
+            // through the first quarter of the walk — triangular gives s(T/4)=L/16
+            // (t≈62); even a trapezoidal snap (the higher snap-back accel can push a
+            // moderate distance past L_crit) is still < linear's 250 at T/4 because
+            // the ramp dominates the opening. A linear walk would read exactly 250.
             assert!(
-                    t_x1000 < 250,
-                    "physics ease-in: expected t_x1000 < 250 at 25% of duration (triangular), got {t_x1000}"
-                );
+                t_x1000 < 250,
+                "physics ease-in: expected t_x1000 < 250 at 25% of duration, got {t_x1000}"
+            );
         }
         other => panic!("expected Walking pose at 25% of snap-back duration, got {other:?}"),
     }
@@ -1564,6 +1640,199 @@ fn entry_walk_coordinates_are_continuous() {
 }
 
 #[test]
+fn desk_approach_cell_is_never_inside_the_blocked_desk() {
+    // The desk's ARRIVAL target must be a real walkable cell off an allowed
+    // (N/E/W) side — never the chair (blocked, inside the footprint) and never
+    // any other blocked cell. Aiming A* at the blocked chair directly is exactly
+    // what made it fall back to a straight door→chair line THROUGH the desk body
+    // (the "walk through the table" bug). A walkable result is, by construction,
+    // outside every blocked cell.
+    use pixtuoid_core::layout::desk_walk_anchor;
+    let l = layout();
+    let mut any_some = false;
+    for &desk in &l.home_desks {
+        let chair = desk_walk_anchor(desk);
+        // The chair is inside the blocked footprint — that is WHY we can't aim
+        // A* at it and must settle onto it instead.
+        assert!(
+            !l.is_walkable(chair.x, chair.y),
+            "the desk chair {chair:?} must be blocked (inside the footprint)"
+        );
+        // None = degenerate layout (every N/E/W side walled off); the entry then
+        // falls back to the direct chair target. Acceptable, so not asserted.
+        if let Some(cell) = desk_approach_cell(desk, &l) {
+            any_some = true;
+            assert!(
+                l.is_walkable(cell.x, cell.y),
+                "approach cell {cell:?} for desk {desk:?} must be walkable \
+                 (so it is neither inside the footprint nor the blocked chair)"
+            );
+            assert_ne!(cell, chair, "approach cell must differ from the chair");
+        }
+    }
+    assert!(
+        any_some,
+        "at least one desk in an open layout must have a valid approach cell"
+    );
+}
+
+#[test]
+fn desk_entry_routes_around_the_desk_then_settles_onto_the_chair() {
+    // The arrival-bug fix: an entering agent walks to a walkable approach cell
+    // (off an allowed side) and only THEN settles onto the chair — it must NOT
+    // straight-line door→chair through the desk body. With the chair appended as
+    // the settle endpoint, the frozen leg polyline is [door, approach, chair].
+    use pixtuoid_core::layout::desk_walk_anchor;
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let l = layout();
+    let door = l.door_threshold.expect("door");
+
+    // Pick the first desk that has a real (non-degenerate) approach cell.
+    let desk_index = (0..l.home_desks.len())
+        .find(|&i| desk_approach_cell(l.home_desks[i], &l).is_some())
+        .expect("a desk with a valid approach cell");
+    let desk = l.home_desks[desk_index];
+    let chair = desk_walk_anchor(desk);
+    let approach = desk_approach_cell(desk, &l).expect("approach cell");
+
+    let slot = entry_slot_far(now, desk_index);
+    let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
+    let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
+    let mut history = PoseHistory::new();
+    let mut router = StubRouter::straight();
+
+    let pose = derive_with_routing(
+        &slot,
+        now,
+        &l,
+        &mut router,
+        &overlay,
+        &mut history,
+        &mut motion,
+    )
+    .expect("entering agent renders a pose");
+    assert!(
+        matches!(pose, Pose::Walking { .. }),
+        "a fresh entry must be Walking, got {pose:?}"
+    );
+
+    let snap = motion[&slot.agent_id]
+        .walk_path
+        .as_ref()
+        .expect("the cornered entry+settle leg is frozen (len > 2)");
+    assert_eq!(
+        snap.path,
+        vec![door, approach, chair],
+        "the leg must go door→approach→chair, settling onto the chair"
+    );
+    // The regression guard, stated directly: the agent never targets the blocked
+    // chair as its A* goal (that is what straight-lined through the desk).
+    assert_ne!(
+        snap.path,
+        vec![door, chair],
+        "entry must not straight-line door→chair through the desk body"
+    );
+}
+
+#[test]
+fn wander_legs_approach_the_desk_via_an_allowed_side_not_through_the_front() {
+    // Regression for the bug the user spotted: the desk-arrival unification
+    // fixed the ENTRY leg but the WANDER out/back legs still aimed A* at
+    // `desk_walk_anchor` (the blocked chair). `find_path` snaps a blocked goal
+    // to the NEAREST walkable coarse cell — which for the south-facing chair is
+    // the SOUTH (corridor) side — so the agent walked up THROUGH the desk front
+    // on every wander cycle. Every desk-touching leg must instead route via
+    // `desk_leg_endpoint` (a reachable N/E/W approach cell) and SETTLE onto the
+    // chair, exactly like entry. This pins both legs.
+    use crate::tui::pathfind::AStarRouter;
+    use pixtuoid_core::layout::desk_walk_anchor;
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let l = layout();
+
+    // A desk with a real (non-degenerate) approach cell.
+    let desk_index = (0..l.home_desks.len())
+        .find(|&i| desk_approach_cell(l.home_desks[i], &l).is_some())
+        .expect("a desk with a valid approach cell");
+    let desk = l.home_desks[desk_index];
+    let chair = desk_walk_anchor(desk);
+    let approach = desk_approach_cell(desk, &l).expect("approach cell");
+
+    // A trip-taking agent seated at that desk, long past its entry walk.
+    let trip_id = (0u64..3000)
+        .map(|i| AgentId::from_transcript_path(&format!("/deskleg/{i}.jsonl")))
+        .find(|id| takes_trip(*id, 0))
+        .expect("a trip agent");
+    let old = now - Duration::from_secs(120);
+    let mut slot = entry_slot(old);
+    slot.agent_id = trip_id;
+    slot.desk_index = desk_index;
+    slot.last_event_at = old;
+
+    let mut router = AStarRouter::new();
+    router.set_preferred_zone(l.corridor);
+    let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
+    let mut history = PoseHistory::new();
+    let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
+
+    let (mut saw_out, mut saw_back) = (false, false);
+    let mut seen_ends: Vec<(Point, Point)> = Vec::new();
+    for i in 0..6000u64 {
+        let t = now + Duration::from_millis(i * 33);
+        let _ = derive_with_routing(
+            &slot,
+            t,
+            &l,
+            &mut router,
+            &overlay,
+            &mut history,
+            &mut motion,
+        );
+        let Some(snap) = motion.get(&trip_id).and_then(|m| m.walk_path.as_ref()) else {
+            continue;
+        };
+        if let (Some(&f), Some(&la)) = (snap.path.first(), snap.path.last()) {
+            if !seen_ends.contains(&(f, la)) {
+                seen_ends.push((f, la));
+            }
+        }
+        // Walk-OUT begins by rising off the chair (prepended), so its 2nd point
+        // is the approach cell — never a cell on the blocked south front.
+        if snap.path.first() == Some(&chair) {
+            saw_out = true;
+            assert_eq!(
+                snap.path.get(1),
+                Some(&approach),
+                "walk-out must leave the desk via the N/E/W approach cell, not \
+                 straight through the south front; got {:?}",
+                snap.path
+            );
+        }
+        // Walk-BACK ends by gliding onto the chair (appended), so its
+        // penultimate point is the approach cell.
+        if snap.path.last() == Some(&chair) && snap.path.len() >= 2 {
+            saw_back = true;
+            assert_eq!(
+                snap.path[snap.path.len() - 2],
+                approach,
+                "walk-back must arrive at the desk via the N/E/W approach cell, \
+                 not the south front; got {:?}",
+                snap.path
+            );
+        }
+    }
+    assert!(
+        saw_out,
+        "expected to observe a walk-out leg; chair={chair:?} approach={approach:?} \
+         ends seen={seen_ends:?}"
+    );
+    assert!(
+        saw_back,
+        "expected to observe a walk-back leg; chair={chair:?} approach={approach:?} \
+         ends seen={seen_ends:?}"
+    );
+}
+
+#[test]
 fn exit_walk_coordinates_are_continuous() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let l = layout();
@@ -1574,6 +1843,69 @@ fn exit_walk_coordinates_are_continuous() {
     assert!(
         max_step <= MAX_FRAME_STEP_PX,
         "exit walk teleported: max frame jump {max_step}px (> {MAX_FRAME_STEP_PX})"
+    );
+}
+
+#[test]
+fn exit_from_desk_rises_off_the_chair_via_the_approach_cell() {
+    // The exit DEPARTURE is a desk leg too (the case the user caught: the door
+    // is NE, not south). An agent leaving its seated chair must rise off it via
+    // the N/E/W approach cell — NOT dip south first. Aiming A* from the blocked
+    // chair snaps the goal to the nearest (south) cell, sending the agent the
+    // wrong way around the desk before doubling back to the door. The frozen
+    // exit polyline must therefore START [chair, approach, …], mirroring entry.
+    use pixtuoid_core::layout::desk_walk_anchor;
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let l = layout();
+    let desk_index = (0..l.home_desks.len())
+        .find(|&i| desk_approach_cell(l.home_desks[i], &l).is_some())
+        .expect("a desk with a valid approach cell");
+    let desk = l.home_desks[desk_index];
+    let chair = desk_walk_anchor(desk);
+    let approach = desk_approach_cell(desk, &l).expect("approach cell");
+
+    let mut slot = exiting_slot(now, now - Duration::from_secs(300));
+    slot.desk_index = desk_index;
+    slot.agent_id = AgentId::from_transcript_path("/exitdesk/slot.jsonl");
+
+    let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();
+    let mut motion: HashMap<AgentId, MotionState> = HashMap::new();
+    // Empty history ⇒ the agent is exiting from the seated state (not mid-wander),
+    // so the stored exit origin is the chair and the desk-departure path applies.
+    let mut history = PoseHistory::new();
+    let mut router = StubRouter::straight();
+
+    let pose = derive_with_routing(
+        &slot,
+        now,
+        &l,
+        &mut router,
+        &overlay,
+        &mut history,
+        &mut motion,
+    )
+    .expect("exiting agent renders a pose");
+    assert!(
+        matches!(pose, Pose::Walking { .. }),
+        "a fresh exit must be Walking, got {pose:?}"
+    );
+
+    let snap = motion[&slot.agent_id]
+        .walk_path
+        .as_ref()
+        .expect("the cornered exit leg is frozen (chair → approach → door, len > 2)");
+    assert_eq!(
+        snap.path.first(),
+        Some(&chair),
+        "exit must START at the chair (Settle::Start glides off it); got {:?}",
+        snap.path
+    );
+    assert_eq!(
+        snap.path.get(1),
+        Some(&approach),
+        "exit must rise off the chair via the N/E/W approach cell, not dip south; \
+         got {:?}",
+        snap.path
     );
 }
 
@@ -1785,7 +2117,12 @@ fn exit_while_wandering_does_not_teleport_to_desk() {
     use crate::tui::pixel_painter::character_anchor;
 
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    let l = layout();
+    // Real-sized floor (not the tiny 120×96 `layout()`): in the tiny room the
+    // meeting sofas are boxed in to only their backrest, so with the no-back-
+    // fallback rule a trip agent correctly skips them and never wanders far. A
+    // real floor has reachable waypoints, so the agent genuinely walks out —
+    // which is what this exit-while-wandering test needs.
+    let l = Layout::compute(160, 120, 4).expect("fits");
     let trip_id = (0u64..1000)
         .map(|i| AgentId::from_transcript_path(&format!("/exitw/{i}.jsonl")))
         .find(|id| takes_trip(*id, 0))

@@ -14,6 +14,24 @@ fn pct(v: u16, n: u16) -> u16 {
     ((v as u32 * n as u32) / 100) as u16
 }
 
+/// Counter width that marks the LARGE (detailed kitchen) pantry sprite. The size
+/// producer emits this width when the pantry room is wide enough; consumers test
+/// `>= PANTRY_COUNTER_LARGE_W` rather than the bare `32` literal.
+const PANTRY_COUNTER_LARGE_W: u16 = 32;
+
+/// Y-position percentage of the pantry counter within its room — lower (65%) for
+/// the large counter, a touch higher (60%) for the small one. SINGLE SOURCE: the
+/// bistro-table clamp (which keeps that cluster clear of the counter) and the
+/// counter's own waypoint placement both read it, so they cannot disagree — were
+/// they to drift, the clamp would guard a phantom counter position.
+fn pantry_counter_y_pct(counter_w: u16) -> u16 {
+    if counter_w >= PANTRY_COUNTER_LARGE_W {
+        65
+    } else {
+        60
+    }
+}
+
 pub(super) fn compute_with_seed(
     buf_w: u16,
     buf_h: u16,
@@ -177,39 +195,53 @@ pub(super) fn compute_with_seed(
     );
 
     const SOFA_H: u16 = 7;
-    let mut meeting_sofas = if let Some(mr) = meeting_room {
+    // A meeting room narrower than this can't host the 16-px-wide sofa body
+    // (+ its 2-px pad) with enough walkable margin for the coarse 4×4 router to
+    // reach the seats buried in the sofa — find_path returns None and an idle
+    // agent sent there TELEPORTS (route() falls back to a straight line). Below
+    // it the room degrades to bare floor (no sofa/table/seats), the same
+    // graceful degradation the dense floor uses when too short. The threshold
+    // is validated by the routability sweep
+    // `meeting_and_pantry_waypoints_are_routable_on_the_coarse_grid`.
+    const MEETING_FURNITURE_MIN_W: u16 = 30;
+    let room_fits_furniture =
+        |mr: &Bounds| mr.width >= MEETING_FURNITURE_MIN_W && mr.height >= SOFA_H * 2;
+    // One source for a meeting room's furniture trio: two facing sofas and the
+    // table CENTERED BETWEEN THEM. The table used to sit at the room centre while
+    // the sofas sat at 30%/80% of the room height — asymmetric, so the north
+    // sofa's front was packed against the table (a sub-coarse-grid seam that cost
+    // its seats their front approach) while the south sofa had clearance. Placing
+    // the table at the sofa midpoint gives both fronts equal, routable clearance.
+    // The sofas keep their 30%/80% bias (backrest clearance from the room's top/
+    // bottom walls); only the table follows them. All positions are
+    // window-height-driven, so the approach points the agents path to derive from
+    // the resulting mask at every size — nothing here is a fixed pixel offset.
+    let room_furniture = |mr: &Bounds| -> ([Point; 2], Point) {
         let cx = mr.x + mr.width / 2;
+        // Sofas sit SYMMETRICALLY about the room mid-line (20%/80%, was 30%/80%)
+        // so each gets equal front clearance to the centred table — the old 30%
+        // packed the north sofa's front against the table. Clamps mirror each
+        // other: north ≥ SOFA_H from the top wall, south ≤ SOFA_H from the bottom,
+        // so neither backrest clips its wall in a short room.
+        let north_y = (mr.y + pct(mr.height, 20)).max(mr.y + SOFA_H);
         let south_y = (mr.y + pct(mr.height, 80)).min(mr.y + mr.height.saturating_sub(SOFA_H));
-        vec![
-            Point {
-                x: cx,
-                y: mr.y + pct(mr.height, 30),
-            },
-            Point { x: cx, y: south_y },
-        ]
-    } else {
-        vec![]
+        let sofas = [Point { x: cx, y: north_y }, Point { x: cx, y: south_y }];
+        let table = Point {
+            x: cx,
+            y: (north_y + south_y) / 2,
+        };
+        (sofas, table)
     };
-    let mut meeting_table_vec: Vec<Point> = meeting_room
-        .map(|mr| Point {
-            x: mr.x + mr.width / 2,
-            y: mr.y + mr.height / 2,
-        })
-        .into_iter()
-        .collect();
-    // Second meeting room furniture (dense layout).
-    if let Some(mr2) = meeting_room_2 {
-        let cx2 = mr2.x + mr2.width / 2;
-        let south2 = (mr2.y + pct(mr2.height, 80)).min(mr2.y + mr2.height.saturating_sub(SOFA_H));
-        meeting_sofas.push(Point {
-            x: cx2,
-            y: mr2.y + pct(mr2.height, 30),
-        });
-        meeting_sofas.push(Point { x: cx2, y: south2 });
-        meeting_table_vec.push(Point {
-            x: mr2.x + mr2.width / 2,
-            y: mr2.y + mr2.height / 2,
-        });
+    let mut meeting_sofas: Vec<Point> = Vec::new();
+    let mut meeting_table_vec: Vec<Point> = Vec::new();
+    // Order is load-bearing: room 0 = `meeting_room`, room 1 = `meeting_room_2`
+    // (dense layout). `compute_waypoints` keys seats to a table by this index.
+    for room in [meeting_room, meeting_room_2] {
+        if let Some(mr) = room.filter(&room_fits_furniture) {
+            let (sofas, table) = room_furniture(&mr);
+            meeting_sofas.extend(sofas);
+            meeting_table_vec.push(table);
+        }
     }
     let meeting_tables = meeting_table_vec;
 
@@ -229,7 +261,7 @@ pub(super) fn compute_with_seed(
     // ones. The threshold (36 = 32 sprite + 4 px margins) keeps the
     // walkable strip around the counter wide enough for routing.
     let pantry_counter_size: (u16, u16) = match pantry_room {
-        Some(pr) if pr.width >= 36 => (32, 10),
+        Some(pr) if pr.width >= 36 => (PANTRY_COUNTER_LARGE_W, 10),
         _ => (20, 8),
     };
 
@@ -332,12 +364,12 @@ pub(super) fn compute_with_seed(
     // floor-to-ceiling windows so both sit on the same wall plane.
     // Windows span y=1 to y=top_wall_h-3 inside the wall band; the
     // elevator's bottom row lands at that same y. (`top_wall_h =
-    // top_margin - 4` per the renderer's pre-pass; replicated here
-    // so the layout owns the geometry.) Requires ≥ 20 px of width
-    // to even fit the sprite + margin.
+    // top_margin - WALL_BAND_TO_TOP_MARGIN`, the one const the renderer's
+    // pre-pass and the mask both read so they can't drift.) Requires ≥ 20 px
+    // of width to even fit the sprite + margin.
     const ELEVATOR_W: u16 = 16;
     const ELEVATOR_H: u16 = 14;
-    let top_wall_h = top_margin.saturating_sub(4);
+    let top_wall_h = top_margin.saturating_sub(super::WALL_BAND_TO_TOP_MARGIN);
     let window_bottom_y = top_wall_h.saturating_sub(3); // matches paint_floor_and_walls' window_h
     let door = if buf_w >= ELEVATOR_W + 4 && window_bottom_y + 1 >= ELEVATOR_H {
         Some(Point {
@@ -421,7 +453,7 @@ pub(super) fn compute_with_seed(
         // padded south edge above the counter's padded north so the two
         // footprints don't merge into a band that closes the east routing strip
         // in a short pantry (was unreachable at 120×80, outside the old matrix).
-        let counter_y = pr.y + pct(pr.height, if pantry_counter_size.0 >= 32 { 65 } else { 60 });
+        let counter_y = pr.y + pct(pr.height, pantry_counter_y_pct(pantry_counter_size.0));
         let counter_north =
             counter_y.saturating_sub(pantry_counter_size.1 / 2 + super::OBSTACLE_PAD_PX);
         let max_y = (pr.y + pr.height)
@@ -475,6 +507,19 @@ pub(super) fn compute_with_seed(
         pantry_counter_size,
     );
 
+    // Coarse reachable component, seeded from the door (where agents enter, so
+    // always in the main component); fall back to a home desk, then buffer
+    // centre. `snap_seed` pulls a blocked seed into the adjacent component.
+    let reachable = ReachSet::from_mask(
+        &walkable,
+        door_threshold
+            .or_else(|| home_desks.first().copied())
+            .unwrap_or(Point {
+                x: buf_w / 2,
+                y: buf_h / 2,
+            }),
+    );
+
     Some(SceneLayout {
         buf_w,
         buf_h,
@@ -501,6 +546,7 @@ pub(super) fn compute_with_seed(
         corridor,
         couch_sprite_center,
         walkable,
+        reachable,
     })
 }
 
@@ -808,7 +854,11 @@ pub(super) fn compute_waypoints(
                 y: couch_y,
             },
             kind: WaypointKind::Couch,
-            facing: Facing::South,
+            // SEATED facing: the sitter looks NORTH at the window (→ back_couch
+            // sprite). The APPROACH side is decoupled (Furniture::Couch uses
+            // ApproachSides::ALL — the agent walks up from the south/lounge,
+            // whose front is the window WALL); see decor.rs Couch row.
+            facing: Facing::North,
             room_id: None,
         })
         .collect();
@@ -818,13 +868,13 @@ pub(super) fn compute_waypoints(
         // into the cubicle band at small buffer widths.
         let half_cw = pantry_counter_size.0 / 2;
         let max_cx = pr.x + pr.width.saturating_sub(half_cw + 1);
-        let (wx, wy) = if pantry_counter_size.0 >= 32 {
-            ((pr.x + pr.width / 2).min(max_cx), pr.y + pct(pr.height, 65))
+        // y is single-sourced with the bistro-table clamp; only x is size-shaped
+        // (large counter is room-centred, small one sits at 60% width).
+        let wy = pr.y + pct(pr.height, pantry_counter_y_pct(pantry_counter_size.0));
+        let wx = if pantry_counter_size.0 >= PANTRY_COUNTER_LARGE_W {
+            (pr.x + pr.width / 2).min(max_cx)
         } else {
-            (
-                (pr.x + pct(pr.width, 60)).min(max_cx),
-                pr.y + pct(pr.height, 60),
-            )
+            (pr.x + pct(pr.width, 60)).min(max_cx)
         };
         waypoints.push(Waypoint {
             pos: Point { x: wx, y: wy },
