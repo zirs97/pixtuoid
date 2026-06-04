@@ -59,7 +59,7 @@ cargo run --release --example snapshot -- /tmp/snap.png              # render TU
 
 The `test-renderer` feature is needed for the `e2e.rs` integration test; **`just test` injects it for you** (as does every recipe), so prefer it over a raw `cargo test`. `just test` runs `cargo nextest run` when `cargo-nextest` is installed (parallel execution, the same runner CI uses) and falls back to `cargo test` otherwise. While iterating on one crate, scope it (`cargo nextest run -p pixtuoid` or `cargo test -p pixtuoid --lib <filter>`) — seconds, vs a full-workspace run.
 
-> **Don't chain `cargo clippy && cargo test`.** Clippy and test/nextest use *separate* build caches (clippy's rustc driver has a different fingerprint), so chaining them recompiles the whole workspace **twice**. Run the single gate `just preflight` (lint → clippy → test, the exact CI order), or run one check at a time.
+> **Don't chain `cargo clippy && cargo test`.** Clippy and test/nextest use *separate* build caches (clippy's rustc driver has a different fingerprint), so chaining them recompiles the whole workspace **twice**. Run the single gate `just preflight` (lint → clippy → hack → test, the exact CI order), or run one check at a time.
 
 ### Test organization (three tiers)
 
@@ -90,13 +90,19 @@ See `.claude/skills/beautify-decoration/SKILL.md` for the full iteration loop, s
 
 The `justfile` is the **single source of truth** for what each check runs —
 `.github/workflows/ci.yml` and the git hooks call the same recipes, so there's
-no CI-vs-local drift to maintain. Requires `just` (`brew install just`).
+no CI-vs-local drift to maintain. Requires `just` (`brew install just`); the
+checks also need a handful of cargo tools — `just setup-tools` installs them
+(cargo-hack, cargo-nextest, cargo-machete, cargo-deny, cargo-semver-checks).
 
 ```
 just              # list recipes
-just preflight    # full pre-push gate: lint (fmt+machete+deny, parallel) → clippy → test
+just setup-tools  # install the dev tools the checks need (run once per clone)
+just preflight    # full pre-push gate: lint (fmt+machete+deny, parallel) → clippy → hack → test
 just fmt          # auto-format
 ```
+
+(`hack` is `cargo hack --feature-powerset` — it catches code that only builds
+with `test-renderer` on. `semver` and `coverage`/`smoke` are CI-only.)
 
 Run `just preflight` locally to avoid the round-trip of "push → wait for CI →
 red → fix → push again."
