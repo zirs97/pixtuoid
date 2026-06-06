@@ -104,22 +104,63 @@ TUI), `gh skill` (install Agent Skills, incl. into `.claude/skills/`).
 
 ## Adding a new agent CLI
 
-Implement the `Source` trait, add it to `source::REGISTERED_SOURCES` (which forces
-a coalescing fixture + label test via the conformance suite), and wire it into
-`runtime::run_async` (the runtime spawns sources by hand):
+Step by step. The registration steps (4–6) are test-forced — skipping one
+fails `just test`; steps 1–3 and 7–9 are on you (7, the runtime wiring, is the
+historically-missed one):
 
-```rust
-#[async_trait]
-pub trait Source: Send + 'static {
-    fn name(&self) -> &str;
-    async fn run(self: Box<Self>, tx: TaggedSender) -> anyhow::Result<()>;
-}
-```
+1. **Verify the wire format against the CLI's actual source/releases first.**
+   Where does it write transcripts, what does a line look like, does it have
+   hooks, what identifies a session? Pin every fact to an upstream file/version
+   in your comments — wire formats change without notice (`Task` → `Agent` did),
+   and a guessed format decodes nothing (see the "Keeping the decode mapping
+   current" section in `crates/pixtuoid-core/CLAUDE.md`).
+2. **Write the source module** — `crates/pixtuoid-core/src/source/<name>.rs`
+   with a `SOURCE_NAME` const, a `LineDecoder` fn (one JSONL line → `Vec<AgentEvent>`),
+   a label deriver, and unit tests for every event mapping. Per-source format
+   knowledge lives HERE, not in shared code.
+3. **Implement the `Source` trait** (the watcher lifecycle):
 
-Per-source JSONL format knowledge lives in the source's own decoder fn (injected
-into `JsonlWatcher` via fn pointers), not a shared decoder. See "Adding a new
-agent CLI" in [`CLAUDE.md`](../CLAUDE.md) and `crates/pixtuoid-core/CLAUDE.md` for the
-full wiring (and the four test files that must be updated together).
+   ```rust
+   #[async_trait]
+   pub trait Source: Send + 'static {
+       fn name(&self) -> &str;
+       async fn run(self: Box<Self>, tx: TaggedSender) -> anyhow::Result<()>;
+   }
+   ```
+
+   **Hook-only CLI** (no watchable transcript — e.g. one that full-rewrites
+   its session file per turn)? Skip the `LineDecoder`, the `Source` trait, and
+   step 7: set `line_decoder: None` in the registry row, put the format
+   knowledge in a `hook.custom` decoder (it must claim EVERY event — see the
+   contract on `HookDecoding::custom`), and do step 8 (install target) instead
+   — its hooks ride the shared socket.
+
+4. **Add ONE `SourceDescriptor` row** in `crates/pixtuoid-core/src/source/registry.rs`
+   — label prefix (2 chars), the line decoder, hook keying (`IdKey` + an
+   optional custom hook decoder), and truthful capability flags (`has_exit_signal`,
+   `resurrects_on_prompt`, `delegations_are_hook_silent`). Lifecycle policy
+   derives from the flags; you do **not** edit the reducer.
+5. **Add the name to `source::REGISTERED_SOURCES`** — a bridge test pins
+   table↔list equality, and the conformance suite then REQUIRES a fixture.
+6. **Drop a sanitized real-capture fixture** under
+   `crates/pixtuoid-core/tests/fixtures/sources/<name>/<scenario>/`
+   (transcript + hook payloads as applicable — see the fixtures README for the
+   provenance/sanitization rules), then `cargo insta review` to accept the
+   golden snapshot. The harness asserts all of a session's events coalesce to
+   ONE `AgentId` — the duplicate-sprite bug class.
+7. **Wire it into `runtime::run_async`** (`crates/pixtuoid/src/runtime.rs`) —
+   the runtime spawns sources by hand; the registry gates tests, not spawning.
+8. **If the CLI has hooks**, add an `install/` target (`Target` registry row +
+   a `merge_install`/`merge_uninstall` pair + a registered-events↔decoder-arms
+   guard test) so `pixtuoid install-hooks --target <name>` wires the shim.
+9. **Docs in the same PR**: README "Supported Tools" row, the nested
+   `crates/pixtuoid-core/CLAUDE.md` entry, and — if the upstream is open
+   source — a `scripts/check_upstream_drift.py` check so a silent rename
+   pages us weekly.
+
+See "Adding a new agent CLI" in [`CLAUDE.md`](../CLAUDE.md) and
+`crates/pixtuoid-core/CLAUDE.md` for the deeper wiring detail (and the four
+test files that must be updated together if you touch the shared contracts).
 
 ## License
 

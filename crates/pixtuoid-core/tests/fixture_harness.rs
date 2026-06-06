@@ -8,8 +8,9 @@
 //!      coalescing contract that keeps regressing (a mismatch = two sprites
 //!      for one session).
 //!
-//! Adding a CLI = drop a fixture dir + register its decoder in `decoder_for`.
-//! No other test code; `cargo insta review` accepts the new snapshot.
+//! Adding a CLI = drop a fixture dir; the decoder comes from the source's
+//! `SourceDescriptor` row in `source/registry.rs` — no harness edit. Run
+//! `cargo insta review` to accept the new snapshot.
 //!
 //! Snapshots stay portable because the decoder is fed the fixture's *relative*
 //! path (a stable logical key), not the machine-specific absolute path —
@@ -20,23 +21,28 @@ use std::path::{Path, PathBuf};
 
 use pixtuoid_core::source::decoder::decode_hook_payload;
 use pixtuoid_core::source::jsonl::LineDecoder;
-use pixtuoid_core::source::{antigravity, claude_code, codex, AgentEvent, REGISTERED_SOURCES};
+use pixtuoid_core::source::{registry, AgentEvent, REGISTERED_SOURCES};
 
-/// Map a fixture's source directory name to its JSONL line decoder.
-/// Register a new CLI here (one line) — that plus a fixture dir is all it takes.
+/// A fixture source's JSONL line decoder, from the source registry. A
+/// hook-only source (`line_decoder: None`) ships no transcript and never
+/// reaches this fn (`is_hook_only` gates the transcript requirement).
 fn decoder_for(source: &str) -> LineDecoder {
-    // Keyed off the source modules' own SOURCE_NAME consts so a rename is a
-    // compile error here, not a silent fixture/decoder drift. (Antigravity has
-    // no such const; its name() returns this literal.)
-    if source == codex::SOURCE_NAME {
-        codex::decode_codex_line
-    } else if source == claude_code::SOURCE_NAME {
-        claude_code::decode_cc_line
-    } else if source == "antigravity" {
-        antigravity::decode_ag_line
-    } else {
-        panic!("unknown fixture source {source:?} — register its decoder in decoder_for")
-    }
+    registry::descriptor_for(source)
+        .and_then(|d| d.line_decoder)
+        .unwrap_or_else(|| {
+            panic!(
+                "fixture source {source:?} has no line_decoder — add/extend its \
+                 SourceDescriptor row in source/registry.rs"
+            )
+        })
+}
+
+/// Hook-only-ness comes from the registry row (`line_decoder: None`), never a
+/// harness-side list — a second list could mark a JSONL source hook-only and
+/// pass the harness without its LineDecoder ever running ("registration is
+/// not coverage").
+fn is_hook_only(source: &str) -> bool {
+    registry::descriptor_for(source).is_some_and(|d| d.line_decoder.is_none())
 }
 
 fn fixtures_root() -> PathBuf {
@@ -77,8 +83,20 @@ struct Decoded {
 /// the transcript key — `AgentId` is a deterministic FNV hash of that key, so
 /// snapshots stay machine-independent.
 fn decode_fixture(source: &str, dir: &Path) -> Decoded {
-    // The transcript is the lone non-hook .jsonl in the dir. Require exactly one
-    // — two would make selection (and the snapshot) depend on read_dir order.
+    // Catch the dir-name-typo / removed-source cases up front — otherwise
+    // they'd be misdiagnosed as "JSONL-bearing, found 0" (a false claim about
+    // an unregistered name) or "add a SourceDescriptor row" (when the right
+    // action is deleting the stale dir).
+    assert!(
+        registry::descriptor_for(source).is_some(),
+        "fixture dir {source:?} matches no SourceDescriptor row — dir-name typo, \
+         or a removed source whose fixtures should be deleted"
+    );
+    // The transcript is the lone non-hook .jsonl in the dir. Exactly one for a
+    // JSONL-bearing source — two would make selection (and the snapshot)
+    // depend on read_dir order, zero would skip its LineDecoder entirely. A
+    // hook-only source (`line_decoder: None` in its registry row) must ship
+    // ZERO transcripts — and ONLY it may.
     let mut transcripts: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -88,29 +106,40 @@ fn decode_fixture(source: &str, dir: &Path) -> Decoded {
         })
         .collect();
     transcripts.sort();
+    let expected = if is_hook_only(source) { 0 } else { 1 };
     assert_eq!(
         transcripts.len(),
-        1,
-        "{} must contain exactly one transcript .jsonl, found {}",
+        expected,
+        "{} must contain exactly {expected} transcript .jsonl (source {source:?} is {}), found {}",
         dir.display(),
+        if expected == 0 {
+            "hook-only"
+        } else {
+            "JSONL-bearing"
+        },
         transcripts.len()
     );
-    let transcript = &transcripts[0];
 
-    let logical = transcript
+    // Hook-only scenarios key the {{TRANSCRIPT_PATH}} substitution on the
+    // scenario dir instead (stable + machine-independent, same property).
+    let logical = transcripts
+        .first()
+        .map_or(dir, PathBuf::as_path)
         .strip_prefix(fixtures_root())
         .unwrap()
         .to_string_lossy()
         .into_owned();
 
-    let decode = decoder_for(source);
     let mut jsonl = Vec::new();
-    for line in read_lines(transcript) {
-        let v: serde_json::Value = serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("bad json in {}: {e}", transcript.display()));
-        match decode(&logical, source, v) {
-            Ok(evs) => jsonl.extend(evs),
-            Err(e) => panic!("decode error in {}: {e}", transcript.display()),
+    if let Some(transcript) = transcripts.first() {
+        let decode = decoder_for(source);
+        for line in read_lines(transcript) {
+            let v: serde_json::Value = serde_json::from_str(&line)
+                .unwrap_or_else(|e| panic!("bad json in {}: {e}", transcript.display()));
+            match decode(&logical, source, v) {
+                Ok(evs) => jsonl.extend(evs),
+                Err(e) => panic!("decode error in {}: {e}", transcript.display()),
+            }
         }
     }
 
@@ -147,9 +176,14 @@ fn every_registered_source_has_a_coalescing_fixture() {
     let root = fixtures_root();
     for src in REGISTERED_SOURCES {
         let dir = root.join(src);
+        let shape = if is_hook_only(src) {
+            "hook-payloads.jsonl ONLY (hook-only row)"
+        } else {
+            "transcript.jsonl [+ hook-payloads.jsonl]"
+        };
         assert!(
             dir.is_dir(),
-            "registered source {src:?} has no fixture dir {} — add a coalescing fixture (transcript.jsonl [+ hook-payloads.jsonl])",
+            "registered source {src:?} has no fixture dir {} — add a coalescing fixture ({shape})",
             dir.display()
         );
         assert!(
@@ -178,13 +212,21 @@ fn all_source_fixtures_decode_and_coalesce() {
                 .into_owned();
             let d = decode_fixture(&source, &scenario_dir);
 
-            // Each transport must actually contribute — else a degenerate
-            // fixture (e.g. all-no-op JSONL) could pass coalescing on hooks
-            // alone, silently skipping the JSONL keying path this test guards.
-            assert!(
-                !d.jsonl.is_empty(),
-                "{source}/{scenario}: transcript decoded to ZERO events"
-            );
+            // Each present transport must actually contribute — else a
+            // degenerate fixture (e.g. all-no-op JSONL) could pass coalescing
+            // on hooks alone, silently skipping the keying path this guards.
+            // A hook-only source ships no transcript and must then ship hooks.
+            if is_hook_only(&source) {
+                assert!(
+                    d.had_hook_file && !d.hooks.is_empty(),
+                    "{source}/{scenario}: a hook-only source's scenario must ship a non-empty hook-payloads.jsonl"
+                );
+            } else {
+                assert!(
+                    !d.jsonl.is_empty(),
+                    "{source}/{scenario}: transcript decoded to ZERO events"
+                );
+            }
             if d.had_hook_file {
                 assert!(
                     !d.hooks.is_empty(),

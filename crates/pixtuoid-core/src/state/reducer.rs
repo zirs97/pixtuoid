@@ -57,23 +57,57 @@ pub const STALE_UNKNOWN_CWD_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// real `SessionEnd` signals (best-effort hook + durable `/exit` marker) for the
 /// common clean exit, so a short reaper there would only evict genuinely
 /// live-but-idle sessions (lunch-break idle) with no upside.
+// Naming note: selection is now caps-generic (`SourceCaps::short_idle_reap`),
+// so "CODEX" in the name is the historical motivating case, not a gate. It is
+// a pub const in a published crate — fold a rename (STALE_SHORT_IDLE_TIMEOUT)
+// into the next breaking-version batch rather than burning one on it.
 pub const STALE_CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The state-adaptive stale timeout for one slot. Unknown-cwd ghosts reap on the
 /// shortest window (almost always startup-seeding artifacts). Otherwise the
-/// timeout follows the activity state — with one carve-out: an idle **Codex**
-/// slot uses [`STALE_CODEX_IDLE_TIMEOUT`] (not the long [`STALE_IDLE_TIMEOUT`])
-/// because Codex exposes no exit signal of any kind, so the sweep is its only
-/// reaper; the lone false positive (a live-but-idle Codex past the window)
-/// self-heals on its next `UserPromptSubmit`. CC keeps the long window — its
-/// real `SessionEnd` signals make a short reaper all cost, no benefit.
+/// timeout follows the activity state — with one carve-out: an idle slot whose
+/// source has `caps.short_idle_reap()` (today: Codex — no exit signal of any
+/// kind, so the sweep is its only reaper, AND the lone false positive — a
+/// live-but-idle session past the window — self-heals on its next
+/// `UserPromptSubmit`) uses [`STALE_CODEX_IDLE_TIMEOUT`] instead of the long
+/// [`STALE_IDLE_TIMEOUT`]. CC keeps the long window — its real `SessionEnd`
+/// signals make a short reaper all cost, no benefit; Antigravity also lacks an
+/// exit signal but CANNOT resurrect on a prompt, so a short reap would vanish
+/// a live session permanently (see `SourceCaps::short_idle_reap`).
 fn stale_threshold(slot: &AgentSlot) -> Duration {
+    stale_threshold_with_caps(
+        slot,
+        crate::source::registry::descriptor_for(&slot.source).map(|d| &d.caps),
+    )
+}
+
+/// Policy half of [`stale_threshold`], split from the registry lookup so caps
+/// combinations no registered source has YET are unit-testable with a
+/// synthetic [`SourceCaps`] (the lookup half is pinned by the registered-
+/// source tests in `tests/reducer.rs`).
+fn stale_threshold_with_caps(
+    slot: &AgentSlot,
+    caps: Option<&crate::source::registry::SourceCaps>,
+) -> Duration {
     if slot.unknown_cwd {
         return STALE_UNKNOWN_CWD_TIMEOUT;
     }
     match &slot.state {
+        // A Delegating slot on a source whose delegations are hook-silent
+        // (in-process subagents that fire no hooks) emits NOTHING until the
+        // dispatch tool's PostToolUse — `last_event_at` freezes for the whole
+        // delegation, so a long research/review run would be swept mid-turn
+        // on the Active timer. Give it the Waiting-class window instead. (CC
+        // is immune by construction: its subagents' misattributed hooks
+        // drive `refresh_lineage`.)
+        ActivityState::Active { detail, .. }
+            if caps.is_some_and(|c| c.delegations_are_hook_silent)
+                && detail.as_deref() == Some(crate::source::ToolDetail::Task.display()) =>
+        {
+            STALE_WAITING_TIMEOUT
+        }
         ActivityState::Active { .. } => STALE_ACTIVE_TIMEOUT,
-        ActivityState::Idle if slot.source.as_ref() == crate::source::codex::SOURCE_NAME => {
+        ActivityState::Idle if caps.is_some_and(|c| c.short_idle_reap()) => {
             STALE_CODEX_IDLE_TIMEOUT
         }
         ActivityState::Idle => STALE_IDLE_TIMEOUT,
@@ -81,18 +115,16 @@ fn stale_threshold(slot: &AgentSlot) -> Duration {
     }
 }
 
-/// Display prefix for a source's labels (`cc·`, `ag·`, `cx·`). Single source of
-/// truth applied at `SessionStart`. The JSONL `LabelDeriver` Renames (e.g.
-/// `cc_derive_label`/`derive_ag_label`) produce the same prefixed string and so
-/// reinforce this idempotently; Codex arrives only via the shared hook socket
-/// (no JSONL Rename), so this is the sole place its `cx·` label is established.
+/// Display prefix for a source's labels (`cc·`, `ag·`, `cx·`), from the source
+/// registry (the per-source fact table). Applied at `SessionStart`; the JSONL
+/// `LabelDeriver` Renames (`cc_derive_label`/`derive_codex_label`/
+/// `derive_ag_label`) produce the same prefixed string and so reinforce this
+/// idempotently. An unregistered source falls back to its own name (the same
+/// `other => other` contract as the old match).
 fn source_label_prefix(source: &str) -> &str {
-    match source {
-        crate::source::claude_code::SOURCE_NAME => "cc",
-        crate::source::antigravity::SOURCE_NAME => "ag",
-        crate::source::codex::SOURCE_NAME => "cx",
-        other => other,
-    }
+    crate::source::registry::descriptor_for(source)
+        .map(|d| d.label_prefix)
+        .unwrap_or(source)
 }
 
 #[derive(Debug, Default)]
@@ -613,11 +645,12 @@ mod tests {
     use super::source_label_prefix;
     use crate::source::REGISTERED_SOURCES;
 
-    /// Every registered source needs an explicit 2-char prefix arm. The
-    /// `other => other` catch-all silently degrades a missing arm to the long
-    /// source name (e.g. "opencode·proj" instead of "oc·proj"), which then
-    /// collides visually with another source sharing a cwd. Driven by the same
-    /// REGISTERED_SOURCES list as the fixture conformance test.
+    /// Every registered source needs a 2-char prefix. The unregistered-source
+    /// fallback silently degrades a missing/short prefix to the long source
+    /// name (e.g. "opencode·proj" instead of "oc·proj"), which then collides
+    /// visually with another source sharing a cwd. End-to-end through the
+    /// REAL `source_label_prefix` (registry lookup included) — stronger than
+    /// the registry-local shape check, which can't see a name↔row mismatch.
     #[test]
     fn every_registered_source_has_two_char_label_prefix() {
         for src in REGISTERED_SOURCES {
@@ -625,9 +658,86 @@ mod tests {
             assert_eq!(
                 prefix.chars().count(),
                 2,
-                "source {src:?} has no 2-char label prefix (got {prefix:?}) — add an arm to source_label_prefix"
+                "source {src:?} has no 2-char label prefix (got {prefix:?}) — fix its SourceDescriptor row in source/registry.rs"
             );
         }
+    }
+
+    // The Delegating stale carve-out is caps-driven; no REGISTERED source
+    // sets `delegations_are_hook_silent` yet (the first is Reasonix, PR
+    // #134), so pin the policy half with a synthetic caps value — that's
+    // what the lookup/policy split exists for.
+    #[test]
+    fn delegating_slot_with_hook_silent_caps_gets_waiting_window() {
+        use super::{stale_threshold_with_caps, STALE_ACTIVE_TIMEOUT, STALE_WAITING_TIMEOUT};
+        use crate::source::registry::SourceCaps;
+        use crate::source::{AgentEvent, ToolDetail, Transport};
+        use crate::{AgentId, Reducer, SceneState};
+        use std::time::SystemTime;
+        let caps = SourceCaps {
+            has_exit_signal: true,
+            resurrects_on_prompt: true,
+            delegations_are_hook_silent: true,
+        };
+        let mut scene = SceneState::uniform(4);
+        let mut r = Reducer::new();
+        let id = AgentId::from_parts("hook-silent-cli", "/p");
+        r.apply(
+            &mut scene,
+            AgentEvent::SessionStart {
+                agent_id: id,
+                source: "hook-silent-cli".into(),
+                session_id: "/p".into(),
+                cwd: "/p".into(),
+                parent_id: None,
+            },
+            SystemTime::UNIX_EPOCH,
+            Transport::Hook,
+        );
+        r.apply(
+            &mut scene,
+            AgentEvent::ActivityStart {
+                agent_id: id,
+                activity: crate::source::Activity::Typing,
+                tool_use_id: None,
+                detail: Some(ToolDetail::Task),
+            },
+            SystemTime::UNIX_EPOCH,
+            Transport::Hook,
+        );
+        let slot = scene.agents.get(&id).unwrap();
+        assert_eq!(
+            stale_threshold_with_caps(slot, Some(&caps)),
+            STALE_WAITING_TIMEOUT,
+            "hook-silent Delegating slot must get the Waiting-class window"
+        );
+        assert_eq!(
+            stale_threshold_with_caps(slot, None),
+            STALE_ACTIVE_TIMEOUT,
+            "without the cap, Delegating reaps on the normal Active timer"
+        );
+
+        // Detail-gate negative: caps on + an ORDINARY tool active must stay on
+        // the Active timer — the cap widens the window for delegations only.
+        r.apply(
+            &mut scene,
+            AgentEvent::ActivityStart {
+                agent_id: id,
+                activity: crate::source::Activity::Typing,
+                tool_use_id: None,
+                detail: Some(ToolDetail::Generic {
+                    display: "bash: ls".into(),
+                }),
+            },
+            SystemTime::UNIX_EPOCH,
+            Transport::Hook,
+        );
+        let slot = scene.agents.get(&id).unwrap();
+        assert_eq!(
+            stale_threshold_with_caps(slot, Some(&caps)),
+            STALE_ACTIVE_TIMEOUT,
+            "caps-on but non-Task detail must keep the Active timer"
+        );
     }
 
     // White-box: `gated_before_waiting` is reclaimed in TWO places — `tick`'s
