@@ -18,10 +18,12 @@ src/
 ├── runtime.rs          tokio task wiring (source ── (Transport, AgentEvent) ──► reducer ──► renderer),
 │                       compute_boot_capacities (queries terminal size at startup), headless summary
 ├── init_pack.rs        extracts the embedded skeleton pack to a target dir for `init-pack`
-├── install/            multi-target (Claude + Codex) hook install via the `Target` registry:
+├── install/            multi-target (Claude + Codex + Reasonix) hook install via the `Target` registry:
 │                       mod.rs (run_install/run_uninstall, plan_targets, interactive_pick),
-│                       target.rs (Target trait + TARGETS = [CLAUDE, CODEX]),
-│                       claude.rs / codex.rs (per-target hook_command + config path),
+│                       target.rs (Target trait + TARGETS = [CLAUDE, CODEX, REASONIX]),
+│                       claude.rs / codex.rs / reasonix.rs (per-target hook_command + config path;
+│                       reasonix = GLOBAL ~/.reasonix/settings.json, FLAT {match,command,timeout-ms}
+│                       entries — project-scope is trust-gated; match omitted = every tool),
 │                       io.rs (resolve_symlink, write_config_atomic — advisory lock + atomic rename)
 └── tui/                ratatui App + TuiRenderer (Renderer trait impl) — see src/tui/CLAUDE.md
 
@@ -38,7 +40,7 @@ sprites/                character/environment packs (NOT under pixtuoid-hook):
 
 ## Where to look
 
-- "How do hooks get installed?" → `install::claude::merge_install` for the JSON merge logic, `install::io::write_config_atomic` for the safe filesystem write. Multi-target install via the `install::target::Target` registry (`TARGETS = [CLAUDE, CODEX]`); `install::plan_targets` decides which CLIs to act on (auto-detect + confirm + non-TTY policy). Claude's `hook_command` ignores the resolved binary path (emits bare `pixtuoid-hook`, relying on PATH); Codex embeds the absolute path. Resolution of the hook binary must therefore be soft (warn) for Claude and only fatal for targets that actually need the path.
+- "How do hooks get installed?" → `install::claude::merge_install` for the JSON merge logic, `install::io::write_config_atomic` for the safe filesystem write. Multi-target install via the `install::target::Target` registry (`TARGETS = [CLAUDE, CODEX, REASONIX]`); `install::plan_targets` decides which CLIs to act on (auto-detect + confirm + non-TTY policy). Claude's `hook_command` ignores the resolved binary path (emits bare `pixtuoid-hook`, relying on PATH); Codex and Reasonix embed the absolute path (both run the command under a shell, prefixed `PIXTUOID_SOURCE=<name>` so the shim stamps `_pixtuoid_source`). Resolution of the hook binary must therefore be soft (warn) for Claude and only fatal for targets that actually need the path. Reasonix's settings shape is its own FLAT per-event array (`{match?, command, timeout(ms), description}` — NOT Claude's nested `{matcher, hooks:[…]}`), the file is the GLOBAL `~/.reasonix/settings.json` (project scope only loads after `/hooks trust` — a project-scope install would silently never fire), and `match` is OMITTED = every tool (upstream special-cases `"*"` to every-tool too; any other value is an ANCHORED regex where a malformed pattern never fires — omission is the simplest always-fires form). Detection uses `reasonix::detect_installed` (a `presence_probe` on the Target) because Reasonix never creates the settings.json we write — it probes the v2 config dir (`os.UserConfigDir()/reasonix`) and `~/.reasonix` instead.
 - "How does the default character pack get into the binary?" → `tui::embedded_pack` does the `include_str!` at compile time (from `crates/pixtuoid/sprites/default/`); `sprite::format::load_pack_from_strings` parses it.
 - "How do custom sprite packs work?" → `pixtuoid init-pack ./dir` extracts the skeleton template from `sprites/skeleton/` (embedded via `include_str!`, see `init_pack.rs`). `pixtuoid validate-pack ./dir` loads the pack and checks against `REQUIRED_CHARACTER_ANIMATIONS` / `OPTIONAL_*` registries in `sprite::format`. `--pack-dir` CLI flag or `pack-dir` config key loads a custom pack at runtime. Custom packs only need character sprites — furniture/environment animations are merged from the embedded default via `Pack::merge_from()` (only `OPTIONAL_FURNITURE_ANIMATIONS`, never character poses). The robot pack at `sprites/robot/` is a TV-head character set (10×12 sprites).
 - "How does the crash log work?" → `main.rs::install_crash_hook` sets a panic hook that restores the terminal, writes a timestamped backtrace to `~/.cache/pixtuoid/crash.log`.
