@@ -20,7 +20,9 @@ clock (deterministic layout + lighting):
 Requires the venv (Pillow) — see README "Visual verification".
 """
 
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -98,6 +100,13 @@ def main():
 
     # Animated demo.
     render(OUT / "demo.gif", "normal", "--gif", "--gif-duration", str(GIF_SECS), "--gif-fps", str(GIF_FPS))
+
+    # Pixel art compresses via palette reduction, NOT --lossy (lossy perturbation
+    # breaks gifsicle's inter-frame diffing on flat-color runs and ships a BIGGER
+    # file — measured 5.0MB lossy vs 2.2MB --colors 128 on the same source).
+    if not shutil.which("gifsicle"):
+        sys.exit("gifsicle not found — brew install gifsicle")
+    subprocess.run(["gifsicle", "-b", "-O3", "--colors", "128", str(OUT / "demo.gif")], check=True)
 
     print(f"wrote screenshot, gallery-*, themes-composite, demo.gif -> {OUT}")
 

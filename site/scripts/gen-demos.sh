@@ -41,11 +41,24 @@ done <<<"$ids"
 "$bin" --cols "$cols" --rows "$rows" --now-hour 13 "$out/day.png"
 "$bin" --cols "$cols" --rows "$rows" --now-hour 22 "$out/night.png"
 
-# Weather gallery — one shot per weather at a fixed afternoon hour, so the only
-# thing that changes between chips is the sky/window (WeatherGallery.astro swaps
-# between these). --weather forces the variant, bypassing the 10-min clock cycle.
-# Driven by weather.json (the same manifest the gallery + astro guard read), so a
-# new weather renders here automatically — no hardcoded list to drift.
+# Spaces close-ups — three consistently-sized 800×620 crops from the day render
+# (reuses the already-rendered day.png; no second full render needed).
+# crop=W:H:X:Y in ffmpeg notation. X:Y chosen so no crop catches the legend HUD
+# (top-left, y<110) or the status bar (bottom, y>1408), and frame edges land in
+# walkway gaps rather than slicing desks/agents.
+echo "crop space: cubicles"
+ffmpeg -loglevel error -y -i "$out/day.png" -vf "crop=800:620:680:430" "$out/space_cubicles.png"
+echo "crop space: meeting"
+ffmpeg -loglevel error -y -i "$out/day.png" -vf "crop=800:620:0:415" "$out/space_meeting.png"
+echo "crop space: pantry"
+ffmpeg -loglevel error -y -i "$out/day.png" -vf "crop=800:620:0:775" "$out/space_pantry.png"
+
+# Weather shots — one per weather at a fixed afternoon hour, so the only thing
+# that changes between chips is the sky/window (the showcase's weather channel in
+# showcase.json swaps between these via its variant-set chips). --weather forces
+# the variant, bypassing the 10-min clock cycle. Driven by weather.json (the same
+# manifest the showcase + astro guard read), so a new weather renders here
+# automatically — no hardcoded list to drift.
 weather_hour=15
 weather_manifest="$site/src/weather.json"
 wids="$(node -e "require('$weather_manifest').forEach(function (w) { console.log(w.id); })")" ||
@@ -59,19 +72,35 @@ while IFS= read -r w; do
   "$bin" --cols "$cols" --rows "$rows" --weather "$w" --now-hour "$weather_hour" "$out/weather_$w.png"
 done <<<"$wids"
 
-# Animated hero → mp4 + poster: a 20s loop of the office mid-work — multiple
-# agents typing and wandering (to the pantry, the meeting room, the couch).
-# Re-encode from frames so it's a true 20s/12fps loop (the GIF's own frame
-# delays otherwise confuse ffmpeg into a fast clip).
+# Animated hero clip — a 20s loop of the office mid-work (agents typing + wandering).
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 "$bin" --cols 208 --rows 88 --gif --gif-duration 20 --gif-fps 12 --now-hour "$hero_hour" "$tmp/hero.gif"
-mkdir -p "$tmp/frames"
-# -loglevel error: quiet on success, but let a real ffmpeg failure surface its
-# reason on stderr (set -e aborts the script either way).
-ffmpeg -loglevel error -y -i "$tmp/hero.gif" "$tmp/frames/f%03d.png"
-ffmpeg -loglevel error -y -framerate 12 -i "$tmp/frames/f%03d.png" -movflags +faststart -pix_fmt yuv420p \
-  -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" "$out/hero.mp4"
-ffmpeg -loglevel error -y -i "$tmp/hero.gif" -vframes 1 "$out/hero-poster.png"
+# gif → mp4 + webm + poster, re-encoded from frames so it's a true loop at the
+# given fps (the GIF's own frame delays otherwise confuse ffmpeg into a fast clip).
+encode_clip() { # encode_clip <gif> <id> <fps> — writes to $out (caller scope)
+  local gif="$1" id="$2" fps="$3"
+  mkdir -p "$tmp/frames-$id"
+  ffmpeg -loglevel error -y -i "$gif" "$tmp/frames-$id/f%04d.png"
+  ffmpeg -loglevel error -y -framerate "$fps" -i "$tmp/frames-$id/f%04d.png" -movflags +faststart \
+    -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" "$out/$id.mp4"
+  ffmpeg -loglevel error -y -framerate "$fps" -i "$tmp/frames-$id/f%04d.png" \
+    -c:v libvpx-vp9 -b:v 0 -crf 36 -row-mt 1 \
+    -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" "$out/$id.webm"
+  ffmpeg -loglevel error -y -i "$gif" -vframes 1 "$out/$id-poster.png"
+}
+
+encode_clip "$tmp/hero.gif" hero 12
+
+# Multi-floor clip — the real TuiRenderer slide (22 agents overflow a full
+# 16-desk floor onto floor 2).
+"$bin" --cols 208 --rows 88 --gif --gif-duration 10 --gif-fps 15 --now-hour "$hero_hour" \
+  --max-desks 16 --agents 22 --navigate-at 3:1 --navigate-at 7:0 "$tmp/multi-floor.gif"
+encode_clip "$tmp/multi-floor.gif" multi-floor 15
+
+# Pets clip — the real TuiRenderer pet (cat roams the floor, naps near idle agents).
+"$bin" --cols 208 --rows 88 --gif --gif-duration 12 --gif-fps 15 --now-hour 14 \
+  --pets cat "$tmp/pets.gif"
+encode_clip "$tmp/pets.gif" pets 15
 
 echo "✓ demos regenerated → $out"

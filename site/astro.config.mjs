@@ -46,19 +46,61 @@ if (missingWeather.length) {
   );
 }
 
-// And for the Features bento: every features.json card.img must exist in
-// public/demos/ (day/night/theme shots referenced by free-form filename sit
-// outside the two id-based guards above — a typo'd img would deploy a 404 card).
-const cardImgs = /** @type {{ card?: { img?: string } }[]} */ (
-  JSON.parse(readFileSync(fileURLToPath(new URL('./src/features.json', import.meta.url)), 'utf8'))
-).flatMap((f) => (f.card?.img ? [f.card.img] : []));
-const missingCards = cardImgs.filter(
-  (img) => !existsSync(fileURLToPath(new URL(`./public/demos/${img}`, import.meta.url)))
+// Studio Wall guard: showcase.json must have exactly one default channel, unique
+// ids, and every `live` channel's assets on disk (clips: webm + mp4 + poster —
+// the encode_clip ladder always emits webm, so ChannelStage emits its <source>
+// unconditionally). `soon` placeholders need nothing.
+const showcase = /** @type {any[]} */ (
+  JSON.parse(readFileSync(fileURLToPath(new URL('./src/showcase.json', import.meta.url)), 'utf8'))
 );
-if (missingCards.length) {
+const scDefaults = showcase.filter((c) => c.default);
+if (scDefaults.length !== 1 || scDefaults[0].status !== 'live') {
   throw new Error(
-    `astro.config: features.json card img(s) missing from public/demos/ — run scripts/gen-demos.sh or fix the filename: ${missingCards.join(', ')}`
+    `astro.config: showcase.json needs exactly one default LIVE channel (got ${scDefaults.map((c) => c.id).join(', ') || 'none'})`
   );
+}
+const scIds = new Set();
+for (const c of showcase) {
+  if (scIds.has(c.id)) throw new Error(`astro.config: showcase.json duplicate id "${c.id}"`);
+  scIds.add(c.id);
+  if (c.status === 'soon') continue;
+  const demo = /** @param {string} f */ (f) =>
+    existsSync(fileURLToPath(new URL(`./public/demos/${f}`, import.meta.url)));
+  if (c.kind === 'clip') {
+    if (!c.asset)
+      throw new Error(
+        `astro.config: showcase.json live clip "${c.id}" is missing the required "asset" field`
+      );
+    const missing = [`${c.asset}.webm`, `${c.asset}.mp4`, `${c.asset}-poster.png`].filter(
+      (f) => !demo(f)
+    );
+    if (missing.length)
+      throw new Error(
+        `astro.config: showcase.json live clip "${c.id}" missing public/demos/ asset(s): ${missing.join(', ')} — run site/scripts/gen-demos.sh`
+      );
+    if (!Number.isFinite(c.w) || !Number.isFinite(c.h))
+      throw new Error(
+        `astro.config: showcase.json live clip "${c.id}" needs numeric "w"/"h" (intrinsic video dims, for CLS)`
+      );
+  } else if (c.kind === 'variant-set') {
+    if (c.variantsRef) {
+      if (c.variantsRef !== 'themes' && c.variantsRef !== 'weather')
+        throw new Error(
+          `astro.config: showcase.json "${c.id}" has unknown variantsRef "${c.variantsRef}" (expected "themes" or "weather")`
+        );
+    } else if (!(c.variants && c.variants.length)) {
+      throw new Error(
+        `astro.config: showcase.json variant-set "${c.id}" has neither variantsRef nor variants`
+      );
+    }
+    for (const v of c.variants ?? [])
+      if (!demo(v.src))
+        throw new Error(
+          `astro.config: showcase.json "${c.id}" variant "${v.id}" missing public/demos/${v.src}`
+        );
+  } else {
+    throw new Error(`astro.config: showcase.json "${c.id}" has unknown kind "${c.kind}"`);
+  }
 }
 
 // Rewrite repo-relative links in rendered markdown (e.g. ../crates/...) to GitHub
