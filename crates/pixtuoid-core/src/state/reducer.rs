@@ -10,6 +10,15 @@ use crate::AgentId;
 /// tool_use_id. The suppression is asymmetric by event kind — a recorded hook
 /// End drops both JSONL kinds, a recorded hook Start drops only JSONL Starts
 /// (see `ToolEventKind`, #150).
+///
+// These reducer tuning constants are `pub` ONLY so the integration test
+// (`tests/reducer.rs`, a separate crate) can derive its timing offsets from
+// them instead of hardcoding ms. They are internal knobs, not a stable API:
+// `#[doc(hidden)]` keeps the cross-crate visibility the test needs while
+// excluding them from the rendered docs AND from cargo-semver-checks, so a
+// future retune/rename is not a breaking change. (`EXIT_GRACE_WINDOW` below
+// is deliberately NOT hidden — the binary's pose module is a real consumer.)
+#[doc(hidden)]
 pub const HOOK_WINS_WINDOW: Duration = Duration::from_millis(500);
 
 /// How long to keep an exiting agent's slot alive after `SessionEnd` so the
@@ -34,6 +43,7 @@ pub const EXIT_GRACE_WINDOW: Duration = Duration::from_millis(4500);
 /// to the 60s scan_root poll backstop — covering that double-missed-notify
 /// outlier would cost a minute's linger on EVERY completed delegation
 /// (residual documented in #151).
+#[doc(hidden)]
 pub const B1_CASCADE_GRACE: Duration = Duration::from_millis(2500);
 
 /// How long the slot stays visually Active after an `ActivityEnd` before
@@ -41,6 +51,7 @@ pub const B1_CASCADE_GRACE: Duration = Duration::from_millis(2500);
 /// flicker that rapid PreToolUse → PostToolUse chains produce in CC; any
 /// `ActivityStart` arriving within this window cancels the pending idle,
 /// so the slot reads as continuously Active for chained tool work.
+#[doc(hidden)]
 pub const ACTIVE_GRACE_WINDOW: Duration = Duration::from_millis(1500);
 
 /// State-adaptive stale-agent thresholds. If `now - last_event_at`
@@ -58,9 +69,13 @@ pub const ACTIVE_GRACE_WINDOW: Duration = Duration::from_millis(1500);
 /// Unknown cwd (cc#N label): almost always a ghost from startup JSONL
 ///   seeding that never gets a follow-up event. 3 min is aggressive
 ///   but the false-positive cost is low (just a desk slot freed).
+#[doc(hidden)]
 pub const STALE_ACTIVE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+#[doc(hidden)]
 pub const STALE_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+#[doc(hidden)]
 pub const STALE_WAITING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+#[doc(hidden)]
 pub const STALE_UNKNOWN_CWD_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
 /// Idle timeout for sources with `SourceCaps::short_idle_reap()` — much
@@ -83,6 +98,7 @@ pub const STALE_UNKNOWN_CWD_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// hook plus the durable `/exit` marker) for the common clean exit, so a
 /// short reaper there would only evict genuinely live-but-idle sessions
 /// (lunch-break idle) with no upside.
+#[doc(hidden)]
 pub const STALE_SHORT_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The state-adaptive stale timeout for one slot. Unknown-cwd ghosts reap on the
@@ -832,6 +848,37 @@ mod tests {
                 "source {src:?} has no 2-char label prefix (got {prefix:?}) — fix its SourceDescriptor row in source/registry.rs"
             );
         }
+    }
+
+    // Accepted-equivalent mutation residuals (cargo-mutants, state files):
+    // three boundary flips survive deliberately — `< → <=` in `gc`'s dedup
+    // retain (reducer.rs:659), `> → >=` in `sweep_stale` (716) and
+    // `sweep_exited` (767). Each only changes behavior at the EXACT threshold
+    // instant (age == timeout, to the nanosecond), a measure-zero event in
+    // wall-clock time and immaterial to a stale-sweep (one tick either way).
+    // Pinning them needs a hand-built exact-boundary SystemTime, which is
+    // brittle for no product value — left as documented equivalents, not gaps.
+
+    /// Pin the deliberate stale-timeout DURATIONS. Every timing test correctly
+    /// derives its offsets FROM these constants (hardcoded ms make leg tests
+    /// vacuous), so mutating `10 * 60` also mutates each test's own
+    /// expectation — leaving the literal value unguarded. A direct pin is the
+    /// only thing that catches `*`→`/` collapsing a window to 0s (everything
+    /// reaped on the next tick) or a typo'd minute count. The values ARE the
+    /// product decision (see the doc comments on each const); change this test
+    /// deliberately when a window changes, never to make it pass.
+    #[test]
+    fn stale_timeout_constants_have_their_intended_durations() {
+        use super::{
+            STALE_ACTIVE_TIMEOUT, STALE_IDLE_TIMEOUT, STALE_SHORT_IDLE_TIMEOUT,
+            STALE_UNKNOWN_CWD_TIMEOUT, STALE_WAITING_TIMEOUT,
+        };
+        use std::time::Duration;
+        assert_eq!(STALE_ACTIVE_TIMEOUT, Duration::from_secs(600)); // 10 min
+        assert_eq!(STALE_IDLE_TIMEOUT, Duration::from_secs(1800)); // 30 min
+        assert_eq!(STALE_WAITING_TIMEOUT, Duration::from_secs(3600)); // 60 min
+        assert_eq!(STALE_UNKNOWN_CWD_TIMEOUT, Duration::from_secs(180)); // 3 min
+        assert_eq!(STALE_SHORT_IDLE_TIMEOUT, Duration::from_secs(300)); // 5 min
     }
 
     // The Delegating stale carve-out is caps-driven; no REGISTERED source
