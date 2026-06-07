@@ -2183,20 +2183,102 @@ fn subagent_is_removed_promptly_when_its_parent_task_completes() {
 }
 
 #[test]
-fn jsonl_duplicate_task_end_inside_dedup_window_does_not_fire_cascade() {
-    // Ordering pin for `apply()`'s pre-passes (#90): hook-wins dedup MUST run
-    // BEFORE task tracking. The hook ActivityStart records the Task's
-    // tool_use_id in the dedup map; a JSONL duplicate carrying that id inside
-    // HOOK_WINS_WINDOW must be dropped BEFORE it can drain active_tasks and
-    // cascade-exit a still-working subtree (b1 above fires on real drains
-    // only). Offsets derive from HOOK_WINS_WINDOW so the pin survives any
-    // retuning of the window.
+fn late_batched_jsonl_pair_after_delivered_hook_end_is_fully_dropped() {
+    // Asymmetric-matrix pin (#150): a delivered hook END's record suppresses
+    // BOTH JSONL kinds for its tuid. When JSONL delivery lags a fast tool
+    // (notify coalescing / the 250ms rescan) the transcript's START+END pair
+    // can arrive together AFTER both hooks applied — the stale JSONL START
+    // must not re-enter Active (it would cancel the armed pending-idle via
+    // enter_active and double-count the tool), and the JSONL END must not
+    // re-arm anything. Green before AND after the #150 fix: a symmetric
+    // kind-matching dedup (START record only drops STARTs, END record only
+    // drops ENDs) breaks exactly this — mutation-validated.
+    let mut scene = SceneState::uniform(4);
+    let mut r = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/batched.jsonl");
+    start(&mut r, &mut scene, id);
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    // Fast tool: both hooks deliver.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("t-fast".into()),
+            detail: Some("Read: /x".into()),
+        },
+        t0,
+        Transport::Hook,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityEnd {
+            agent_id: id,
+            tool_use_id: Some("t-fast".into()),
+        },
+        t0 + HOOK_WINS_WINDOW / 10,
+        Transport::Hook,
+    );
+    let armed_at = scene.agents.get(&id).unwrap().pending_idle_at;
+    assert!(armed_at.is_some(), "hook END arms the idle debounce");
+    let count = scene.agents.get(&id).unwrap().tool_call_count;
+
+    // The lagged JSONL pair lands together, PAST the START record's expiry
+    // (t0 + W) but inside the END record's window (until t0 + W/10 + W).
+    // This is the leg that distinguishes kind-in-the-VALUE from a
+    // kind-in-the-key map: a per-kind keyed entry for the START is gc'd by
+    // now, so only the END record's both-kinds dominance can drop the stale
+    // START. Mutation-validated against BOTH rejected shapes (symmetric
+    // value matching AND a (id, tuid, kind) key).
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("t-fast".into()),
+            detail: Some("Read: /x".into()),
+        },
+        t0 + HOOK_WINS_WINDOW + HOOK_WINS_WINDOW / 20,
+        Transport::Jsonl,
+    );
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityEnd {
+            agent_id: id,
+            tool_use_id: Some("t-fast".into()),
+        },
+        t0 + HOOK_WINS_WINDOW + HOOK_WINS_WINDOW / 20,
+        Transport::Jsonl,
+    );
+
+    let slot = scene.agents.get(&id).unwrap();
+    assert_eq!(
+        slot.pending_idle_at, armed_at,
+        "stale JSONL replay must not cancel or re-arm the idle debounce"
+    );
+    assert_eq!(
+        slot.tool_call_count, count,
+        "stale JSONL replay must not double-count the tool"
+    );
+}
+
+#[test]
+fn jsonl_task_start_duplicate_does_not_clobber_waiting_parent() {
+    // Ordering pin for `apply()`'s pre-passes (#90), leg (2): a JSONL
+    // duplicate the dedup drops must be dropped BEFORE it can reach
+    // track_active_tasks. The parent's own permission prompt fires right
+    // after a Task dispatch → Waiting. The dispatch's JSONL copy (parent's
+    // own transcript, same tool_use_id, inside HOOK_WINS_WINDOW of the hook
+    // record) is a duplicate — if it reached the tracker first, the Task arm
+    // would re-fire enter_delegating and clobber the Waiting back to
+    // Active(Delegating), vanishing a genuinely pending prompt.
     let mut scene = SceneState::uniform(8);
     let mut r = Reducer::new();
     let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let (parent, child) = delegating_pair(&mut r, &mut scene, "orch-dup", t0);
+    let (parent, _child) = delegating_pair(&mut r, &mut scene, "orch-wait", t0);
 
-    // Hook Task start → records "task-T" in the dedup map AND active_tasks.
+    // Hook Task dispatch — records the Start in the dedup map + active_tasks.
     r.apply(
         &mut scene,
         AgentEvent::ActivityStart {
@@ -2208,47 +2290,77 @@ fn jsonl_duplicate_task_end_inside_dedup_window_does_not_fire_cascade() {
         t0 + Duration::from_secs(1),
         Transport::Hook,
     );
-    // JSONL duplicate END for the same tool_use_id, inside HOOK_WINS_WINDOW.
-    // If task tracking ran before dedup, this would drain active_tasks and
-    // cascade-exit the child mid-delegation.
+    // The parent's own permission Notification fires mid-dispatch.
     r.apply(
         &mut scene,
-        AgentEvent::ActivityEnd {
+        AgentEvent::Waiting {
             agent_id: parent,
+            reason: "permission".into(),
+        },
+        t0 + Duration::from_secs(1) + HOOK_WINS_WINDOW / 50,
+        Transport::Hook,
+    );
+    // The dispatch's JSONL copy, inside the window — must be dedup-dropped
+    // before it can re-enter Delegating over the live Waiting.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: parent,
+            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
+            detail: Some("Task".into()),
         },
         t0 + Duration::from_secs(1) + HOOK_WINS_WINDOW / 5,
         Transport::Jsonl,
     );
 
     assert!(
-        scene.agents.get(&child).unwrap().exiting_at.is_none(),
-        "a JSONL duplicate of the in-flight Task must be dropped by dedup before it can drain active_tasks and cascade-exit the still-working subtree"
+        matches!(
+            scene.agents.get(&parent).unwrap().state,
+            ActivityState::Waiting { .. }
+        ),
+        "a dedup-dropped JSONL duplicate of the dispatch must not clobber the parent's pending permission Waiting"
     );
-    assert_delegating(
-        &scene,
-        parent,
-        "parent must stay Delegating across the duplicate",
-    );
-    // Defense-in-depth: if a future change decouples the Task drain from the
-    // b1 cascade, the exiting_at assert above goes vacuous — this probe still
-    // catches the ordering mutant, because a later misattributed hook event
-    // is only suppressed while active_tasks is non-empty.
+}
+
+#[test]
+fn jsonl_ordinary_tool_end_drains_when_hook_end_drops() {
+    // #150, ordinary-tool leg: a sub-window tool whose PostToolUse hook
+    // drops must still settle via its JSONL END — the only completion signal
+    // left. Without this the slot is stuck Active until the agent's next
+    // event, or is wrongfully stale-swept after STALE_ACTIVE_TIMEOUT (and a
+    // swept CC slot cannot resurrect on the next prompt).
+    let mut scene = SceneState::uniform(4);
+    let mut r = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/fastdrop.jsonl");
+    start(&mut r, &mut scene, id);
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
     r.apply(
         &mut scene,
         AgentEvent::ActivityStart {
-            agent_id: parent,
+            agent_id: id,
             activity: Activity::Typing,
-            tool_use_id: Some("subagent-R".into()),
-            detail: Some("Read: /foo".into()),
+            tool_use_id: Some("t-1".into()),
+            detail: Some("Read: /x".into()),
         },
-        t0 + Duration::from_secs(2),
+        t0,
         Transport::Hook,
     );
-    assert_delegating(
-        &scene,
-        parent,
-        "active_tasks must survive the duplicate — later misattributed hooks stay suppressed",
+    // PostToolUse hook DROPS. The JSONL END inside HOOK_WINS_WINDOW of the
+    // hook START's record must apply and arm the idle debounce.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityEnd {
+            agent_id: id,
+            tool_use_id: Some("t-1".into()),
+        },
+        t0 + HOOK_WINS_WINDOW / 5,
+        Transport::Jsonl,
+    );
+    assert!(
+        scene.agents.get(&id).unwrap().pending_idle_at.is_some(),
+        "the JSONL END is the fallback for the dropped hook END — it must arm the idle debounce, not be eaten by the START's dedup record"
     );
 }
 
@@ -2347,6 +2459,75 @@ fn suppressed_parallel_task_dispatch_jsonl_copy_survives_dedup_and_tracks() {
         scene.agents.get(&child).unwrap().exiting_at.is_some(),
         "last Task's drain must cascade-exit the completed subtree"
     );
+}
+
+#[test]
+fn jsonl_task_self_end_drains_when_hook_end_drops() {
+    // #150: the hook shim is best-effort (200ms write timeout, exit-0) — a
+    // Task's PostToolUse hook can drop. JSONL is the documented fallback for
+    // dropped hooks, so the JSONL tool_result END for the Task MUST drain
+    // active_tasks even when it lands inside HOOK_WINS_WINDOW of the hook
+    // ActivityStart's dedup record. Without this, active_tasks[parent] leaks
+    // for the rest of the session: every later parent hook event is
+    // suppressed as a subagent leak and the b1 completion cascade never
+    // fires again.
+    let mut scene = SceneState::uniform(8);
+    let mut r = Reducer::new();
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let (parent, child) = delegating_pair(&mut r, &mut scene, "orch-drop", t0);
+
+    // Hook Task dispatch — records "task-T" in the dedup map + active_tasks.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: parent,
+            activity: Activity::Typing,
+            tool_use_id: Some("task-T".into()),
+            detail: Some("Task".into()),
+        },
+        t0 + Duration::from_secs(1),
+        Transport::Hook,
+    );
+    // The Task fails fast; its PostToolUse hook DROPS (never applied). The
+    // JSONL END arrives inside HOOK_WINS_WINDOW of the hook START's record —
+    // it is the only completion signal the reducer will ever get.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityEnd {
+            agent_id: parent,
+            tool_use_id: Some("task-T".into()),
+        },
+        t0 + Duration::from_secs(1) + HOOK_WINS_WINDOW / 5,
+        Transport::Jsonl,
+    );
+
+    assert!(
+        scene.agents.get(&child).unwrap().exiting_at.is_some(),
+        "the JSONL Task self-END must drain active_tasks and fire the b1 cascade — it is the fallback for the dropped hook END"
+    );
+    // The parent must not be stuck Delegating: a later ordinary hook event
+    // applies normally instead of being suppressed as a subagent leak.
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: parent,
+            activity: Activity::Typing,
+            tool_use_id: Some("b-1".into()),
+            detail: Some("Bash: ls".into()),
+        },
+        t0 + Duration::from_secs(2),
+        Transport::Hook,
+    );
+    match &scene.agents.get(&parent).unwrap().state {
+        ActivityState::Active { detail, .. } => {
+            assert_eq!(
+                detail.as_deref(),
+                Some("Bash: ls"),
+                "suppression must release once the Task drained via JSONL"
+            );
+        }
+        other => panic!("expected Active(Bash: ls), got {other:?}"),
+    }
 }
 
 #[test]
