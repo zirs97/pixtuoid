@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use pixtuoid_core::source::{Activity, AgentEvent, Transport};
+use pixtuoid_core::source::{AgentEvent, Transport};
 use pixtuoid_core::state::reducer::{
     Reducer, ACTIVE_GRACE_WINDOW, B1_CASCADE_GRACE, HOOK_WINS_WINDOW,
 };
@@ -112,7 +112,6 @@ fn activity_start_sets_state_active() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: Some("Edit: foo.rs".into()),
         },
@@ -121,13 +120,7 @@ fn activity_start_sets_state_active() {
     );
 
     let slot = scene.agents.get(&id).unwrap();
-    assert!(matches!(
-        slot.state,
-        ActivityState::Active {
-            activity: Activity::Typing,
-            ..
-        }
-    ));
+    assert!(matches!(slot.state, ActivityState::Active { .. }));
 }
 
 #[test]
@@ -147,7 +140,6 @@ fn activity_end_arms_debounce_then_tick_flips_to_idle() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -197,7 +189,6 @@ fn activity_start_inside_grace_window_cancels_debounce() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -219,7 +210,6 @@ fn activity_start_inside_grace_window_cancels_debounce() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t2".into()),
             detail: None,
         },
@@ -313,7 +303,6 @@ fn jsonl_duplicate_of_recent_hook_is_dropped() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t-1".into()),
             detail: None,
         },
@@ -325,7 +314,6 @@ fn jsonl_duplicate_of_recent_hook_is_dropped() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Reading,
             tool_use_id: Some("t-1".into()),
             detail: Some("FROM_JSONL".into()),
         },
@@ -335,10 +323,7 @@ fn jsonl_duplicate_of_recent_hook_is_dropped() {
 
     let slot = scene.agents.get(&id).unwrap();
     match &slot.state {
-        ActivityState::Active {
-            activity, detail, ..
-        } => {
-            assert_eq!(*activity, Activity::Typing, "hook event must win");
+        ActivityState::Active { detail, .. } => {
             assert_ne!(
                 detail.as_deref(),
                 Some("FROM_JSONL"),
@@ -369,7 +354,6 @@ fn hook_activity_during_active_task_is_suppressed() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -383,7 +367,6 @@ fn hook_activity_during_active_task_is_suppressed() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("subagent-R".into()),
             detail: Some("Read: /foo".into()),
         },
@@ -468,7 +451,6 @@ fn subagent_jsonl_activity_is_unaffected_by_parent_task_suppression() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -480,7 +462,6 @@ fn subagent_jsonl_activity_is_unaffected_by_parent_task_suppression() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: subagent,
-            activity: Activity::Typing,
             tool_use_id: Some("sub-R".into()),
             detail: Some("Read: /bar".into()),
         },
@@ -507,7 +488,6 @@ fn hook_activity_without_active_task_applies_normally() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t".into()),
             detail: Some("Bash: ls".into()),
         },
@@ -691,7 +671,6 @@ fn active_tasks_drained_by_jsonl_end_even_if_hook_end_arrived_first() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("task-X".into()),
             detail: Some(ToolDetail::Task),
         },
@@ -715,7 +694,6 @@ fn active_tasks_drained_by_jsonl_end_even_if_hook_end_arrived_first() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("other".into()),
             detail: Some("Bash: ls".into()),
         },
@@ -747,34 +725,38 @@ fn jsonl_event_after_dedup_window_is_applied() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t-1".into()),
-            detail: None,
+            detail: Some("hook-side".into()),
         },
         t0,
         Transport::Hook,
     );
 
+    // Same tool_use_id but 600ms later — OUTSIDE HOOK_WINS_WINDOW (500ms), so
+    // this JSONL event is NOT deduped and must be applied. Distinct `detail`
+    // is the discriminator: a vacuous `Active { .. }` check passes even if the
+    // event were wrongly suppressed (the hook already made it Active), so
+    // assert the slot reflects the JSONL event's detail specifically.
     r.apply(
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Reading,
             tool_use_id: Some("t-1".into()),
-            detail: None,
+            detail: Some("jsonl-side".into()),
         },
         t0 + Duration::from_millis(600),
         Transport::Jsonl,
     );
 
     let slot = scene.agents.get(&id).unwrap();
-    assert!(matches!(
-        slot.state,
-        ActivityState::Active {
-            activity: Activity::Reading,
-            ..
-        }
-    ));
+    match &slot.state {
+        ActivityState::Active { detail, .. } => assert_eq!(
+            detail.as_deref(),
+            Some("jsonl-side"),
+            "JSONL event outside the dedup window must be applied"
+        ),
+        other => panic!("expected Active, got {other:?}"),
+    }
 }
 
 // --- stale-agent sweep ---------------------------------------------------
@@ -843,7 +825,6 @@ fn stale_active_agent_uses_shorter_timeout_than_idle() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t".into()),
             detail: None,
         },
@@ -1008,7 +989,6 @@ fn tool_call_count_increments_on_activity_start() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -1030,7 +1010,6 @@ fn tool_call_count_increments_on_activity_start() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t2".into()),
             detail: None,
         },
@@ -1052,7 +1031,6 @@ fn active_ms_accumulates_on_state_transitions() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -1094,7 +1072,6 @@ fn active_ms_does_not_double_count_on_duplicate_activity_end() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -1150,7 +1127,6 @@ fn active_ms_preserved_when_task_arrives_during_active_tool() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -1164,7 +1140,6 @@ fn active_ms_preserved_when_task_arrives_during_active_tool() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("task-1".into()),
             detail: Some(ToolDetail::Task),
         },
@@ -1192,7 +1167,6 @@ fn active_ms_preserved_when_waiting_interrupts_active() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -1450,7 +1424,6 @@ fn hook_wins_dedup_drops_jsonl_duplicate_within_window() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("dedup-1".into()),
             detail: Some("Edit: hook.rs".into()),
         },
@@ -1464,7 +1437,6 @@ fn hook_wins_dedup_drops_jsonl_duplicate_within_window() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Reading,
             tool_use_id: Some("dedup-1".into()),
             detail: Some("Edit: jsonl.rs".into()),
         },
@@ -1824,7 +1796,6 @@ fn long_delegation_keeps_parent_and_live_subagent_alive() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -1839,7 +1810,6 @@ fn long_delegation_keeps_parent_and_live_subagent_alive() {
             &mut scene,
             AgentEvent::ActivityStart {
                 agent_id: parent,
-                activity: Activity::Typing,
                 tool_use_id: Some(tuid.into()),
                 detail: Some("Read: /x".into()),
             },
@@ -1910,7 +1880,6 @@ fn stale_sweep_spares_subagent_blocked_under_a_waiting_parent() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: child,
-            activity: Activity::Typing,
             tool_use_id: Some("c-tool".into()),
             detail: Some("WebFetch: /x".into()),
         },
@@ -1998,7 +1967,6 @@ fn stale_sweep_spares_grandchild_under_a_waiting_ancestor() {
             &mut scene,
             AgentEvent::ActivityStart {
                 agent_id: id,
-                activity: Activity::Typing,
                 tool_use_id: Some("t".into()),
                 detail: Some("WebFetch: /x".into()),
             },
@@ -2073,7 +2041,6 @@ fn active_subagent_keeps_parent_alive_via_jsonl_events() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2087,7 +2054,6 @@ fn active_subagent_keeps_parent_alive_via_jsonl_events() {
             &mut scene,
             AgentEvent::ActivityStart {
                 agent_id: child,
-                activity: Activity::Typing,
                 tool_use_id: Some("c".into()),
                 detail: Some("Read: /x".into()),
             },
@@ -2156,7 +2122,6 @@ fn subagent_is_removed_promptly_when_its_parent_task_completes() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2168,7 +2133,6 @@ fn subagent_is_removed_promptly_when_its_parent_task_completes() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: child,
-            activity: Activity::Typing,
             tool_use_id: Some("c1".into()),
             detail: Some("Read: /x".into()),
         },
@@ -2225,7 +2189,6 @@ fn late_jsonl_dispatch_copy_inside_grace_cancels_premature_cascade() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-1".into()),
             detail: Some("Task".into()),
         },
@@ -2237,7 +2200,6 @@ fn late_jsonl_dispatch_copy_inside_grace_cancels_premature_cascade() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-2".into()),
             detail: Some("Task".into()),
         },
@@ -2266,7 +2228,6 @@ fn late_jsonl_dispatch_copy_inside_grace_cancels_premature_cascade() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-2".into()),
             detail: Some("Task".into()),
         },
@@ -2324,7 +2285,6 @@ fn second_drain_inside_grace_restarts_the_cascade_clock() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-1".into()),
             detail: Some("Task".into()),
         },
@@ -2346,7 +2306,6 @@ fn second_drain_inside_grace_restarts_the_cascade_clock() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-2".into()),
             detail: Some("Task".into()),
         },
@@ -2404,7 +2363,6 @@ fn late_jsonl_replay_of_drained_task_end_does_not_false_resolve_waiting() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2480,7 +2438,6 @@ fn task_drain_keeps_parallel_ordinary_tool_gate() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2492,7 +2449,6 @@ fn task_drain_keeps_parallel_ordinary_tool_gate() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("bash-1".into()),
             detail: Some("Bash: ls".into()),
         },
@@ -2562,7 +2518,6 @@ fn late_batched_jsonl_pair_after_delivered_hook_end_is_fully_dropped() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t-fast".into()),
             detail: Some("Read: /x".into()),
         },
@@ -2593,7 +2548,6 @@ fn late_batched_jsonl_pair_after_delivered_hook_end_is_fully_dropped() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t-fast".into()),
             detail: Some("Read: /x".into()),
         },
@@ -2641,7 +2595,6 @@ fn jsonl_task_start_duplicate_does_not_clobber_waiting_parent() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2664,7 +2617,6 @@ fn jsonl_task_start_duplicate_does_not_clobber_waiting_parent() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2698,7 +2650,6 @@ fn jsonl_ordinary_tool_end_drains_when_hook_end_drops() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t-1".into()),
             detail: Some("Read: /x".into()),
         },
@@ -2744,7 +2695,6 @@ fn suppressed_parallel_task_dispatch_jsonl_copy_survives_dedup_and_tracks() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-1".into()),
             detail: Some("Task".into()),
         },
@@ -2757,7 +2707,6 @@ fn suppressed_parallel_task_dispatch_jsonl_copy_survives_dedup_and_tracks() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-2".into()),
             detail: Some("Task".into()),
         },
@@ -2772,7 +2721,6 @@ fn suppressed_parallel_task_dispatch_jsonl_copy_survives_dedup_and_tracks() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-2".into()),
             detail: Some("Task".into()),
         },
@@ -2855,7 +2803,6 @@ fn jsonl_task_self_end_drains_when_hook_end_drops() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2892,7 +2839,6 @@ fn jsonl_task_self_end_drains_when_hook_end_drops() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("b-1".into()),
             detail: Some("Bash: ls".into()),
         },
@@ -2953,7 +2899,6 @@ fn parent_waiting_on_subagent_permission_resolves_when_the_subagent_resumes() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some("Task".into()),
         },
@@ -2984,7 +2929,6 @@ fn parent_waiting_on_subagent_permission_resolves_when_the_subagent_resumes() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: parent,
-            activity: Activity::Typing,
             tool_use_id: Some("sub-bash".into()),
             detail: Some("Bash: ls".into()),
         },
@@ -3105,7 +3049,6 @@ fn gated_tool_end_while_waiting_resolves_to_idle_after_grace() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -3173,7 +3116,6 @@ fn parallel_tool_end_while_waiting_keeps_waiting() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("t1".into()),
             detail: None,
         },
@@ -3245,7 +3187,6 @@ fn task_drain_while_parent_waiting_keeps_waiting() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: Some("task-T".into()),
             detail: Some(ToolDetail::Task),
         },
@@ -3338,7 +3279,6 @@ fn codex_permission_then_jsonl_output_resumes_to_active() {
         &mut scene,
         AgentEvent::ActivityStart {
             agent_id: id,
-            activity: Activity::Typing,
             tool_use_id: None,
             detail: Some(ToolDetail::from("exec_command")),
         },
