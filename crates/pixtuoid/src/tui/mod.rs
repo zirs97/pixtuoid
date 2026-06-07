@@ -21,8 +21,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
-    MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -107,6 +107,13 @@ fn is_quit_chord(code: KeyCode, mods: KeyModifiers) -> bool {
     )
 }
 
+/// Windows delivers Press AND Release events per keystroke; only Press may
+/// dispatch (Release/Repeat double-fire keys there — `p` would pause then
+/// instantly unpause). Unix only ever delivers Press, so this is a no-op there.
+fn should_dispatch_key(kind: KeyEventKind) -> bool {
+    kind == KeyEventKind::Press
+}
+
 /// Pure key-dispatch: resolve a key press to a `KeyAction` given the current
 /// modal + floor state. Modal precedence (highest first): help overlay,
 /// version popup, theme picker, then the normal scene.
@@ -186,12 +193,16 @@ pub fn setup_terminal() -> Result<Term> {
 }
 
 pub fn teardown_terminal(term: &mut Term) -> Result<()> {
-    disable_raw_mode()?;
+    // DisableMouseCapture must run while raw mode is still ON: on Windows it
+    // restores the input mode snapshotted at Enable time (which was raw-era),
+    // so running it after disable_raw_mode re-raws the console and leaves
+    // the user's shell echo-less. Raw mode goes off LAST.
     execute!(
         term.backend_mut(),
         DisableMouseCapture,
         LeaveAlternateScreen
     )?;
+    disable_raw_mode()?;
     term.show_cursor()?;
     Ok(())
 }
@@ -290,7 +301,10 @@ pub async fn run_tui(
             let mut quit = false;
             while polled {
                 match event::read()? {
-                    Event::Key(k) => {
+                    // Windows delivers Press AND Release events per
+                    // keystroke; without this guard every key double-fires
+                    // there (e.g. `p` pauses then instantly unpauses).
+                    Event::Key(k) if should_dispatch_key(k.kind) => {
                         let ctx = KeyCtx {
                             help_open: renderer.help_open(),
                             version_popup,
@@ -617,5 +631,13 @@ mod dispatch_tests {
             dispatch_key(KeyCode::Down, NONE, hi),
             KeyAction::ThemePreview(5)
         );
+    }
+
+    #[test]
+    fn only_press_events_dispatch() {
+        use crossterm::event::KeyEventKind;
+        assert!(super::should_dispatch_key(KeyEventKind::Press));
+        assert!(!super::should_dispatch_key(KeyEventKind::Release));
+        assert!(!super::should_dispatch_key(KeyEventKind::Repeat));
     }
 }

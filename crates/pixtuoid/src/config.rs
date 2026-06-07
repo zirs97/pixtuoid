@@ -53,7 +53,7 @@ pub fn resolve_pack_dir(config: &AppConfig, cli_pack_dir: Option<PathBuf>) -> Op
         config
             .pack_dir
             .as_ref()
-            .map(|p| PathBuf::from(expand_tilde(p, std::env::var("HOME").ok().as_deref())))
+            .map(|p| PathBuf::from(expand_tilde(p, crate::install::io::user_home().as_deref())))
     })
 }
 
@@ -73,7 +73,7 @@ pub fn config_path() -> PathBuf {
     if let Ok(base) = std::env::var("XDG_CONFIG_HOME") {
         return PathBuf::from(base).join("pixtuoid").join("config.toml");
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Some(home) = crate::install::io::user_home() {
         return PathBuf::from(home)
             .join(".config")
             .join("pixtuoid")
@@ -232,6 +232,12 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let saved_xdg = std::env::var_os("XDG_CONFIG_HOME");
         let saved_home = std::env::var_os("HOME");
+        let saved_userprofile = std::env::var_os("USERPROFILE");
+
+        // Clear USERPROFILE for the whole test: on Windows it outranks HOME
+        // in user_home(), so both the HOME arm and the relative-fallback arm
+        // need it absent to assert their branches.
+        std::env::remove_var("USERPROFILE");
 
         // XDG_CONFIG_HOME wins when set.
         std::env::set_var("XDG_CONFIG_HOME", "/xdg/base");
@@ -260,6 +266,10 @@ mod tests {
         match saved_home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match saved_userprofile {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
         }
     }
 

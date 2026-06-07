@@ -5,9 +5,34 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use fs2::FileExt;
 
-/// Resolve a `$HOME`-relative path, falling back to the CWD when `HOME` is unset.
+/// The user's home dir — `USERPROFILE`-first on Windows (HOME is normally
+/// unset there; Git Bash's exported HOME is POSIX-form and unusable), `HOME`
+/// on Unix. `None` when nothing is set: call sites keep their own fallbacks.
+/// An empty value counts as unset.
+pub fn user_home() -> Option<String> {
+    resolve_user_home(
+        cfg!(windows),
+        std::env::var("USERPROFILE").ok(),
+        std::env::var("HOME").ok(),
+    )
+}
+
+fn resolve_user_home(
+    windows: bool,
+    userprofile: Option<String>,
+    home: Option<String>,
+) -> Option<String> {
+    let nonempty = |v: Option<String>| v.filter(|s| !s.is_empty());
+    if windows {
+        return nonempty(userprofile).or_else(|| nonempty(home));
+    }
+    nonempty(home)
+}
+
+/// Resolve a `$HOME`-relative path, falling back to the CWD when no home dir
+/// is resolvable.
 pub fn home_relative(rel: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = user_home().unwrap_or_else(|| ".".into());
     PathBuf::from(home).join(rel)
 }
 
@@ -22,11 +47,18 @@ pub fn default_hook_binary() -> Result<PathBuf> {
         "could not determine the running executable's path while locating pixtuoid-hook",
     )?;
     let dir = exe.parent().ok_or_else(|| anyhow!("exe has no parent"))?;
-    let candidate = dir.join("pixtuoid-hook");
+    let candidate = dir.join(hook_sibling_name());
     if candidate.exists() {
         return Ok(candidate);
     }
     Err(anyhow!("could not locate pixtuoid-hook; pass --hook-path"))
+}
+
+/// The hook binary's filename next to the running exe — `.exe`-suffixed on
+/// Windows (exec-form spawning needs the real PE name; PATHEXT is a shell
+/// behavior we must not rely on).
+fn hook_sibling_name() -> String {
+    format!("pixtuoid-hook{}", std::env::consts::EXE_SUFFIX)
 }
 
 /// Build a sibling path by APPENDING `.suffix` to the full filename — never
@@ -152,6 +184,7 @@ mod tests {
         assert_eq!(resolve_symlink(&path), path);
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_symlink_follows_single_hop() {
         let dir = TempDir::new().unwrap();
@@ -162,6 +195,7 @@ mod tests {
         assert_eq!(resolve_symlink(&link), target);
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_symlink_follows_chain() {
         let dir = TempDir::new().unwrap();
@@ -174,6 +208,7 @@ mod tests {
         assert_eq!(resolve_symlink(&link), target);
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_symlink_dangling_returns_target() {
         let dir = TempDir::new().unwrap();
@@ -183,6 +218,7 @@ mod tests {
         assert_eq!(resolve_symlink(&link), target);
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_symlink_relative_target() {
         let dir = TempDir::new().unwrap();
@@ -199,6 +235,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_symlink_cycle_terminates_after_budget() {
         // A 2-node cycle a→b→a: symlink_metadata (lstat) + read_link (readlink)
@@ -237,6 +274,7 @@ mod tests {
         assert_eq!(read_config(&p).unwrap(), "a = 1\n");
     }
 
+    #[cfg(unix)]
     #[test]
     fn write_config_atomic_through_symlink_preserves_link() {
         let dir = TempDir::new().unwrap();
@@ -271,5 +309,34 @@ mod tests {
         assert_eq!(remove_backup(&p, "pixtuoid.bak").unwrap(), Some(b1.clone()));
         assert!(!b1.exists());
         assert_eq!(remove_backup(&p, "pixtuoid.bak").unwrap(), None);
+    }
+
+    #[test]
+    fn user_home_is_none_when_no_home_vars() {
+        // resolve_user_home is pure — the Windows arm is testable on macOS.
+        assert_eq!(resolve_user_home(true, None, None), None);
+        assert_eq!(resolve_user_home(false, None, None), None);
+    }
+
+    #[test]
+    fn user_home_userprofile_wins_on_windows_home_wins_on_unix() {
+        let up = Some(r"C:\Users\me".to_string());
+        let posix = Some("/c/Users/me".to_string());
+        assert_eq!(resolve_user_home(true, up.clone(), posix.clone()), up);
+        assert_eq!(
+            resolve_user_home(false, up, Some("/Users/me".into())),
+            Some("/Users/me".into())
+        );
+    }
+
+    #[test]
+    fn default_hook_binary_sibling_appends_exe_suffix() {
+        // Pin the per-platform LITERAL (not a re-computation via EXE_SUFFIX,
+        // which would be tautological): catches a base-name typo or an
+        // accidental double-suffix.
+        #[cfg(unix)]
+        assert_eq!(hook_sibling_name(), "pixtuoid-hook");
+        #[cfg(windows)]
+        assert_eq!(hook_sibling_name(), "pixtuoid-hook.exe");
     }
 }
