@@ -1433,6 +1433,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1442,6 +1443,7 @@ dependencies = [
  "anyhow",
  "libc",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

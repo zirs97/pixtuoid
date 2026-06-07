@@ -432,29 +432,45 @@ async fn check_session_ended(path: &Path, checker: SessionEndChecker) -> bool {
     checker(&buf)
 }
 
-/// The path segment a CC subagent transcript carries: `<parent>/subagents/
-/// agent-*.jsonl`. Slash-bounded so a project dir merely *containing* the word
-/// (e.g. `subagents-paper`) is not mistaken for one — single source of truth for
-/// both `is_subagent_path` and `detect_parent_id` so they cannot diverge (they
-/// did once: see the `bug_004` fix in `cc_derive_label`).
-const SUBAGENTS_SEGMENT: &str = "/subagents/";
+/// The directory a CC subagent transcript sits under: `<parent>/subagents/
+/// agent-*.jsonl`. Matched as a whole path COMPONENT (never a substring) so a
+/// project dir merely *containing* the word (e.g. `subagents-paper`) is not
+/// mistaken for one, and so Windows backslash-separated paths match too (the
+/// old `"/subagents/"` string scan was '/'-literal — found by the windows-test
+/// CI job). Single source of truth for both `is_subagent_path` and
+/// `detect_parent_id` so they cannot diverge (they did once: see the
+/// `bug_004` fix in `cc_derive_label`).
+const SUBAGENTS_DIR: &str = "subagents";
 
 /// Whether a transcript path is a CC subagent transcript (vs a top-level
 /// session). Codex subagents are FLAT (no such segment) — they're linked via the
 /// `SubagentStart` hook instead, so this predicate is CC-layout-specific.
 pub(crate) fn is_subagent_path(path: &Path) -> bool {
-    path.to_string_lossy().contains(SUBAGENTS_SEGMENT)
+    path.components().any(|c| c.as_os_str() == SUBAGENTS_DIR)
 }
 
-/// Detect if this transcript is a CC subagent by checking for the `/subagents/`
-/// path segment. If found, derive the parent's AgentId from the grandparent
+/// Detect if this transcript is a CC subagent by checking for the `subagents`
+/// path component. If found, derive the parent's AgentId from the grandparent
 /// directory (the parent session's transcript directory). CC-layout-specific —
 /// Codex subagent parent links come from the `SubagentStart` hook, not the path.
+///
+/// The parent key is rebuilt from the components BEFORE the first `subagents`
+/// (`<parent-dir>.jsonl`), using native separators — byte-identical to the
+/// parent transcript's own watcher-derived key on every platform.
 fn detect_parent_id(path: &Path, source: &str) -> Option<AgentId> {
-    let path_str = path.to_string_lossy();
-    let idx = path_str.find(SUBAGENTS_SEGMENT)?;
-    let parent_dir = &path_str[..idx];
-    let parent_jsonl = format!("{parent_dir}.jsonl");
+    let mut parent_dir = PathBuf::new();
+    let mut found = false;
+    for c in path.components() {
+        if c.as_os_str() == SUBAGENTS_DIR {
+            found = true;
+            break;
+        }
+        parent_dir.push(c);
+    }
+    if !found || parent_dir.as_os_str().is_empty() {
+        return None;
+    }
+    let parent_jsonl = format!("{}.jsonl", parent_dir.display());
     Some(AgentId::from_parts(source, &parent_jsonl))
 }
 
@@ -494,6 +510,57 @@ mod tests {
             default_id_from_path(p),
             "/Users/me/.claude/projects/x/abc.jsonl"
         );
+    }
+
+    // These call the REAL detect_parent_id/is_subagent_path (they're private —
+    // an integration test can't reach them; an old decoder.rs test re-simulated
+    // the algorithm inline and silently pinned the superseded string-scan).
+    #[test]
+    fn detect_parent_id_derives_grandparent_transcript_key() {
+        // Built via PathBuf so separators are NATIVE on every platform: the
+        // rebuilt parent key uses native separators, matching the watcher's
+        // own to_string_lossy for the parent transcript (a separator-literal
+        // expectation broke on the windows runner — backslash rebuild).
+        let parent: PathBuf = ["projects", "x", "abc123"].iter().collect();
+        let p = parent.join("subagents").join("agent-1.jsonl");
+        let expected = AgentId::from_parts("claude-code", &format!("{}.jsonl", parent.display()));
+        assert_eq!(detect_parent_id(&p, "claude-code"), Some(expected));
+        assert!(is_subagent_path(&p));
+    }
+
+    #[test]
+    fn detect_parent_id_none_for_regular_and_lookalike_paths() {
+        assert_eq!(
+            detect_parent_id(
+                Path::new("/Users/me/.claude/projects/x/ses.jsonl"),
+                "claude-code"
+            ),
+            None
+        );
+        // Component matching: a dir merely CONTAINING the word never matches.
+        let lookalike = Path::new("/Users/me/.claude/projects/subagents-paper/ses.jsonl");
+        assert_eq!(detect_parent_id(lookalike, "claude-code"), None);
+        assert!(!is_subagent_path(lookalike));
+        // A bare relative path starting AT `subagents` has no parent to derive.
+        assert_eq!(
+            detect_parent_id(Path::new("subagents/agent-1.jsonl"), "claude-code"),
+            None
+        );
+    }
+
+    // Only RUNS on the windows-test CI job (backslashes are ordinary filename
+    // bytes on Unix, so this shape is only meaningful there) — pins the
+    // components rewrite's whole reason to exist.
+    #[cfg(windows)]
+    #[test]
+    fn detect_parent_id_handles_backslash_paths() {
+        let p = Path::new(r"C:\Users\me\.claude\projects\x\abc123\subagents\agent-1.jsonl");
+        let expected = AgentId::from_parts(
+            "claude-code",
+            r"C:\Users\me\.claude\projects\x\abc123.jsonl",
+        );
+        assert_eq!(detect_parent_id(p, "claude-code"), Some(expected));
+        assert!(is_subagent_path(p));
     }
 
     #[test]

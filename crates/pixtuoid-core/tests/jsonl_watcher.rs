@@ -275,7 +275,10 @@ async fn watcher_emits_session_start_for_recent_files_on_startup() {
     std::fs::write(&fresh, format!("{line}\n")).unwrap();
     // fsync the parent directory so the directory entry is guaranteed visible
     // to read_dir — without this, APFS metadata propagation can race with
-    // the watcher's initial seed walk under heavy concurrent I/O.
+    // the watcher's initial seed walk under heavy concurrent I/O. Unix-only:
+    // Windows can't open a directory as a plain file (and the APFS race
+    // doesn't exist there).
+    #[cfg(unix)]
     std::fs::File::open(&project_dir)
         .unwrap()
         .sync_all()
@@ -787,7 +790,16 @@ async fn antigravity_source_run_emits_events_from_transcript() {
 async fn claude_code_source_run_binds_socket_and_emits_events() {
     fast_watch();
     let dir = TempDir::new().unwrap();
+    // The hook endpoint must be platform-shaped: a filesystem path is an
+    // invalid pipe name on Windows and would fail run()'s bind before the
+    // JSONL leg (the thing under test) ever starts.
+    #[cfg(unix)]
     let socket_path = dir.path().join("pixtuoid-test.sock");
+    #[cfg(windows)]
+    let socket_path = std::path::PathBuf::from(format!(
+        r"\\.\pipe\pixtuoid-test-jsonlw-{}",
+        std::process::id()
+    ));
     let projects_root = dir.path().join("projects");
     let project_dir = projects_root.join("proj-cc");
     tokio::fs::create_dir_all(&project_dir).await.unwrap();
