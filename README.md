@@ -43,8 +43,25 @@ A little bit *Black Mirror*, a little bit *The Sims* — and the most glanceable
 
 ## Quick Start
 
+Pick one — Homebrew on macOS, or npm on any OS:
+
+<!-- install:start · generated from site/src/install.json by `just gen-readme` — edit the JSON, not this block -->
+**Homebrew** (macOS):
+
 ```bash
 brew install IvanWng97/pixtuoid/pixtuoid
+```
+
+**npm** (any OS):
+
+```bash
+npm install -g pixtuoid
+```
+<!-- install:end -->
+
+Then wire up your agent and launch:
+
+```bash
 pixtuoid install-hooks
 pixtuoid
 ```
@@ -53,60 +70,7 @@ In another terminal, start a supported coding agent (Claude Code, Codex, Antigra
 
 **Keyboard shortcuts:** `q` quit · `p` pause · `t` themes · `?` help · `↑↓/jk/PgUp/PgDn` floors · click to pin tooltip
 
-<details>
-<summary><strong>More install methods</strong></summary>
-
-**Both packages are required** — `pixtuoid` (the visualizer) and `pixtuoid-hook` (the shim your agent invokes).
-
-### Pre-built binaries
-
-Download from [GitHub Releases](https://github.com/IvanWng97/pixtuoid/releases/latest):
-
-| Platform | Tarball |
-|---|---|
-| macOS (Apple Silicon) | `pixtuoid-v*-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `pixtuoid-v*-x86_64-apple-darwin.tar.gz` |
-| Linux (x86_64, static) | `pixtuoid-v*-x86_64-unknown-linux-musl.tar.gz` |
-| Linux (ARM64) | `pixtuoid-v*-aarch64-unknown-linux-gnu.tar.gz` |
-
-Debian/Ubuntu `.deb`s (amd64/arm64) are on the same page — install the binary
-**and** the hook shim:
-
-```bash
-sudo dpkg -i pixtuoid_*.deb pixtuoid-hook_*.deb
-```
-
-### Cargo
-
-```bash
-cargo install pixtuoid pixtuoid-hook
-```
-
-### Windows (experimental)
-
-Requires [Windows Terminal](https://aka.ms/terminal) (the Windows 11 default).
-Claude Code only for now — Codex support is coming.
-
-1. Download `pixtuoid-<version>-x86_64-pc-windows-msvc.zip` from the
-   [latest release](https://github.com/IvanWng97/pixtuoid/releases)
-2. Unblock before extracting (the exes are unsigned — SmartScreen marks
-   downloads): right-click the zip → Properties → Unblock, or
-   `Unblock-File .\pixtuoid-*.zip` in PowerShell
-3. Extract anywhere and add the folder to your PATH
-4. `pixtuoid install-hooks` then `pixtuoid run`
-
-ARM64 Windows: use the `aarch64-pc-windows-msvc` zip.
-
-### From source
-
-```bash
-git clone https://github.com/IvanWng97/pixtuoid && cd pixtuoid
-just build --release
-```
-
-Upgrading from `ascii-agents` v0.3.x? See [docs/MIGRATION.md](docs/MIGRATION.md).
-
-</details>
+**More ways to install** — Cargo, prebuilt binaries, and Debian `.deb`s — are on the **[install guide ↗](https://ivanwng97.github.io/pixtuoid/#install)**. Upgrading from `ascii-agents`? See [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Features
 
@@ -136,12 +100,14 @@ Upgrading from `ascii-agents` v0.3.x? See [docs/MIGRATION.md](docs/MIGRATION.md)
 <!-- tools:start · generated from site/src/sources.json by `just gen-readme` — edit the JSON, not this table -->
 | Tool | Runs on |
 |---|---|
-| [Claude Code](https://code.claude.com) | macOS · Linux · Windows |
+| [Claude Code](https://code.claude.com) | macOS · Linux · Windows\* |
 | [Codex CLI](https://github.com/openai/codex) | macOS · Linux |
 
 _Also supported: [Antigravity CLI](https://github.com/antiGravity-AI/antigravity-cli), [DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix). Planned: Copilot CLI, OpenCode, Cursor CLI._
 
 **→ [Full tool × OS support matrix on the site](https://ivanwng97.github.io/pixtuoid/#tools)**
+
+_\* experimental — limited testing, unsigned binaries._
 <!-- tools:end -->
 
 > Adding a new tool? Implement the [`Source` trait](#contributing) — or, for a hook-only CLI, just a hook decoder + an `install-hooks` target — then add a row to [`site/src/sources.json`](site/src/sources.json) (its `supported` set is pinned to the code by a test). One file, one channel, done.

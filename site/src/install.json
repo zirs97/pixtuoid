@@ -2,22 +2,30 @@
   {
     "id": "brew",
     "label": "Homebrew",
+    "blurb": "macOS",
     "cmds": ["brew install IvanWng97/pixtuoid/pixtuoid"],
-    "readmeCheck": true
+    "readme": true
+  },
+  {
+    "id": "npm",
+    "label": "npm",
+    "blurb": "any OS",
+    "cmds": ["npm install -g pixtuoid"],
+    "readme": true
   },
   {
     "id": "cargo",
     "label": "Cargo",
     "cmds": ["cargo install pixtuoid pixtuoid-hook"],
-    "readmeCheck": true
+    "readme": false
   },
   {
-    "id": "deb",
-    "label": "Debian",
+    "id": "release",
+    "label": "GitHub Releases",
     "cmds": [
-      "# download both .debs from the Releases page",
-      "sudo dpkg -i pixtuoid_*.deb pixtuoid-hook_*.deb"
+      "# prebuilt binaries (macOS · Linux · Windows .zip) + Debian .debs:",
+      "# https://github.com/IvanWng97/pixtuoid/releases/latest"
     ],
-    "readmeCheck": true
+    "readme": false
   }
 ]

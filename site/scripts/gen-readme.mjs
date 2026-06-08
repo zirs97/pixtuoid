@@ -2,7 +2,7 @@
 // Keep the README in sync with the site's single-source data files:
 //   • Features table          ← site/src/features.json  (GENERATED between markers)
 //   • Supported-tools glimpse ← site/src/sources.json   (GENERATED between markers)
-//   • install commands        ← site/src/install.json   (CHECKED — must appear verbatim)
+//   • Install block           ← site/src/install.json   (GENERATED — `readme:true` methods only)
 // The site (Features.astro / SupportedTools.astro / Install.astro) reads the same
 // JSON, so the README and the site can't drift. The supported-tools glimpse shows
 // only the FEATURED tools + a link to the full tool × OS matrix on the site, so the
@@ -78,9 +78,12 @@ regenSection(
 const OS_LABELS = { macos: 'macOS', linux: 'Linux', windows: 'Windows' };
 const OS_ORDER = ['macos', 'linux', 'windows'];
 const runsOn = (s) =>
-  OS_ORDER.filter((os) => s.platforms?.[os] === 'yes')
-    .map((os) => OS_LABELS[os])
+  OS_ORDER.filter((os) => s.platforms?.[os] === 'yes' || s.platforms?.[os] === 'experimental')
+    .map((os) => (s.platforms[os] === 'experimental' ? `${OS_LABELS[os]}\\*` : OS_LABELS[os]))
     .join(' · ');
+const hasExperimental = sources.some(
+  (s) => s.status === 'supported' && Object.values(s.platforms || {}).includes('experimental')
+);
 
 const featured = sources.filter((s) => s.status === 'supported' && s.featured);
 const otherSupported = sources.filter((s) => s.status === 'supported' && !s.featured);
@@ -104,34 +107,37 @@ regenSection(
     ...featured.map((s) => `| ${link(s)} | ${cell(runsOn(s)) || '—'} |`),
     '',
     alsoLine + `**→ [Full tool × OS support matrix on the site](${SITE}/#tools)**`,
+    ...(hasExperimental ? ['', '_\\* experimental — limited testing, unsigned binaries._'] : []),
   ].join('\n')
 );
 
-// --- Install commands (checked, not generated — the README install prose is
-// hand-curated, but every canonical command must appear in it verbatim) ---
-// Line-anchored (not substring): a README line that grew a flag (e.g.
-// `... pixtuoid-hook --locked`) must FAIL, or the site would silently keep
-// recommending the shorter command. Comment lines (#…) are site-tab
-// presentation, not commands — skip them.
-const readmeLines = new Set(readme.split('\n').map((l) => l.trim()));
-for (const m of install) {
-  if (!m.readmeCheck) continue; // site-only method
-  for (const cmd of m.cmds) {
-    if (cmd.trimStart().startsWith('#')) continue;
-    if (!readmeLines.has(cmd)) {
-      errors.push(
-        `README is missing the ${m.label} install command from install.json as its own line: \`${cmd}\` — update the README to match, or fix install.json.`
-      );
-    }
-  }
-}
+// --- Install block (GENERATED, like features/sources). The README shows only
+// the `readme: true` methods (brew, npm); the rest (Cargo, GitHub Releases) live
+// on the site's install tab. Single source: site/src/install.json — the same
+// file Install.astro renders, so the two can't drift. ---
+const installBody = install
+  .filter((m) => m.readme)
+  .map(
+    (m) =>
+      `**${cell(m.label)}**${m.blurb ? ` (${cell(m.blurb)})` : ''}:\n\n\`\`\`bash\n${m.cmds.join('\n')}\n\`\`\``
+  )
+  .join('\n\n');
+regenSection(
+  'Install block',
+  '<!-- install:start · generated from site/src/install.json by `just gen-readme` — edit the JSON, not this block -->',
+  '<!-- install:end -->',
+  installBody
+);
 
 if (errors.length) {
   console.error(errors.map((e) => `✗ ${e}`).join('\n'));
   process.exit(1);
 }
-if (check) console.log('README is in sync with features.json + sources.json + install.json ✓');
-else console.log('README install commands match install.json ✓');
+console.log(
+  check
+    ? 'README is in sync with features.json + sources.json + install.json ✓'
+    : 'README regenerated from features.json + sources.json + install.json ✓'
+);
 
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
