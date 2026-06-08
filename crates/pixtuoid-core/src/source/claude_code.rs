@@ -16,6 +16,18 @@ pub struct ClaudeCodeSource {
     pub projects_root: PathBuf,
 }
 
+/// Resolve `CLAUDE_CONFIG_DIR` (an empty value is treated as unset). `pub` +
+/// `#[doc(hidden)]` so the `pixtuoid` install crate's settings.json resolver
+/// shares this one definition — the two CC path sites must not drift. Internal
+/// cross-crate helper, not a stable API.
+#[doc(hidden)]
+pub fn claude_config_dir() -> Option<PathBuf> {
+    std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+}
+
 impl ClaudeCodeSource {
     pub fn default_socket_path() -> PathBuf {
         if let Ok(p) = std::env::var("PIXTUOID_SOCKET") {
@@ -43,10 +55,12 @@ impl ClaudeCodeSource {
     }
 
     pub fn default_paths() -> Self {
-        let home = crate::platform::user_home();
+        let projects_root = claude_config_dir()
+            .unwrap_or_else(|| PathBuf::from(crate::platform::user_home()).join(".claude"))
+            .join("projects");
         Self {
             socket_path: Self::default_socket_path(),
-            projects_root: PathBuf::from(home).join(".claude").join("projects"),
+            projects_root,
         }
     }
 }
@@ -333,6 +347,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn default_socket_path_env_precedence_and_default_paths() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved_socket = std::env::var_os("PIXTUOID_SOCKET");
         let saved_xdg = std::env::var_os("XDG_RUNTIME_DIR");
 
@@ -372,15 +389,41 @@ mod tests {
         }
     }
 
-    // Platform-neutral: default_paths derives projects_root from HOME on every OS.
     #[test]
-    fn default_paths_projects_root() {
-        let paths = ClaudeCodeSource::default_paths();
+    fn default_paths_projects_root_honors_claude_config_dir() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let saved_config = std::env::var_os("CLAUDE_CONFIG_DIR");
+        let fallback_suffix = PathBuf::from(".claude").join("projects");
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let unset_paths = ClaudeCodeSource::default_paths();
         assert!(
-            paths.projects_root.ends_with(".claude/projects"),
+            unset_paths.projects_root.ends_with(&fallback_suffix),
             "projects_root must end with .claude/projects, got {:?}",
-            paths.projects_root
+            unset_paths.projects_root
         );
+
+        let custom_dir = std::env::temp_dir().join("pixtuoid-claude-config-dir");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &custom_dir);
+        assert_eq!(
+            ClaudeCodeSource::default_paths().projects_root,
+            custom_dir.join("projects")
+        );
+
+        std::env::set_var("CLAUDE_CONFIG_DIR", "");
+        let empty_paths = ClaudeCodeSource::default_paths();
+        assert!(
+            empty_paths.projects_root.ends_with(&fallback_suffix),
+            "empty CLAUDE_CONFIG_DIR must fall back to .claude/projects, got {:?}",
+            empty_paths.projects_root
+        );
+
+        match saved_config {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
     }
 
     // CC on Windows slugs an absolute path like `C:\Users\foo\bar` into a project
