@@ -12,6 +12,10 @@ tests/fixtures/sources/<source>/<scenario>/
     # expected snapshot lives in tests/snapshots/ (insta), generated on first run
 ```
 
+A scenario ships the transports its source actually has: both files
+(CC/Codex), transcript-only (antigravity — no hooks), or hook-payloads-only
+(reasonix — hook-only, no watchable JSONL).
+
 (`tests/fixtures/` also holds sprite/hook/jsonl fixtures for unrelated tests, so
 per-source decode fixtures live under the dedicated `sources/` subtree.)
 
@@ -56,3 +60,15 @@ CC's hook `transcript_path` == its transcript via `{{TRANSCRIPT_PATH}}`).
 - **`claude-code/tool-call/`** — a `Glob` tool_use + its tool_result (attributed
   to a `code-architect` subagent → `Rename`), with `PreToolUse`/`PostToolUse`
   hooks. Proves **path-keyed** coalescing.
+- **`reasonix/tool-run/`** — HOOK-ONLY (no transcript): a real session arc —
+  `SessionStart`, `UserPromptSubmit`, a `read_file` and a `bash` tool, an
+  `explore` subagent dispatch (→ `ToolDetail::Task`), `Stop`, `SessionEnd`.
+  Proves **cwd-keyed** coalescing (the only identity Reasonix payloads carry).
+  **Captured from a live Reasonix v1.3.0 session** (Homebrew `esengine/reasonix`,
+  DeepSeek backend) via temporary tee hooks in `~/.reasonix/settings.json`, then
+  sanitized per the provenance bar above: `cwd` normalized to one synthetic path
+  (→ one `AgentId`), verbose/PII fields (`toolResult`, `lastAssistantText`,
+  `turn`) dropped, field names + tool names/args kept verbatim. The
+  `Notification` → Waiting approval-gate arm is NOT in this golden —
+  non-interactive `reasonix run` has no approval gate, so it never fires — that
+  arm is unit-pinned in `source/reasonix.rs` instead (closes #135).
