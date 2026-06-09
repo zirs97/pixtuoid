@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
 
-use crate::install::io::{self, shell_single_quote};
+use crate::install::io;
+#[cfg(unix)]
+use crate::install::io::shell_single_quote;
 use crate::install::target::MergeOutcome;
 
 const SENTINEL_KEY: &str = "_pixtuoid";
@@ -65,11 +67,19 @@ pub fn detect_installed() -> bool {
 }
 
 /// Rust mapping of Go's `os.UserConfigDir()` for the platforms we ship:
-/// macOS `$HOME/Library/Application Support`, elsewhere `$XDG_CONFIG_HOME`
-/// falling back to `~/.config`.
+/// macOS `$HOME/Library/Application Support`, **Windows `%APPDATA%`** (Roaming —
+/// where Reasonix's v2 config dir actually lives; without this arm
+/// `detect_installed` probes `~/.config/reasonix` on Windows, which Reasonix never
+/// creates, so auto-detection would always miss), else `$XDG_CONFIG_HOME` falling
+/// back to `~/.config`.
 fn user_config_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
         io::home_relative("Library/Application Support")
+    } else if cfg!(windows) {
+        match std::env::var("APPDATA") {
+            Ok(a) if !a.is_empty() => PathBuf::from(a),
+            _ => io::home_relative("AppData/Roaming"),
+        }
     } else {
         match std::env::var("XDG_CONFIG_HOME") {
             Ok(x) if !x.is_empty() => PathBuf::from(x),
@@ -78,19 +88,26 @@ fn user_config_dir() -> PathBuf {
     }
 }
 
-/// Reasonix runs the `command` string under a shell (`sh -c`); same contract
-/// as Codex: ABSOLUTE single-quoted path + the PIXTUOID_SOURCE stamp the shim
-/// turns into `_pixtuoid_source` (without it the payload would default to
-/// claude-code and mis-sprite). Err on non-UTF-8 (prevents the
-/// to_string_lossy dead-hook).
+/// Reasonix runs the `command` string under a shell — `sh -c` on Unix, `cmd.exe
+/// /c` on Windows (verified: `internal/hook/hook.go:414` `shellInvocation`, an
+/// explicit `GOOS=="windows"` branch). Same contract as Codex, so the OS forms
+/// mirror codex::hook_command exactly:
+/// - **Unix**: env-prefix `PIXTUOID_SOURCE=reasonix '<abs-path>'` (single-quoted).
+/// - **Windows**: BARE `<abs-path> --source reasonix` via the shared
+///   `io::windows_bare_hook_command` (cmd.exe can't express the env-prefix; the
+///   source rides as the shim's `--source` flag). That helper REJECTS a path with
+///   a space or cmd metacharacter (#195) — a quoted path can't survive cmd /C.
+///
+/// Err on non-UTF-8 (prevents the to_string_lossy dead-hook).
 pub fn hook_command(resolved: &Path) -> Result<String> {
     let p = resolved
         .to_str()
         .ok_or_else(|| anyhow!("pixtuoid-hook path is non-UTF-8: {}", resolved.display()))?;
-    Ok(format!(
-        "PIXTUOID_SOURCE=reasonix {}",
-        shell_single_quote(p)
-    ))
+    #[cfg(windows)]
+    let cmd = io::windows_bare_hook_command(p, "reasonix")?;
+    #[cfg(unix)]
+    let cmd = format!("PIXTUOID_SOURCE=reasonix {}", shell_single_quote(p));
+    Ok(cmd)
 }
 
 fn parse_or_empty(content: &str) -> Result<Value> {
@@ -303,6 +320,9 @@ mod tests {
         assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 1);
     }
 
+    // Unix POSIX-form pin (single-quoted env-prefix). Unix-only: on Windows
+    // hook_command emits the bare form and this spaced path would be REJECTED.
+    #[cfg(unix)]
     #[test]
     fn hook_command_stamps_source_and_quotes() {
         let cmd = hook_command(Path::new("/Users/Jane Doe/bin/pixtuoid-hook")).unwrap();
@@ -310,6 +330,50 @@ mod tests {
             cmd,
             "PIXTUOID_SOURCE=reasonix '/Users/Jane Doe/bin/pixtuoid-hook'"
         );
+    }
+
+    // Windows: bare exec form `<path> --source reasonix` (mirrors codex; Reasonix
+    // shells hooks via cmd.exe /c, hook.go:414). Pinned by check-windows + windows-test.
+    #[test]
+    #[cfg(windows)]
+    fn hook_command_emits_bare_exec_form_with_source_flag_on_windows() {
+        let cmd = hook_command(Path::new(r"C:\tools\pixtuoid-hook.exe")).unwrap();
+        assert_eq!(cmd, r"C:\tools\pixtuoid-hook.exe --source reasonix");
+    }
+
+    // Windows: a path with a space or cmd metacharacter is rejected at install
+    // (shared io::windows_bare_hook_command guard — see #195).
+    #[test]
+    #[cfg(windows)]
+    fn hook_command_rejects_cmd_unsafe_path_on_windows() {
+        assert!(hook_command(Path::new(r"C:\Program Files\pixtuoid-hook.exe")).is_err());
+        let err = hook_command(Path::new(r"C:\Users\a&b\pixtuoid-hook.exe"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("cmd.exe") && err.contains("ordinary characters"),
+            "must explain the cmd-unsafe path + workaround: {err}"
+        );
+    }
+
+    // detect_installed probes user_config_dir()/reasonix; on Windows that must be
+    // %APPDATA% (Go's os.UserConfigDir), not ~/.config, or auto-detection misses.
+    #[cfg(windows)]
+    #[test]
+    fn user_config_dir_uses_appdata_on_windows() {
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("APPDATA");
+        std::env::set_var("APPDATA", r"C:\Users\ada\AppData\Roaming");
+        assert_eq!(
+            user_config_dir(),
+            PathBuf::from(r"C:\Users\ada\AppData\Roaming")
+        );
+        match saved {
+            Some(v) => std::env::set_var("APPDATA", v),
+            None => std::env::remove_var("APPDATA"),
+        }
     }
 
     #[test]

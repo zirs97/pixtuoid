@@ -15,7 +15,7 @@
     "status": "supported",
     "featured": true,
     "transport": "Hook shim + JSONL watcher (hook/JSONL coalesce on session UUID)",
-    "platforms": { "macos": "yes", "linux": "yes", "windows": "planned" }
+    "platforms": { "macos": "yes", "linux": "yes", "windows": "experimental" }
   },
   {
     "id": "antigravity",
@@ -24,7 +24,7 @@
     "status": "supported",
     "featured": false,
     "transport": "JSONL watcher",
-    "platforms": { "macos": "yes", "linux": "yes", "windows": "planned" }
+    "platforms": { "macos": "yes", "linux": "yes", "windows": "experimental" }
   },
   {
     "id": "reasonix",
@@ -33,7 +33,7 @@
     "status": "supported",
     "featured": false,
     "transport": "Hook shim (hook-only — global ~/.reasonix/settings.json)",
-    "platforms": { "macos": "yes", "linux": "yes", "windows": "planned" }
+    "platforms": { "macos": "yes", "linux": "yes", "windows": "experimental" }
   },
   {
     "id": null,

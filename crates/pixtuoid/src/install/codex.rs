@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use toml::value::Table;
 
-use crate::install::io;
 use crate::install::target::MergeOutcome;
 
 const SENTINEL_KEY: &str = "_pixtuoid";
@@ -20,31 +19,54 @@ const CODEX_EVENTS: &[&str] = &[
 ];
 
 pub fn default_config_path() -> PathBuf {
-    io::home_relative(".codex/config.toml")
+    // Route through the SAME codex_home() the watcher uses, so the installed-hook
+    // config and the watched sessions root can't disagree (and honors CODEX_HOME).
+    // codex_home() always yields an absolute path (user_home falls back to the
+    // temp dir), so there's no unsafe `.`/CWD fallback like io::home_relative.
+    pixtuoid_core::source::codex::codex_home().join("config.toml")
 }
 
+#[cfg(unix)]
 use crate::install::io::shell_single_quote;
 
-/// Codex runs the `command` string under a shell; we write an ABSOLUTE path
-/// (robust regardless of PATH), single-quoted (robust to spaces), prefixed with
-/// PIXTUOID_SOURCE so the shim can stamp the source. Err on non-UTF-8 (prevents
-/// the to_string_lossy dead-hook).
+/// The Codex hook `command`. Codex runs it under a shell — `/bin/sh -lc` on Unix,
+/// `cmd.exe /C` on Windows (verified in codex-rs `command_runner.rs`, which spawns
+/// `Command::new(cmd.exe).arg("/C").arg(command)`; codex runs the plain `command`
+/// field on every OS, so we write the OS-correct form here rather than a
+/// `commandWindows` override). We embed an ABSOLUTE path (robust regardless of
+/// PATH) and stamp the source for the shim. Err on non-UTF-8 (prevents the
+/// to_string_lossy dead-hook).
+///
+/// - **Unix**: env-prefix form `PIXTUOID_SOURCE=codex '<path>'` (single-quoted
+///   for spaces).
+/// - **Windows**: BARE exec form `<path> --source codex` — exactly codex's own
+///   documented `command_windows` style (unquoted). We must NOT quote the path:
+///   codex passes the string through `Command::arg`, whose Windows quoting escapes
+///   any embedded `"` to `\"`, which `cmd.exe /C` then mangles (the path comes out
+///   corrupted and the hook silently never fires). The env-prefix form is also
+///   invalid under cmd.exe (it'd exec a program literally named
+///   `PIXTUOID_SOURCE=codex`), so the source rides as the shim's `--source` flag —
+///   codex injects no per-hook env we could set instead. KNOWN EXPERIMENTAL
+///   LIMITATION: because a quoted path can't survive cmd.exe `/C` here, a
+///   pixtuoid-hook.exe under a path containing a SPACE or a cmd metacharacter
+///   (`& | < > ( ) ^ %`) can't be invoked safely with a trailing arg (a space
+///   truncates it; `&` splits it into two commands), so we REJECT such a path at
+///   install with an actionable error (#195) rather than write a dangerous or
+///   silently-broken hook. The ordinary install paths (`%USERPROFILE%\.cargo\bin`,
+///   npm prefix) are the common case and work.
 pub fn hook_command(resolved: &Path) -> Result<String> {
-    // Codex's hook `command` is a POSIX shell string — the env-prefix form
-    // (`PIXTUOID_SOURCE=codex /path`) does not work under cmd.exe or PowerShell.
-    // Windows support for Codex (Git-Bash exec-form or a dedicated shim) is
-    // planned for a follow-up PR; refuse cleanly rather than writing a silently
-    // broken config.
-    if cfg!(windows) {
-        bail!(
-            "the codex target is not yet supported on Windows — \
-             install hooks for Claude Code only (Codex support is planned)"
-        );
-    }
     let p = resolved
         .to_str()
         .ok_or_else(|| anyhow!("pixtuoid-hook path is non-UTF-8: {}", resolved.display()))?;
-    Ok(format!("PIXTUOID_SOURCE=codex {}", shell_single_quote(p)))
+    // Windows: bare `<path> --source codex` via the shared guard (codex shells
+    // through cmd.exe /C; the cmd-unsafe-path rejection lives in ONE place,
+    // io::windows_bare_hook_command, shared with Reasonix so it can't drift).
+    // Unix: POSIX env-prefix form.
+    #[cfg(windows)]
+    let cmd = crate::install::io::windows_bare_hook_command(p, "codex")?;
+    #[cfg(unix)]
+    let cmd = format!("PIXTUOID_SOURCE=codex {}", shell_single_quote(p));
+    Ok(cmd)
 }
 
 fn parse_or_empty(content: &str) -> Result<toml::Value> {
@@ -339,20 +361,47 @@ command = "/old/pixtuoid-hook"
         );
     }
 
-    // On Windows, hook_command must refuse (cfg!(windows) guard). The guard
-    // compiles on all platforms; check-windows exercises the bail! branch.
-    // On non-Windows the guard is false → the POSIX path runs normally, which
-    // is verified by hook_command_prefixes_source_for_valid_path below.
+    // On Windows hook_command emits the BARE exec form `<path> --source codex`
+    // (codex runs it via cmd.exe /C; a quoted path can't survive cmd /C + codex's
+    // Command::arg escaping — see the fn doc). check-windows cross-lints the
+    // branch; the faithful cmd.exe round-trip is exercised by shim_pipe.rs's
+    // codex_cmd_c_invocation_of_hook_command_stamps_source. The Unix env-prefix
+    // form is pinned by hook_command_prefixes_source_for_valid_path below.
     #[test]
     #[cfg(windows)]
-    fn hook_command_refuses_on_windows() {
-        let err = hook_command(std::path::Path::new(r"C:\tools\pixtuoid-hook.exe"))
+    fn hook_command_emits_bare_exec_form_with_source_flag_on_windows() {
+        let cmd = hook_command(std::path::Path::new(r"C:\tools\pixtuoid-hook.exe")).unwrap();
+        assert_eq!(cmd, r"C:\tools\pixtuoid-hook.exe --source codex");
+    }
+
+    // #195 + security: a path with a space (truncates) OR a cmd metacharacter
+    // (`&` splits the command → relative-tail execution from CWD) is rejected at
+    // install rather than written as a hook cmd.exe /C would mangle or mis-run.
+    #[test]
+    #[cfg(windows)]
+    fn hook_command_rejects_cmd_unsafe_path_on_windows() {
+        // space → truncation
+        assert!(hook_command(std::path::Path::new(r"C:\Program Files\pixtuoid-hook.exe")).is_err());
+        // `&` → command split / unintended relative-path execution
+        let err = hook_command(std::path::Path::new(r"C:\Users\a&b\pixtuoid-hook.exe"))
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("not yet supported on Windows"),
-            "unexpected error: {err}"
+            err.contains("cmd.exe") && err.contains("ordinary characters"),
+            "must explain the cmd-unsafe path + workaround: {err}"
         );
+        // other separators/redirects are rejected too
+        for bad in [
+            r"C:\p|x\h.exe",
+            r"C:\p>x\h.exe",
+            r"C:\p(x)\h.exe",
+            r"C:\p%x\h.exe",
+        ] {
+            assert!(
+                hook_command(std::path::Path::new(bad)).is_err(),
+                "must reject cmd-unsafe path {bad}"
+            );
+        }
     }
 
     #[test]
@@ -363,8 +412,8 @@ command = "/old/pixtuoid-hook"
         assert!(hook_command(bad).is_err());
     }
 
-    // POSIX shell-string pins: unix-only — on Windows hook_command refuses
-    // outright (see hook_command_refuses_on_windows).
+    // POSIX shell-string pins: unix-only — the Windows bare exec form is pinned
+    // by hook_command_emits_bare_exec_form_with_source_flag_on_windows above.
     #[cfg(unix)]
     #[test]
     fn hook_command_prefixes_source_for_valid_path() {
@@ -431,6 +480,50 @@ command = "/old/pixtuoid-hook"
     // dropping it. This is exactly the class the SubagentStop bug fell into
     // (registered but not decoded). The external drift-watch covers upstream
     // renames; this covers our own registered-vs-decoded drift.
+    // default_config_path routes through codex_home(), so CODEX_HOME (when it
+    // points at an existing dir) redirects BOTH the watcher and the installer.
+    #[test]
+    fn default_config_path_honors_codex_home_env() {
+        // std::env is process-global; serialize against other env-mutating tests.
+        let _env = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("CODEX_HOME");
+        let fallback_suffix = PathBuf::from(".codex").join("config.toml");
+
+        std::env::remove_var("CODEX_HOME");
+        assert!(
+            default_config_path().ends_with(&fallback_suffix),
+            "unset CODEX_HOME must end with .codex/config.toml, got {:?}",
+            default_config_path()
+        );
+
+        // Set to an EXISTING dir → <dir>/config.toml.
+        let custom = std::env::temp_dir().join("pixtuoid-codex-home-cfg-test");
+        std::fs::create_dir_all(&custom).unwrap();
+        std::env::set_var("CODEX_HOME", &custom);
+        assert_eq!(default_config_path(), custom.join("config.toml"));
+
+        // Set to a NON-existent dir → fall back (matches upstream codex's gate).
+        let missing = std::env::temp_dir().join("pixtuoid-codex-home-cfg-missing");
+        let _ = std::fs::remove_dir_all(&missing);
+        std::env::set_var("CODEX_HOME", &missing);
+        assert!(
+            default_config_path().ends_with(&fallback_suffix),
+            "non-existent CODEX_HOME must fall back to .codex/config.toml"
+        );
+
+        // Empty → fallback.
+        std::env::set_var("CODEX_HOME", "");
+        assert!(default_config_path().ends_with(&fallback_suffix));
+
+        match saved {
+            Some(v) => std::env::set_var("CODEX_HOME", v),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&custom);
+    }
+
     #[test]
     fn every_registered_codex_event_decodes() {
         use pixtuoid_core::source::decoder::decode_hook_payload;
